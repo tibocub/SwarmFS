@@ -1,0 +1,11 @@
+{
+  "dataDir": "./swarmfs-data",
+  "chunkSize": 262144,
+  "ignorePatterns": [
+    "node_modules",
+    ".git",
+    ".swarmfs",
+    "*.tmp",
+    "*.temp"
+  ]
+}
