@@ -1,0 +1,9 @@
+This is a larger test file for SwarmFS.
+It contains multiple paragraphs to demonstrate chunking.
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+
+The file should be processed correctly by the chunking algorithm,
+hashed properly, and stored in the content-addressable storage.

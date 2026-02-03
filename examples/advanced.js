@@ -1,0 +1,118 @@
+/**
+ * Advanced Example: Multi-chunk file with proof verification
+ * Simulates a real-world scenario with a large file
+ */
+
+import { chunkBuffer } from '../src/chunk.js';
+import { hashBuffer } from '../src/hash.js';
+import { buildMerkleTree, generateMerkleProof, verifyMerkleProof } from '../src/merkle.js';
+
+console.log('=== Advanced Example: Large File Processing ===\n');
+
+// Simulate a 2MB file
+const fileSize = 2 * 1024 * 1024; // 2MB
+console.log(`Simulating ${fileSize / 1024 / 1024}MB file...`);
+
+// Create file with pattern so each chunk is unique
+const fileData = Buffer.alloc(fileSize);
+for (let i = 0; i < fileSize; i++) {
+  fileData[i] = (i % 256);
+}
+
+// Process the file
+console.log('\n1. Chunking file...');
+const chunks = chunkBuffer(fileData);
+console.log(`   Created ${chunks.length} chunks of 256KB each`);
+
+console.log('\n2. Hashing chunks...');
+const chunkHashes = chunks.map((chunk, i) => {
+  const hash = hashBuffer(chunk);
+  return hash;
+});
+console.log(`   Generated ${chunkHashes.length} SHA-256 hashes`);
+
+console.log('\n3. Building Merkle tree...');
+const tree = buildMerkleTree(chunkHashes);
+console.log(`   Root hash: ${tree.root}`);
+console.log(`   Tree depth: ${tree.levels.length} levels`);
+
+// Show tree structure
+console.log(`\n   Tree structure:`);
+for (let i = tree.levels.length - 1; i >= 0; i--) {
+  const level = tree.levels[i];
+  console.log(`   Level ${i}: ${level.length.toString().padStart(2)} node(s)`);
+}
+
+// Simulate downloading chunks from different peers
+console.log('\n4. Simulating P2P chunk downloads...');
+const downloadedChunks = new Map();
+
+// "Download" chunks from different "peers" (simulate)
+const peers = ['Peer-A', 'Peer-B', 'Peer-C', 'Peer-D'];
+chunks.forEach((chunk, i) => {
+  const peer = peers[i % peers.length];
+  console.log(`   Chunk ${i} downloaded from ${peer}`);
+  downloadedChunks.set(i, { data: chunk, peer });
+});
+
+// Verify each downloaded chunk
+console.log('\n5. Verifying downloaded chunks...');
+let allValid = true;
+downloadedChunks.forEach((download, index) => {
+  const hash = hashBuffer(download.data);
+  const proof = generateMerkleProof(chunkHashes, index);
+  const isValid = verifyMerkleProof(hash, proof.proof, tree.root);
+  
+  if (!isValid) {
+    console.log(`   ✗ Chunk ${index} from ${download.peer}: INVALID`);
+    allValid = false;
+  } else {
+    console.log(`   ✓ Chunk ${index} from ${download.peer}: valid`);
+  }
+});
+
+console.log(`\n   Overall: ${allValid ? '✓ ALL CHUNKS VALID' : '✗ SOME CHUNKS INVALID'}`);
+
+// Simulate corruption
+console.log('\n6. Simulating chunk corruption...');
+const corruptedIndex = 2;
+const corruptedChunk = Buffer.alloc(chunks[corruptedIndex].length);
+corruptedChunk.fill(0xFF); // Fill with garbage
+
+console.log(`   Corrupting chunk ${corruptedIndex}...`);
+const corruptedHash = hashBuffer(corruptedChunk);
+const corruptedProof = generateMerkleProof(chunkHashes, corruptedIndex);
+const corruptedValid = verifyMerkleProof(corruptedHash, corruptedProof.proof, tree.root);
+
+console.log(`   Verification result: ${corruptedValid ? '✓ VALID' : '✗ INVALID (corruption detected!)'}`);
+
+// Show repair scenario
+if (!corruptedValid) {
+  console.log(`\n   🔧 Repair: Re-download chunk ${corruptedIndex} from peer`);
+  const repairedHash = hashBuffer(chunks[corruptedIndex]);
+  const repairedValid = verifyMerkleProof(repairedHash, corruptedProof.proof, tree.root);
+  console.log(`   Verification after repair: ${repairedValid ? '✓ VALID' : '✗ INVALID'}`);
+}
+
+// Performance stats
+console.log('\n7. Performance Statistics:');
+console.log(`   File size: ${fileSize.toLocaleString()} bytes`);
+console.log(`   Chunk size: ${(256 * 1024).toLocaleString()} bytes`);
+console.log(`   Number of chunks: ${chunks.length}`);
+console.log(`   Number of hashes: ${chunkHashes.length}`);
+console.log(`   Merkle tree depth: ${tree.levels.length}`);
+console.log(`   Merkle root: ${tree.root.substring(0, 32)}...`);
+
+// Calculate proof size
+const sampleProof = generateMerkleProof(chunkHashes, 0);
+const proofSize = sampleProof.proof.length * 64; // Each hash is 64 hex chars
+console.log(`   Proof size (bytes): ~${proofSize} (vs ${fileSize.toLocaleString()} for full file)`);
+console.log(`   Space savings: ${((1 - proofSize / fileSize) * 100).toFixed(4)}%`);
+
+console.log('\n=== Key Takeaways ===');
+console.log('✓ Large files are efficiently split into manageable chunks');
+console.log('✓ Each chunk can be verified independently using compact Merkle proofs');
+console.log('✓ Corruption is immediately detected without full file comparison');
+console.log('✓ Only corrupted chunks need re-downloading (not entire file)');
+console.log('✓ Proofs are logarithmically smaller than full file');
+console.log('✓ P2P downloads from multiple peers can be verified in real-time\n');

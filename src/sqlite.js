@@ -1,0 +1,11 @@
+let Database
+
+if (typeof Bun !== "undefined") {
+  // Running in Bun
+  Database = await import { Database } from "bun:sqlite"
+} else {
+  // Assume Node or Node-compatible runtime
+  Database = await import Database from "better-sqlite3"
+}
+
+export default Database
