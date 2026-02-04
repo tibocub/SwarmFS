@@ -319,4 +319,146 @@ export class SwarmFS {
       this.db.close();
     }
   }
+
+  // ============================================================================
+  // TOPIC MANAGEMENT (Phase 4)
+  // ============================================================================
+
+  /**
+   * Create a new topic
+   */
+  async createTopic(name, autoJoin = true) {
+    const crypto = await import('crypto');
+    
+    // Check if topic already exists
+    const existing = this.db.getTopic(name);
+    if (existing) {
+      throw new Error(`Topic "${name}" already exists`);
+    }
+
+    // Generate topic key from name (deterministic)
+    const topicKey = crypto.createHash('sha256')
+      .update(name)
+      .digest('hex');
+
+    // Add to database
+    const topicId = this.db.addTopic(name, topicKey, autoJoin);
+
+    return {
+      id: topicId,
+      name,
+      topicKey,
+      autoJoin
+    };
+  }
+
+  /**
+   * List all topics
+   */
+  async listTopics() {
+    return this.db.getAllTopics();
+  }
+
+  /**
+   * Get topic info with shares
+   */
+  async getTopicInfo(name) {
+    const topic = this.db.getTopic(name);
+    if (!topic) {
+      return null;
+    }
+
+    const shares = this.db.getTopicShares(topic.id);
+
+    return {
+      ...topic,
+      shares
+    };
+  }
+
+  /**
+   * Delete a topic
+   */
+  async deleteTopic(name) {
+    return this.db.deleteTopic(name);
+  }
+
+  /**
+   * Share a path in a topic
+   */
+  async sharePath(topicName, sharePath) {
+    const absolutePath = path.resolve(sharePath);
+
+    // Check if topic exists
+    const topic = this.db.getTopic(topicName);
+    if (!topic) {
+      throw new Error(`Topic "${topicName}" not found`);
+    }
+
+    // Check if path is tracked
+    const file = this.db.getFile(absolutePath);
+    const directory = this.db.getDirectory(absolutePath);
+
+    if (!file && !directory) {
+      throw new Error(`Path not tracked: ${absolutePath}\nUse "swarmfs add ${sharePath}" first`);
+    }
+
+    // Determine type and merkle root
+    const shareType = file ? 'file' : 'directory';
+    const merkleRoot = file ? file.merkle_root : directory.merkle_root;
+
+    // Add share
+    this.db.addTopicShare(topic.id, shareType, absolutePath, merkleRoot);
+
+    return {
+      path: absolutePath,
+      type: shareType,
+      merkleRoot
+    };
+  }
+
+  /**
+   * Stop sharing a path in a topic
+   */
+  async unsharePath(topicName, sharePath) {
+    const absolutePath = path.resolve(sharePath);
+
+    // Check if topic exists
+    const topic = this.db.getTopic(topicName);
+    if (!topic) {
+      throw new Error(`Topic "${topicName}" not found`);
+    }
+
+    this.db.removeTopicShare(topic.id, absolutePath);
+  }
+
+  /**
+   * Join a topic (network operation - to be implemented)
+   */
+  async joinTopic(name) {
+    const topic = this.db.getTopic(name);
+    if (!topic) {
+      throw new Error(`Topic "${name}" not found. Create it first with: swarmfs topic create ${name}`);
+    }
+
+    // Update join time
+    this.db.updateTopicJoinTime(topic.id);
+
+    // TODO: Actually join the network (Phase 4.2)
+    console.log(`[TODO] Join network for topic: ${name}`);
+    console.log(`[TODO] Topic key: ${topic.topic_key}`);
+  }
+
+  /**
+   * Leave a topic (network operation - to be implemented)
+   */
+  async leaveTopic(name) {
+    const topic = this.db.getTopic(name);
+    if (!topic) {
+      throw new Error(`Topic "${name}" not found`);
+    }
+
+    // TODO: Actually leave the network (Phase 4.2)
+    console.log(`[TODO] Leave network for topic: ${name}`);
+  }
 }
