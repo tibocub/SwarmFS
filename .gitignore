@@ -1,3 +1,6 @@
+# SwarmFS data dir
+swarmfs-data
+
 # dependencies (bun install)
 node_modules
 
