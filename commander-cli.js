@@ -11,6 +11,7 @@ import fs from 'fs';
 import { SwarmFS } from './src/swarmfs.js';
 import { getDataDir } from './src/config.js';
 
+
 const program = new Command();
 
 // Get data directory from config
@@ -21,7 +22,7 @@ const swarmfs = new SwarmFS(DATA_DIR);
 if (!swarmfs.isInitialized()) {
   console.log('Initializing SwarmFS...');
   swarmfs.init();
-  console.log(`✓ Initialized at ${DATA_DIR}\n`);
+  console.log(`Initialized at ${DATA_DIR}\n`);
 }
 
 // Utility functions
@@ -37,6 +38,7 @@ function formatDate(timestamp) {
   return new Date(timestamp).toLocaleString();
 }
 
+
 // ============================================================================
 // PROGRAM SETUP
 // ============================================================================
@@ -45,6 +47,8 @@ program
   .name('swarmfs')
   .description('P2P file sharing with content-addressed storage')
   .version('0.4.0');
+
+
 
 // ============================================================================
 // FILE COMMANDS
@@ -71,7 +75,7 @@ program
         console.log(`Adding directory: ${absolutePath}\n`);
         const result = await swarmfs.addDirectory(absolutePath);
         
-        console.log('\n✓ Directory added successfully');
+        console.log('\nDirectory added successfully');
         console.log(`  Path: ${result.path}`);
         console.log(`  Files: ${result.filesAdded}/${result.totalFiles}`);
         console.log(`  Directories: ${result.directories}`);
@@ -81,7 +85,7 @@ program
         console.log(`Adding file: ${absolutePath}`);
         const result = await swarmfs.addFile(absolutePath);
         
-        console.log('✓ File added successfully');
+        console.log(' File added successfully');
         console.log(`  Path: ${result.path}`);
         console.log(`  Size: ${formatBytes(result.size)}`);
         console.log(`  Chunks: ${result.chunks}`);
@@ -91,12 +95,13 @@ program
         process.exit(1);
       }
     } catch (error) {
-      console.error('✗ Error:', error.message);
+      console.error('Error:', error.message);
       process.exit(1);
     } finally {
       swarmfs.close();
     }
   });
+
 
 program
   .command('status')
@@ -128,6 +133,7 @@ program
     }
   });
 
+
 program
   .command('verify <path>')
   .description('Verify file or directory integrity')
@@ -139,11 +145,11 @@ program
       const result = await swarmfs.verifyFile(filePath);
 
       if (result.valid) {
-        console.log('✓ File is valid');
+        console.log('File is valid');
         console.log(`  Chunks verified: ${result.chunks}`);
         console.log(`  Merkle Root: ${result.merkleRoot}`);
       } else {
-        console.log('✗ File verification failed');
+        console.log('File verification failed');
         console.log(`  Error: ${result.error}`);
         
         if (result.corruptedChunks) {
@@ -154,12 +160,13 @@ program
         }
       }
     } catch (error) {
-      console.error('✗ Error:', error.message);
+      console.error('Error:', error.message);
       process.exit(1);
     } finally {
       swarmfs.close();
     }
   });
+
 
 program
   .command('info <path>')
@@ -196,6 +203,7 @@ program
     }
   });
 
+
 program
   .command('stats')
   .description('Show storage statistics')
@@ -221,6 +229,29 @@ program
     }
   });
 
+
+program
+  .command('network')
+  .description('Show network status')
+  .action(async () => {
+    swarmfs.open();
+    
+    if (!swarmfs.network) {
+      console.log('Network not active. Join a topic first.');
+      swarmfs.close();
+      return;
+    }
+    
+    const stats = swarmfs.network.getStats();
+    console.log('\nNetwork Status:');
+    console.log(`  Active Topics: ${stats.topics}`);
+    console.log(`  Connected Peers: ${stats.connections}`);
+    console.log(`  Topics: ${stats.activeTopics.join(', ')}`);
+    
+    swarmfs.close();
+  });
+
+
 // ============================================================================
 // TOPIC COMMANDS (P2P Networking)
 // ============================================================================
@@ -240,7 +271,7 @@ topicCmd
       const autoJoin = options.autoJoin !== false;
       const result = await swarmfs.createTopic(name, autoJoin);
       
-      console.log('✓ Topic created');
+      console.log('Topic created');
       console.log(`  Name: ${result.name}`);
       console.log(`  Topic Key: ${result.topicKey}`);
       console.log(`  Auto-join: ${result.autoJoin ? 'yes' : 'no'}`);
@@ -260,7 +291,7 @@ topicCmd
 
     try {
       const topics = await swarmfs.listTopics();
-      
+
       if (topics.length === 0) {
         console.log('No topics created yet.');
         console.log('Use "swarmfs topic create <name>" to create a topic.');
@@ -268,7 +299,7 @@ topicCmd
       }
 
       console.log(`\nTopics (${topics.length}):\n`);
-      
+
       for (const topic of topics) {
         console.log(`  ${topic.name}`);
         console.log(`    Topic Key: ${topic.topic_key.substring(0, 16)}...`);
@@ -284,6 +315,7 @@ topicCmd
     }
   });
 
+
 topicCmd
   .command('join <name>')
   .description('Join a topic and start networking')
@@ -292,16 +324,25 @@ topicCmd
 
     try {
       await swarmfs.joinTopic(name);
-      console.log(`✓ Joined topic: ${name}`);
-      console.log('  Discovering peers...');
+      console.log(`Joined topic: ${name}`);
+      console.log('Discovering peers... Press Ctrl+C to stop.\n');
+
+      // Keep process alive
+      process.stdin.resume();
+      process.on('SIGINT', async () =>  {
+        console.log('\n\nShutting down...');
+        swarmfs.close();
+        process.exit(0);
+      })
+
     } catch (error) {
-      console.error('✗ Error:', error.message);
+      console.error('Error:', error.message);
+      swarmfs.close();
       process.exit(1);
-    } finally {
-      // Note: Don't close swarmfs here - network stays active
-      console.log('\nPress Ctrl+C to stop');
+
     }
   });
+
 
 topicCmd
   .command('leave <name>')
@@ -311,14 +352,15 @@ topicCmd
 
     try {
       await swarmfs.leaveTopic(name);
-      console.log(`✓ Left topic: ${name}`);
+      console.log(`Left topic: ${name}`);
     } catch (error) {
-      console.error('✗ Error:', error.message);
+      console.error('Error:', error.message);
       process.exit(1);
     } finally {
       swarmfs.close();
     }
   });
+
 
 topicCmd
   .command('share <topic> <path>')
@@ -329,7 +371,7 @@ topicCmd
     try {
       const result = await swarmfs.sharePath(topicName, sharePath);
       
-      console.log('✓ Shared successfully');
+      console.log('Shared successfully');
       console.log(`  Topic: ${topicName}`);
       console.log(`  Path: ${result.path}`);
       console.log(`  Type: ${result.type}`);
@@ -342,6 +384,7 @@ topicCmd
     }
   });
 
+
 topicCmd
   .command('unshare <topic> <path>')
   .description('Stop sharing a file or directory in a topic')
@@ -350,14 +393,15 @@ topicCmd
 
     try {
       await swarmfs.unsharePath(topicName, sharePath);
-      console.log(`✓ Stopped sharing ${sharePath} in ${topicName}`);
+      console.log(`Stopped sharing ${sharePath} in ${topicName}`);
     } catch (error) {
-      console.error('✗ Error:', error.message);
+      console.error('Error:', error.message);
       process.exit(1);
     } finally {
       swarmfs.close();
     }
   });
+
 
 topicCmd
   .command('info <name>')
@@ -392,8 +436,10 @@ topicCmd
     }
   });
 
+
 // ============================================================================
 // PARSE AND RUN
 // ============================================================================
 
 program.parse();
+

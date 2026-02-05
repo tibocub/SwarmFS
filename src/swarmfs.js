@@ -10,6 +10,7 @@ import { ChunkStorage } from './storage.js';
 import { chunkBuffer, DEFAULT_CHUNK_SIZE } from './chunk.js';
 import { hashBuffer } from './hash.js';
 import { getMerkleRoot } from './merkle.js';
+import { SwarmNetwork } from './network.js';
 
 export class SwarmFS {
   constructor(dataDir) {
@@ -19,11 +20,10 @@ export class SwarmFS {
     
     this.db = null;
     this.storage = null;
+    this.network = null;
   }
 
-  /**
-   * Initialize SwarmFS (create data directory, database, etc.)
-   */
+
   init() {
     // Create data directory
     if (!fs.existsSync(this.dataDir)) {
@@ -43,9 +43,7 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * Open an existing SwarmFS instance
-   */
+
   open() {
     if (!fs.existsSync(this.dataDir)) {
       throw new Error(`SwarmFS not initialized at ${this.dataDir}. Run 'swarmfs init' first.`);
@@ -55,17 +53,12 @@ export class SwarmFS {
     this.storage = new ChunkStorage(this.chunksDir);
   }
 
-  /**
-   * Check if SwarmFS is initialized
-   */
+
   isInitialized() {
     return fs.existsSync(this.dataDir) && fs.existsSync(this.dbPath);
   }
 
-  /**
-   * Add a file to SwarmFS
-   * Also used internally by addDirectory
-   */
+
   async addFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
     // Resolve to absolute path
     const absolutePath = path.resolve(filePath);
@@ -128,9 +121,7 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * Add a directory to SwarmFS recursively
-   */
+
   async addDirectory(dirPath, chunkSize = DEFAULT_CHUNK_SIZE) {
     const absolutePath = path.resolve(dirPath);
 
@@ -187,9 +178,7 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * Helper to format bytes
-   */
+
   _formatBytes(bytes) {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -198,9 +187,7 @@ export class SwarmFS {
     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
   }
 
-  /**
-   * Get file information
-   */
+
   getFileInfo(filePath) {
     const absolutePath = path.resolve(filePath);
     const file = this.db.getFile(absolutePath);
@@ -217,16 +204,12 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * List all tracked files
-   */
+
   listFiles() {
     return this.db.getAllFiles();
   }
 
-  /**
-   * Verify a file's integrity
-   */
+
   async verifyFile(filePath) {
     const absolutePath = path.resolve(filePath);
     const fileInfo = this.getFileInfo(absolutePath);
@@ -287,17 +270,13 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * Remove a file from tracking
-   */
+
   removeFile(filePath) {
     const absolutePath = path.resolve(filePath);
     return this.db.removeFile(absolutePath);
   }
 
-  /**
-   * Get statistics
-   */
+
   getStats() {
     const dbStats = this.db.getStats();
     const storageStats = this.storage.getStats();
@@ -311,37 +290,34 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * Close SwarmFS
-   */
+
   close() {
+    if (this.network) {
+      this.network.close();
+    }
+
     if (this.db) {
       this.db.close();
     }
   }
 
+
   // ============================================================================
   // TOPIC MANAGEMENT (Phase 4)
   // ============================================================================
 
-  /**
-   * Create a new topic
-   */
   async createTopic(name, autoJoin = true) {
     const crypto = await import('crypto');
     
-    // Check if topic already exists
     const existing = this.db.getTopic(name);
     if (existing) {
       throw new Error(`Topic "${name}" already exists`);
     }
 
-    // Generate topic key from name (deterministic)
     const topicKey = crypto.createHash('sha256')
       .update(name)
       .digest('hex');
 
-    // Add to database
     const topicId = this.db.addTopic(name, topicKey, autoJoin);
 
     return {
@@ -352,16 +328,12 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * List all topics
-   */
+
   async listTopics() {
     return this.db.getAllTopics();
   }
 
-  /**
-   * Get topic info with shares
-   */
+
   async getTopicInfo(name) {
     const topic = this.db.getTopic(name);
     if (!topic) {
@@ -376,16 +348,12 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * Delete a topic
-   */
+
   async deleteTopic(name) {
     return this.db.deleteTopic(name);
   }
 
-  /**
-   * Share a path in a topic
-   */
+
   async sharePath(topicName, sharePath) {
     const absolutePath = path.resolve(sharePath);
 
@@ -407,7 +375,6 @@ export class SwarmFS {
     const shareType = file ? 'file' : 'directory';
     const merkleRoot = file ? file.merkle_root : directory.merkle_root;
 
-    // Add share
     this.db.addTopicShare(topic.id, shareType, absolutePath, merkleRoot);
 
     return {
@@ -417,14 +384,11 @@ export class SwarmFS {
     };
   }
 
-  /**
-   * Stop sharing a path in a topic
-   */
+
   async unsharePath(topicName, sharePath) {
     const absolutePath = path.resolve(sharePath);
-
-    // Check if topic exists
     const topic = this.db.getTopic(topicName);
+
     if (!topic) {
       throw new Error(`Topic "${topicName}" not found`);
     }
@@ -432,33 +396,37 @@ export class SwarmFS {
     this.db.removeTopicShare(topic.id, absolutePath);
   }
 
-  /**
-   * Join a topic (network operation - to be implemented)
-   */
+
   async joinTopic(name) {
     const topic = this.db.getTopic(name);
+
     if (!topic) {
       throw new Error(`Topic "${name}" not found. Create it first with: swarmfs topic create ${name}`);
     }
 
-    // Update join time
-    this.db.updateTopicJoinTime(topic.id);
+    if (!this.network) {
+      const config = await import('./config.js');
+      this.network = new SwarmNetwork(config.loadConfig().network || {});
+    }
 
-    // TODO: Actually join the network (Phase 4.2)
-    console.log(`[TODO] Join network for topic: ${name}`);
-    console.log(`[TODO] Topic key: ${topic.topic_key}`);
+    const topicKey = Buffer.from(topic.topic_key, 'hex');
+    await this.network.joinTopic(name, topicKey);
+    this.db.updateTopicJoinTime(topic.id);
   }
 
-  /**
-   * Leave a topic (network operation - to be implemented)
-   */
+
   async leaveTopic(name) {
     const topic = this.db.getTopic(name);
     if (!topic) {
       throw new Error(`Topic "${name}" not found`);
     }
 
-    // TODO: Actually leave the network (Phase 4.2)
-    console.log(`[TODO] Leave network for topic: ${name}`);
+    if (!this.network) {
+      console.log('Network not running');
+      return;
+    }
+
+    const topicKey = Buffer.from(topic.topic_key, 'hex');
+    await this.network.leaveTopic(name, topicKey);
   }
 }
