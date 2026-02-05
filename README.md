@@ -18,12 +18,25 @@ to share files with) or to make private groups, by using a
 randomly generated 32bit SHA256 hass to give to your friends
 for them to join your private topic.
 
-Swarm
+#### Swarm
 A swarm is the group of peers connected to a same topic
 
-In the
+If a topic isn't specified for a request, the request will be sent
+to all connected topics.
 
-You can join or leave
+Initially, joining topics will only help you find peers to make
+requests to. And since SwarmFS is content-addressed, it means
+that you need to know the hash of a file in order to request it.
+It might sound ironic and frustrating if you're new to content-
+addressing, but it's in fact really cool since it allow us to make
+data highly available over the network and content discovery is
+still possible by letting users provide a list of public files/dirs
+they hosts. Users can either share a file publicly (over every topic
+they connect to), or privately (only over whitelisted topics). And 
+index of a topic is not an actual file or document, a topic index
+is the centralized representation of all it's connected users public
+files, and the main index is a local copy of all public files found
+when connecting to a peer the user can use to make quick searchs.
 
 
 ### What SwarmFS steals to others:
