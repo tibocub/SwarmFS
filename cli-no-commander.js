@@ -1,0 +1,283 @@
+#!/usr/bin/env node
+
+/**
+ * SwarmFS CLI
+ * Simple command-line interface
+ */
+
+import path from 'path';
+import fs from 'fs';
+import { SwarmFS } from './src/swarmfs.js';
+import { getDataDir } from './src/config.js';
+
+// Get data directory from config
+const DATA_DIR = getDataDir();
+
+const swarmfs = new SwarmFS(DATA_DIR);
+
+// Auto-initialize if needed
+if (!swarmfs.isInitialized()) {
+  console.log('Initializing SwarmFS...');
+  swarmfs.init();
+  console.log(`✓ Initialized at ${DATA_DIR}\n`);
+}
+
+function showUsage() {
+  console.log(`
+SwarmFS - P2P File Sharing with Content-Addressed Storage
+
+Usage:
+  swarmfs <command> [arguments]
+
+Commands:
+  add [path]              Add a file or directory (default: current directory)
+  status                  Show all tracked files and directories
+  verify <path>           Verify file or directory integrity
+  info <path>             Show detailed information
+  stats                   Show storage statistics
+  help                    Show this help message
+
+Examples:
+  swarmfs add                    # Add current directory
+  swarmfs add .                  # Add current directory
+  swarmfs add ./myfile.txt       # Add a single file
+  swarmfs add ./myproject        # Add entire directory
+  swarmfs status                 # List everything tracked
+  swarmfs verify ./myfile.txt    # Verify a file
+  swarmfs verify ./myproject     # Verify directory
+
+Note: SwarmFS tracks files from anywhere on your system.
+      The database is centralized in: ${DATA_DIR}
+`);
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+function formatDate(timestamp) {
+  return new Date(timestamp).toLocaleString();
+}
+
+// Command handlers
+async function cmdAdd(filePath) {
+  // Default to current directory if no path specified
+  const targetPath = filePath || '.';
+  const absolutePath = path.resolve(targetPath);
+
+  if (!fs.existsSync(absolutePath)) {
+    console.error(`Error: Path not found: ${absolutePath}`);
+    process.exit(1);
+  }
+
+  swarmfs.open();
+
+  try {
+    const stats = fs.statSync(absolutePath);
+
+    if (stats.isDirectory()) {
+      // Add directory
+      console.log(`Adding directory: ${absolutePath}\n`);
+      const result = await swarmfs.addDirectory(absolutePath);
+      
+      console.log('\n✓ Directory added successfully');
+      console.log(`  Path: ${result.path}`);
+      console.log(`  Files: ${result.filesAdded}/${result.totalFiles}`);
+      console.log(`  Directories: ${result.directories}`);
+      console.log(`  Total Size: ${formatBytes(result.totalSize)}`);
+      console.log(`  Merkle Root: ${result.merkleRoot}`);
+    } else if (stats.isFile()) {
+      // Add single file
+      console.log(`Adding file: ${absolutePath}`);
+      const result = await swarmfs.addFile(absolutePath);
+      
+      console.log('✓ File added successfully');
+      console.log(`  Path: ${result.path}`);
+      console.log(`  Size: ${formatBytes(result.size)}`);
+      console.log(`  Chunks: ${result.chunks}`);
+      console.log(`  Merkle Root: ${result.merkleRoot}`);
+    } else {
+      console.error('Error: Not a file or directory');
+      process.exit(1);
+    }
+  } catch (error) {
+    console.error('✗ Error adding:', error.message);
+    process.exit(1);
+  } finally {
+    swarmfs.close();
+  }
+}
+
+async function cmdStatus() {
+  swarmfs.open();
+
+  try {
+    const files = swarmfs.listFiles();
+    
+    if (files.length === 0) {
+      console.log('No files tracked yet.');
+      console.log('Use "swarmfs add <file>" to add files.');
+      return;
+    }
+
+    console.log(`\nTracked Files (${files.length}):\n`);
+    
+    for (const file of files) {
+      console.log(`  ${file.path}`);
+      console.log(`    Size: ${formatBytes(file.size)}`);
+      console.log(`    Chunks: ${file.chunk_count}`);
+      console.log(`    Added: ${formatDate(file.added_at)}`);
+      console.log(`    Merkle Root: ${file.merkle_root.substring(0, 16)}...`);
+      console.log('');
+    }
+  } finally {
+    swarmfs.close();
+  }
+}
+
+async function cmdVerify(filePath) {
+  if (!filePath) {
+    console.error('Error: No file specified');
+    console.log('Usage: swarmfs verify <file>');
+    process.exit(1);
+  }
+
+  swarmfs.open();
+
+  try {
+    console.log(`Verifying: ${filePath}`);
+    const result = await swarmfs.verifyFile(filePath);
+
+    if (result.valid) {
+      console.log('✓ File is valid');
+      console.log(`  Chunks verified: ${result.chunks}`);
+      console.log(`  Merkle Root: ${result.merkleRoot}`);
+    } else {
+      console.log('✗ File verification failed');
+      console.log(`  Error: ${result.error}`);
+      
+      if (result.corruptedChunks) {
+        console.log(`  Corrupted chunks: ${result.corruptedChunks.length}`);
+        result.corruptedChunks.forEach(chunk => {
+          console.log(`    Chunk ${chunk.index}: hash mismatch`);
+        });
+      }
+    }
+  } catch (error) {
+    console.error('✗ Error verifying file:', error.message);
+    process.exit(1);
+  } finally {
+    swarmfs.close();
+  }
+}
+
+async function cmdInfo(filePath) {
+  if (!filePath) {
+    console.error('Error: No file specified');
+    console.log('Usage: swarmfs info <file>');
+    process.exit(1);
+  }
+
+  swarmfs.open();
+
+  try {
+    const info = swarmfs.getFileInfo(filePath);
+
+    if (!info) {
+      console.log(`File not tracked: ${filePath}`);
+      console.log('Use "swarmfs add <file>" to add it.');
+      return;
+    }
+
+    console.log(`\nFile Information:`);
+    console.log(`  Path: ${info.path}`);
+    console.log(`  Size: ${formatBytes(info.size)}`);
+    console.log(`  Chunk Size: ${formatBytes(info.chunk_size)}`);
+    console.log(`  Chunk Count: ${info.chunk_count}`);
+    console.log(`  Merkle Root: ${info.merkle_root}`);
+    console.log(`  Added: ${formatDate(info.added_at)}`);
+    console.log(`  File Modified: ${formatDate(info.file_modified_at)}`);
+    console.log(`\n  Chunks:`);
+    
+    if (info.chunks && info.chunks.length > 0) {
+      info.chunks.forEach((chunk, i) => {
+        console.log(`    ${i}: ${chunk.chunk_hash.substring(0, 16)}... (${formatBytes(chunk.size)})`);
+      });
+    } else {
+      console.log(`    (No chunk information available)`);
+    }
+  } finally {
+    swarmfs.close();
+  }
+}
+
+async function cmdStats() {
+  swarmfs.open();
+
+  try {
+    const stats = swarmfs.getStats();
+
+    console.log(`\nSwarmFS Statistics:`);
+    console.log(`  Data Directory: ${stats.dataDir}`);
+    console.log(`  Files Tracked: ${stats.files}`);
+    console.log(`  Total File Size: ${formatBytes(stats.totalFileSize)}`);
+    console.log(`  Unique Chunks: ${stats.chunks}`);
+    console.log(`  Storage Used: ${formatBytes(stats.storageSize)}`);
+    
+    if (stats.totalFileSize > 0) {
+      const ratio = (stats.storageSize / stats.totalFileSize * 100).toFixed(2);
+      console.log(`  Storage Ratio: ${ratio}%`);
+    }
+  } finally {
+    swarmfs.close();
+  }
+}
+
+// Main CLI router
+async function main() {
+  const args = process.argv.slice(2);
+  const command = args[0];
+
+  if (!command || command === 'help') {
+    showUsage();
+    return;
+  }
+
+  try {
+    switch (command) {
+      case 'add':
+        await cmdAdd(args[1]);
+        break;
+      
+      case 'status':
+        await cmdStatus();
+        break;
+      
+      case 'verify':
+        await cmdVerify(args[1]);
+        break;
+      
+      case 'info':
+        await cmdInfo(args[1]);
+        break;
+      
+      case 'stats':
+        await cmdStats();
+        break;
+      
+      default:
+        console.error(`Unknown command: ${command}`);
+        showUsage();
+        process.exit(1);
+    }
+  } catch (error) {
+    console.error('Error:', error.message);
+    process.exit(1);
+  }
+}
+
+main();

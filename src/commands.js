@@ -1,0 +1,389 @@
+/**
+ * Command implementations for SwarmFS
+ * These can be called from CLI or REPL
+ */
+
+import fs from 'fs';
+import path from 'path';
+
+
+// Utility functions
+export function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+
+export function formatDate(timestamp) {
+  return new Date(timestamp).toLocaleString();
+}
+
+
+// ============================================================================
+// FILE COMMANDS
+// ============================================================================
+
+
+export async function addCommand(swarmfs, targetPath) {
+  const filePath = targetPath || '.';
+  const absolutePath = path.resolve(filePath);
+
+  if (!fs.existsSync(absolutePath)) {
+    throw new Error(`Path not found: ${absolutePath}`);
+  }
+
+  swarmfs.open();
+
+  const stats = fs.statSync(absolutePath);
+
+  if (stats.isDirectory()) {
+    console.log(`Adding directory: ${absolutePath}\n`);
+    const result = await swarmfs.addDirectory(absolutePath);
+    
+    console.log('\n✓ Directory added successfully');
+    console.log(`  Path: ${result.path}`);
+    console.log(`  Files: ${result.filesAdded}/${result.totalFiles}`);
+    console.log(`  Directories: ${result.directories}`);
+    console.log(`  Total Size: ${formatBytes(result.totalSize)}`);
+    console.log(`  Merkle Root: ${result.merkleRoot}`);
+    
+    return result;
+  } else if (stats.isFile()) {
+    console.log(`Adding file: ${absolutePath}`);
+    const result = await swarmfs.addFile(absolutePath);
+    
+    console.log('✓ File added successfully');
+    console.log(`  Path: ${result.path}`);
+    console.log(`  Size: ${formatBytes(result.size)}`);
+    console.log(`  Chunks: ${result.chunks}`);
+    console.log(`  Merkle Root: ${result.merkleRoot}`);
+    
+    return result;
+  } else {
+    throw new Error('Not a file or directory');
+  }
+}
+
+
+export async function statusCommand(swarmfs) {
+  swarmfs.open();
+
+  const files = swarmfs.listFiles();
+  
+  if (files.length === 0) {
+    console.log('No files tracked yet.');
+    console.log('Use "add <path>" to add files.');
+    return;
+  }
+
+  console.log(`\nTracked Files (${files.length}):\n`);
+  
+  for (const file of files) {
+    console.log(`  ${file.path}`);
+    console.log(`    Size: ${formatBytes(file.size)}`);
+    console.log(`    Chunks: ${file.chunk_count}`);
+    console.log(`    Added: ${formatDate(file.added_at)}`);
+    console.log(`    Merkle Root: ${file.merkle_root.substring(0, 16)}...`);
+    console.log('');
+  }
+}
+
+
+export async function verifyCommand(swarmfs, filePath) {
+  swarmfs.open();
+
+  console.log(`Verifying: ${filePath}`);
+  const result = await swarmfs.verifyFile(filePath);
+
+  if (result.valid) {
+    console.log('✓ File is valid');
+    console.log(`  Chunks verified: ${result.chunks}`);
+    console.log(`  Merkle Root: ${result.merkleRoot}`);
+  } else {
+    console.log('✗ File verification failed');
+    console.log(`  Error: ${result.error}`);
+    
+    if (result.corruptedChunks) {
+      console.log(`  Corrupted chunks: ${result.corruptedChunks.length}`);
+      result.corruptedChunks.forEach(chunk => {
+        console.log(`    Chunk ${chunk.index}: hash mismatch`);
+      });
+    }
+  }
+  
+  return result;
+}
+
+
+export async function infoCommand(swarmfs, filePath) {
+  swarmfs.open();
+
+  const info = swarmfs.getFileInfo(filePath);
+
+  if (!info) {
+    console.log(`File not tracked: ${filePath}`);
+    console.log('Use "add <path>" to add it.');
+    return null;
+  }
+
+  console.log(`\nFile Information:`);
+  console.log(`  Path: ${info.path}`);
+  console.log(`  Size: ${formatBytes(info.size)}`);
+  console.log(`  Chunk Size: ${formatBytes(info.chunk_size)}`);
+  console.log(`  Chunk Count: ${info.chunk_count}`);
+  console.log(`  Merkle Root: ${info.merkle_root}`);
+  console.log(`  Added: ${formatDate(info.added_at)}`);
+  console.log(`  File Modified: ${formatDate(info.file_modified_at)}`);
+  
+  if (info.chunks && info.chunks.length > 0) {
+    console.log(`\n  Chunks:`);
+    info.chunks.forEach((chunk, i) => {
+      console.log(`    ${i}: ${chunk.chunk_hash.substring(0, 16)}... (${formatBytes(chunk.size)})`);
+    });
+  }
+  
+  return info;
+}
+
+
+export async function statsCommand(swarmfs) {
+  swarmfs.open();
+
+  const stats = swarmfs.getStats();
+
+  console.log(`\nSwarmFS Statistics:`);
+  console.log(`  Data Directory: ${stats.dataDir}`);
+  console.log(`  Files Tracked: ${stats.files}`);
+  console.log(`  Total File Size: ${formatBytes(stats.totalFileSize)}`);
+  console.log(`  Unique Chunks: ${stats.chunks}`);
+  console.log(`  Storage Used: ${formatBytes(stats.storageSize)}`);
+  
+  if (stats.totalFileSize > 0) {
+    const ratio = (stats.storageSize / stats.totalFileSize * 100).toFixed(2);
+    console.log(`  Storage Ratio: ${ratio}%`);
+  }
+  
+  return stats;
+}
+
+
+// ============================================================================
+// TOPIC COMMANDS
+// ============================================================================
+
+
+export async function topicCreateCommand(swarmfs, name, options = {}) {
+  swarmfs.open();
+
+  const autoJoin = options.autoJoin !== false;
+  const result = await swarmfs.createTopic(name, autoJoin);
+  
+  console.log('✓ Topic created');
+  console.log(`  Name: ${result.name}`);
+  console.log(`  Topic Key: ${result.topicKey}`);
+  console.log(`  Auto-join: ${result.autoJoin ? 'yes' : 'no'}`);
+  
+  return result;
+}
+
+
+export async function topicListCommand(swarmfs) {
+  swarmfs.open();
+
+  const topics = await swarmfs.listTopics();
+  
+  if (topics.length === 0) {
+    console.log('No topics created yet.');
+    console.log('Use "topic create <name>" to create a topic.');
+    return [];
+  }
+
+  console.log(`\nTopics (${topics.length}):\n`);
+  
+  for (const topic of topics) {
+    console.log(`  ${topic.name}`);
+    console.log(`    Topic Key: ${topic.topic_key.substring(0, 16)}...`);
+    console.log(`    Auto-join: ${topic.auto_join ? 'yes' : 'no'}`);
+    console.log(`    Created: ${formatDate(topic.created_at)}`);
+    if (topic.last_joined_at) {
+      console.log(`    Last Joined: ${formatDate(topic.last_joined_at)}`);
+    }
+    console.log('');
+  }
+  
+  return topics;
+}
+
+
+export async function topicInfoCommand(swarmfs, name) {
+  swarmfs.open();
+
+  const info = await swarmfs.getTopicInfo(name);
+  
+  if (!info) {
+    console.log(`Topic not found: ${name}`);
+    return null;
+  }
+
+  console.log(`\nTopic: ${info.name}`);
+  console.log(`  Topic Key: ${info.topic_key}`);
+  console.log(`  Auto-join: ${info.auto_join ? 'yes' : 'no'}`);
+  console.log(`  Created: ${formatDate(info.created_at)}`);
+  
+  if (info.shares && info.shares.length > 0) {
+    console.log(`\n  Shared Items (${info.shares.length}):`);
+    for (const share of info.shares) {
+      console.log(`    ${share.share_path} (${share.share_type})`);
+      console.log(`      Merkle Root: ${share.merkle_root.substring(0, 16)}...`);
+    }
+  } else {
+    console.log('\n  No items shared in this topic yet.');
+  }
+  
+  return info;
+}
+
+
+export async function topicShareCommand(swarmfs, topicName, sharePath) {
+  swarmfs.open();
+
+  const result = await swarmfs.sharePath(topicName, sharePath);
+  
+  console.log('✓ Shared successfully');
+  console.log(`  Topic: ${topicName}`);
+  console.log(`  Path: ${result.path}`);
+  console.log(`  Type: ${result.type}`);
+  console.log(`  Merkle Root: ${result.merkleRoot}`);
+  
+  return result;
+}
+
+
+export async function topicUnshareCommand(swarmfs, topicName, sharePath) {
+  swarmfs.open();
+
+  await swarmfs.unsharePath(topicName, sharePath);
+  console.log(`✓ Stopped sharing ${sharePath} in ${topicName}`);
+}
+
+
+export async function topicJoinCommand(swarmfs, name, options = {}) {
+  swarmfs.open();
+
+  await swarmfs.joinTopic(name);
+  console.log(`✓ Joined topic: ${name}`);
+  console.log('  Discovering peers...');
+  
+  // Return network stats if available
+  if (swarmfs.network) {
+    return swarmfs.network.getStats();
+  }
+}
+
+
+export async function topicLeaveCommand(swarmfs, name) {
+  swarmfs.open();
+
+  await swarmfs.leaveTopic(name);
+  console.log(`✓ Left topic: ${name}`);
+}
+
+
+// ============================================================================
+// NETWORK COMMANDS
+// ============================================================================
+
+
+export async function requestCommand(swarmfs, topicName, chunkHash, options = {}) {
+  // Validate hash format
+  if (!/^[0-9a-f]{64}$/i.test(chunkHash)) {
+    throw new Error('Invalid chunk hash (must be 64 hex characters)');
+  }
+
+  swarmfs.open();
+
+  // Auto-join topic if not connected
+  if (!swarmfs.network || !swarmfs.protocol) {
+    console.log(`Joining topic "${topicName}"...`);
+    await swarmfs.joinTopic(topicName);
+    // Give it a moment to connect
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  console.log(`\nRequesting chunk from topic "${topicName}"...`);
+  console.log(`Chunk hash: ${chunkHash}\n`);
+
+  const requestId = await swarmfs.requestChunk(topicName, chunkHash);
+  console.log(`Request ID: ${requestId.substring(0, 16)}...`);
+  console.log('\nWaiting for offers...\n');
+
+  return requestId;
+}
+
+
+export async function networkCommand(swarmfs) {
+  swarmfs.open();
+  
+  if (!swarmfs.network) {
+    console.log('Network not active. Join a topic first.');
+    return null;
+  }
+  
+  const stats = swarmfs.network.getStats();
+  console.log('\nNetwork Status:');
+  console.log(`  Active Topics: ${stats.topics}`);
+  console.log(`  Connected Peers: ${stats.connections}`);
+  console.log(`  Topics: ${stats.activeTopics.join(', ') || 'none'}`);
+  
+  if (swarmfs.protocol) {
+    const protocolStats = swarmfs.protocol.getStats();
+    console.log(`\nProtocol Status:`);
+    console.log(`  Active Requests: ${protocolStats.activeRequests}`);
+    console.log(`  Active Downloads: ${protocolStats.activeDownloads}`);
+  }
+  
+  return stats;
+}
+
+
+// ============================================================================
+// COMMAND REGISTRY
+// ============================================================================
+
+
+export const commands = {
+  // File commands
+  add: addCommand,
+  status: statusCommand,
+  verify: verifyCommand,
+  info: infoCommand,
+  stats: statsCommand,
+  
+  // Topic commands (with namespace)
+  'topic.create': topicCreateCommand,
+  'topic.list': topicListCommand,
+  'topic.info': topicInfoCommand,
+  'topic.share': topicShareCommand,
+  'topic.unshare': topicUnshareCommand,
+  'topic.join': topicJoinCommand,
+  'topic.leave': topicLeaveCommand,
+  
+  // Network commands
+  request: requestCommand,
+  network: networkCommand
+};
+
+
+// Helper to get command by name (handles aliases)
+export function getCommand(name) {
+  return commands[name];
+}
+
+
+// Helper to list all commands
+export function listCommands() {
+  return Object.keys(commands);
+}

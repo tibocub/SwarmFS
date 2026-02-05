@@ -252,6 +252,44 @@ program
   });
 
 
+program
+  .command('request <topic> <chunkHash>')
+  .description('Request a chunk from a topic (for testing)')
+  .action(async (topicName, chunkHash) => {
+    swarmfs.open();
+
+    try {
+      // Validate hash format
+      if (!/^[0-9a-f]{64}$/i.test(chunkHash)) {
+        console.error('Error: Invalid chunk hash (must be 64 hex characters)');
+        process.exit(1);
+      }
+
+      console.log(`Requesting chunk from topic "${topicName}"...`);
+      console.log(`Chunk hash: ${chunkHash}\n`);
+
+      const requestId = await swarmfs.requestChunk(topicName, chunkHash);
+      console.log(`Request ID: ${requestId.substring(0, 16)}...`);
+      console.log('\nWaiting for offers...');
+      console.log('Press Ctrl+C to cancel\n');
+
+      // Keep process alive
+      process.stdin.resume();
+
+      process.on('SIGINT', () => {
+        console.log('\n\nCancelling request...');
+        swarmfs.close();
+        process.exit(0);
+      });
+
+    } catch (error) {
+      console.error('✗ Error:', error.message);
+      swarmfs.close();
+      process.exit(1);
+    }
+  });
+
+
 // ============================================================================
 // TOPIC COMMANDS (P2P Networking)
 // ============================================================================

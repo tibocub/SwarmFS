@@ -21,6 +21,7 @@ export class SwarmFS {
     this.db = null;
     this.storage = null;
     this.network = null;
+    this.protocol = null;
   }
 
 
@@ -291,11 +292,62 @@ export class SwarmFS {
   }
 
 
+  setupProtocolHandlers() {
+    // When we receive an offer, auto-accept the first one
+    this.protocol.on('chunk:offer', (info) => {
+      console.log(`\nReceived offer ${info.offerCount} for chunk ${info.chunkHash.substring(0, 16)}...`);
+
+      // Auto-accept first offer (TODO: make this smarter - pick fastest peer, etc.)
+      if (info.offerCount === 1) {
+        console.log(`   Auto-accepting from ${info.peerId.substring(0, 8)}...`);
+        this.protocol.acceptOffer(info.requestId, info.peerId);
+      }
+    });
+
+    // When chunk downloaded successfully
+    this.protocol.on('chunk:downloaded', (info) => {
+      console.log(`\nChunk downloaded successfully!`);
+      console.log(`   Hash: ${info.chunkHash.substring(0, 16)}...`);
+      console.log(`   Size: ${info.size} bytes`);
+      console.log(`   From: ${info.peerId.substring(0, 8)}...`);
+    });
+
+    // When request times out
+    this.protocol.on('chunk:timeout', (info) => {
+      console.log(`\nRequest timeout for chunk ${info.chunkHash.substring(0, 16)}...`);
+      console.log(`   No peers responded`);
+    });
+
+    // When error occurs
+    this.protocol.on('chunk:error', (info) => {
+      console.error(`\nChunk error: ${info.error}`);
+      console.error(`   Chunk: ${info.chunkHash?.substring(0, 16)}...`);
+    });
+  }
+
+
+  async requestChunk(topicName, chunkHash) {
+    const topic = this.db.getTopic(topicName);
+    if (!topic) {
+      throw new Error(`Topic "${topicName}" not found`);
+    }
+
+    if (!this.protocol) {
+      throw new Error('Not connected to network. Join a topic first.');
+    }
+
+    const topicKey = Buffer.from(topic.topic_key, 'hex');
+    return this.protocol.requestChunk(topicKey, chunkHash);
+  }
+
+
   close() {
     if (this.network) {
       this.network.close();
     }
-
+    if (this.protocol) {
+      this.protocol.close();
+    }
     if (this.db) {
       this.db.close();
     }
@@ -303,12 +355,12 @@ export class SwarmFS {
 
 
   // ============================================================================
-  // TOPIC MANAGEMENT (Phase 4)
+  // TOPIC MANAGEMENT
   // ============================================================================
 
   async createTopic(name, autoJoin = true) {
     const crypto = await import('crypto');
-    
+
     const existing = this.db.getTopic(name);
     if (existing) {
       throw new Error(`Topic "${name}" already exists`);
@@ -399,14 +451,21 @@ export class SwarmFS {
 
   async joinTopic(name) {
     const topic = this.db.getTopic(name);
-
     if (!topic) {
       throw new Error(`Topic "${name}" not found. Create it first with: swarmfs topic create ${name}`);
     }
 
     if (!this.network) {
-      const config = await import('./config.js');
-      this.network = new SwarmNetwork(config.loadConfig().network || {});
+      const { loadConfig } = await import('./config.js');
+      const { SwarmNetwork } = await import('./network.js');
+      this.network = new SwarmNetwork(loadConfig().network || {});
+    }
+
+    if (!this.protocol) {
+      const { Protocol } = await import('./protocol.js');
+      this.protocol = new Protocol(this.network, this.storage, this.db);
+
+      this.setupProtocolHandlers();
     }
 
     const topicKey = Buffer.from(topic.topic_key, 'hex');
