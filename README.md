@@ -1,6 +1,69 @@
 # SwarmFS - P2P File Sharing with Content-Addressed Storage
 
-SwarmFS is a P2P file-sharing system inspired by BitTorrent and IPFS, implementing content-addressed storage with Merkle trees for verification and efficient chunk-based transfers.
+BitTorrent's raw power, IPFS' content-addressability and Hyperswarm's
+simplicity and reliability.
+
+SwarmFS is a P2P file-sharing system inspired by BitTorrent and
+IPFS, implementing content-addressed storage with Merkle trees
+for verification and efficient chunk-based transfers.
+Content discovery also comes build-it
+
+## Understanding the design
+
+#### Topics
+A topic is a hash derived from a string provided by the user.
+It can be useful to make public groups (for example by looking
+for the "music" or "books" you can easily find a lot of peers
+to share files with) or to make private groups, by using a
+randomly generated 32bit SHA256 hass to give to your friends
+for them to join your private topic.
+
+Swarm
+A swarm is the group of peers connected to a same topic
+
+In the
+
+You can join or leave
+
+
+### What SwarmFS steals to others:
+BitTorrent
+- Read and write directly from/to files
+- The chunk system, to allow downloading a single file from multiple
+  peers at the same time or allow to seed chunks even while a file
+  is not entirely downloaded, also allow to redownload only the
+  corrupted part of a file instead of an entire file or resume an
+  interrupted download.
+
+IPFS
+- Content Addressing (Unlike IPFS, SwarmFS only implement content-
+addressing at the topic scope, which mean you will only send requests
+to users connected to the same topics as you).
+
+SoulSeek
+- The public content indexing. Once again this is topic-based, so
+  unlike SoulSeek, a SwarmFS user need to join a topics to access its
+  public index and request files to the topic users.
+
+
+Note: We can only get closer to BitTorrent's speed that IPFS' because
+we made the compromise of not going full global content-addressing
+like IPFS do. There is of course no geographical restriction and
+limiting requests to only some topics make inter-peer communications
+a lot faster.
+
+This means we can't implement IPFS global content-addressing by using
+topics as groups of interrest and communities or as private-use name-
+spaced pools of data on your private server. But as long as you have a
+rough idea of where to look, content-addressing will take care of the
+rest.
+
+### SwarmFS advantages over:
+BitTorrent:
+- No port or firewall configuration required
+- SwarmFS Don't need trackers, hosting a file is much simpler
+  than generating and hosting a torrent
+
 
 ## Project Status
 
