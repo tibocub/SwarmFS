@@ -2,31 +2,25 @@
 
 ## What We Built
 
-Phase 2 implemented the storage layer and CLI, bringing SwarmFS to life as a working file tracking and verification system.
+Phase 2 implemented the metadata layer and CLI, bringing SwarmFS to life as a working file tracking and verification system.
 
 ### Components Implemented
 
 1. **Database Layer** (`src/database.js`)
    - SQLite-based metadata storage
-   - Tables for chunks, files, file_chunks, directories
+   - Tables for files, file chunks, directories, topics
    - CRUD operations for all entities
    - Statistics and queries
    - File persistence (using mock implementation)
 
-2. **Chunk Storage** (`src/storage.js`)
-   - Content-addressable storage (CAS) on filesystem
-   - Git-like directory structure (first 2 chars = subdir)
-   - Store, load, delete operations
-   - Storage statistics
-
-3. **SwarmFS Core** (`src/swarmfs.js`)
+2. **SwarmFS Core** (`src/swarmfs.js`)
    - Main coordinator class
    - Initialize/open functionality
-   - Add files with automatic chunking and hashing
+   - Add files with automatic hashing (no chunk copies)
    - File verification with corruption detection
    - File tracking and metadata management
 
-4. **Command Line Interface** (`cli.js`)
+3. **Command Line Interface** (`cli.js`)
    - Simple switch-based CLI (no external dependencies)
    - 7 commands: init, add, status, verify, info, stats, help
    - User-friendly output with formatting
@@ -47,13 +41,13 @@ swarmfs help                # Show usage
 ### Test Results
 
 Comprehensive integration test passing:
-- ✓ Initialization working
-- ✓ File addition and tracking
-- ✓ Status display
-- ✓ Verification of valid files
-- ✓ Corruption detection
-- ✓ Statistics reporting
-- ✓ Chunk storage operational
+- Initialization working
+- File addition and tracking
+- Status display
+- Verification of valid files
+- Corruption detection
+- Statistics reporting
+- Direct file I/O operational
 
 ### Code Statistics
 
@@ -73,9 +67,6 @@ User
             ├─> Database (database.js)
             │    └─> Mock SQLite (lib/better-sqlite3.js)
             │
-            ├─> Storage (storage.js)
-            │    └─> Filesystem (swarmfs-data/chunks/)
-            │
             └─> Core Utils (chunk.js, hash.js, merkle.js)
 ```
 
@@ -83,33 +74,24 @@ User
 
 ```
 swarmfs-data/
-├── swarmfs.db              # SQLite database (JSON in mock)
-└── chunks/                 # Content-addressable storage
-    ├── ab/                 # First 2 chars of hash
-    │   └── cdef123...      # Rest of hash
-    ├── 12/
-    │   └── 3456abc...
-    └── ...
+└── swarmfs.db              # SQLite database (JSON in mock)
 ```
 
 ## Key Features Working
 
-### 1. Content-Addressed Storage
-Files are chunked, hashed, and stored in a CAS system. Identical chunks across files could be deduplicated (infrastructure ready).
-
-### 2. Merkle Tree Verification
+### 1. Merkle Tree Verification
 Each file has a Merkle root that allows efficient verification:
 - Verify entire file with single root hash comparison
 - Detect specific corrupted chunks
 - Future: verify chunks from peers
 
-### 3. File Tracking
+### 2. File Tracking
 Files tracked by absolute path:
 - Can track files anywhere on filesystem
 - Metadata stored centrally
 - Original files remain in place (no copying)
 
-### 4. Integrity Verification
+### 3. Integrity Verification
 Verify files without re-hashing from scratch:
 - Compare Merkle roots
 - Identify corrupted chunks
@@ -126,7 +108,6 @@ $ swarmfs init
 $ swarmfs add document.pdf
 ✓ File added successfully
   Size: 2.5 MB
-  Chunks: 10
   Merkle Root: abc123...
 
 # Check status
@@ -134,21 +115,20 @@ $ swarmfs status
 Tracked Files (1):
   /home/user/document.pdf
     Size: 2.5 MB
-    Chunks: 10
 
 # Verify integrity
 $ swarmfs verify document.pdf
 ✓ File is valid
-  Chunks verified: 10
+  File verified: document.pdf
 
 # File gets corrupted...
 $ swarmfs verify document.pdf
 ✗ File verification failed
-  Corrupted chunks: 3
-    Chunk 2: hash mismatch
-    Chunk 5: hash mismatch
-    Chunk 8: hash mismatch
+  Corrupted file: document.pdf
 ```
+
+## Test note
+Chunk storage copies are no longer used. Verify that `swarmfs-data/chunks/` does not exist after adding files.
 
 ## Design Decisions
 
@@ -180,10 +160,10 @@ Simple argument parsing instead of commander.js:
 ## What's Ready for Phase 3
 
 With Phase 2 complete, we have:
-- ✓ File chunking and hashing
+- ✓ File hashing
 - ✓ Merkle tree verification
 - ✓ Persistent metadata storage
-- ✓ Content-addressable chunk storage
+- ✓ Direct file I/O with chunk metadata
 - ✓ Working CLI for file management
 
 **Next up:**
@@ -204,7 +184,7 @@ The local infrastructure is complete. Phase 4 will add:
 ## Known Limitations
 
 1. **Mock Database**: Not a real SQLite, but close enough for development
-2. **No Deduplication Yet**: Chunks are stored even if duplicates exist
+2. **No Deduplication Yet**: Metadata-only chunk tracking (no chunk copies)
 3. **Single-threaded**: All operations synchronous (fine for prototype)
 4. **No Background Watching**: Files tracked at point in time only
 
@@ -235,7 +215,6 @@ src/
   hash.js            47 lines  (hashing)
   merkle.js         146 lines  (Merkle trees)
   database.js       215 lines  (database layer)
-  storage.js        110 lines  (chunk storage)
   swarmfs.js        227 lines  (main coordinator)
 
 lib/

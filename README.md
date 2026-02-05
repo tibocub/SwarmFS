@@ -3,10 +3,10 @@
 BitTorrent's raw power, IPFS' content-addressability and Hyperswarm's
 simplicity and reliability.
 
-SwarmFS is a P2P file-sharing system inspired by BitTorrent and
+SwarmFS is a P2P file sharing system inspired by BitTorrent and
 IPFS, implementing content-addressed storage with Merkle trees
 for verification and efficient chunk-based transfers.
-Content discovery also comes build-it
+Content discovery and hole-punching also comes build-it
 
 ## Understanding the design
 
@@ -116,41 +116,6 @@ Files are split into fixed-size chunks (256KB default), each chunk is hashed wit
 - Content deduplication
 - Topic/group-based P2P discovery (via Hyperswarm)
 
-## Project Structure
-
-```
-swarmfs/
-├── src/
-│   ├── chunk.js          # File chunking utilities
-│   ├── hash.js           # SHA-256 hashing functions
-│   ├── merkle.js         # Merkle tree implementation
-│   ├── database.js       # SQLite database layer
-│   ├── storage.js        # Chunk storage (CAS)
-│   ├── swarmfs.js        # Main coordinator
-│   └── index.js          # Public API exports
-├── lib/
-│   └── better-sqlite3.js # Mock SQLite (replace with real version)
-├── test/
-│   ├── test-all.js       # Unit tests (Phase 1)
-│   └── test-phase2.sh    # Integration tests (Phase 2)
-├── examples/
-│   ├── workflow.js       # Basic workflow demo
-│   └── advanced.js       # Advanced scenarios
-├── cli.js                # Command-line interface
-└── package.json
-```
-
-## Testing
-
-Run the unit test suite:
-```bash
-npm test
-```
-
-Run the integration test:
-```bash
-./test-phase2.sh
-```
 
 ## CLI Usage
 
@@ -189,8 +154,6 @@ node cli.js help
 - **Smart defaults**: `swarmfs add` with no args adds current directory
 - **Ignore patterns**: Automatically skips node_modules, .git, etc.
 
-## Phase 1 API
-
 ### Chunking
 ```javascript
 import { chunkBuffer, calculateChunkCount } from './src/chunking.js';
@@ -222,7 +185,7 @@ const proof = generateMerkleProof(chunkHashes, chunkIndex);
 const isValid = verifyMerkleProof(proof.leaf, proof.proof, tree.root);
 ```
 
-## Next Steps (Phase 4)
+## Next Steps
 
 - [ ] Hyperswarm P2P networking
 - [ ] Topic-based content discovery  

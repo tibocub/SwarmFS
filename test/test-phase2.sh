@@ -94,15 +94,9 @@ echo "10. Detailed file information..."
 node cli.js info large-file.txt
 echo ""
 
-# Check storage
-echo "11. Checking chunk storage..."
-echo "   Chunks stored:"
-find swarmfs-data/chunks -type f | wc -l
-echo ""
-
 echo "=== Phase 2 Test Complete ==="
 echo ""
 echo "✓ All commands working correctly!"
 echo "✓ Files tracked and verified"
 echo "✓ Corruption detection working"
-echo "✓ Chunk storage operational"
+echo "✓ Direct file I/O operational"

@@ -5,6 +5,8 @@
 
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 
 // Protocol version
 export const PROTOCOL_VERSION = 1;
@@ -16,25 +18,39 @@ export const MSG_TYPE = {
   DOWNLOAD: 0x03,     // Accept offer and start download
   CHUNK_DATA: 0x04,   // Actual chunk bytes
   CANCEL: 0x05,       // Cancel request
-  ERROR: 0x06         // Error response
+  ERROR: 0x06,        // Error response
+  FILE_LIST_REQUEST: 0x07,  // Request list of shared files in topic
+  FILE_LIST_RESPONSE: 0x08, // Response with shared files
+  METADATA_REQUEST: 0x09,   // Request file metadata by merkle root
+  METADATA_RESPONSE: 0x0a   // Response with file metadata
 };
 
 export class Protocol extends EventEmitter {
-  constructor(network, storage, database) {
+  constructor(network, database) {
     super();
     
+    console.log('[PROTOCOL] Initializing Protocol...');
+    console.log('[PROTOCOL] Network:', network ? 'OK' : 'MISSING');
+    console.log('[PROTOCOL] Storage: REMOVED (direct file I/O)');
+    console.log('[PROTOCOL] Database:', database ? 'OK' : 'MISSING');
+    
     this.network = network;
-    this.storage = storage;
     this.db = database;
     
     // Track active requests
     this.activeRequests = new Map(); // requestId -> { chunkHash, timeout, offers }
     this.activeDownloads = new Map(); // requestId -> { chunkHash, peerId, data }
+    this.activeFileListRequests = new Map(); // requestId -> { topicKey, timeout }
+    this.activeMetadataRequests = new Map(); // requestId -> { merkleRoot, topicKey, timeout }
     
     // Setup network event handlers
-    this.network.on('peer:data', (conn, peerId, data) => {
-      this.handleMessage(conn, peerId, data);
+    console.log('[PROTOCOL] Setting up peer:data handler...');
+    this.network.on('peer:data', async (conn, peerId, data) => {
+      console.log(`[PROTOCOL] peer:data event fired: ${data.length} bytes from ${peerId.substring(0, 8)}`);
+      await this.handleMessage(conn, peerId, data);
     });
+    
+    console.log('[PROTOCOL] Protocol initialized successfully');
     
     // Cleanup old requests periodically
     this.cleanupInterval = setInterval(() => this.cleanup(), 30000);
@@ -82,9 +98,14 @@ export class Protocol extends EventEmitter {
   /**
    * Handle incoming message
    */
-  handleMessage(conn, peerId, data) {
+  async handleMessage(conn, peerId, data) {
     try {
+      // Debug: Log that we received data
+      console.log(`[DEBUG] handleMessage called, data length: ${data.length}`);
+      
       const { version, type, payload } = this.decodeMessage(data);
+      
+      console.log(`[DEBUG] Decoded message - version: ${version}, type: ${type}`);
       
       if (version !== PROTOCOL_VERSION) {
         console.warn(`Protocol version mismatch: ${version} != ${PROTOCOL_VERSION}`);
@@ -93,15 +114,19 @@ export class Protocol extends EventEmitter {
       
       switch (type) {
         case MSG_TYPE.REQUEST:
-          this.handleRequest(conn, peerId, payload);
+          console.log(`[DEBUG] Calling handleRequest`);
+          await this.handleRequest(conn, peerId, payload);
           break;
         case MSG_TYPE.OFFER:
-          this.handleOffer(conn, peerId, payload);
+          console.log(`[DEBUG] Calling handleOffer`);
+          await this.handleOffer(conn, peerId, payload);
           break;
         case MSG_TYPE.DOWNLOAD:
+          console.log(`[DEBUG] Calling handleDownload`);
           this.handleDownload(conn, peerId, payload);
           break;
         case MSG_TYPE.CHUNK_DATA:
+          console.log(`[DEBUG] Calling handleChunkData`);
           this.handleChunkData(conn, peerId, payload);
           break;
         case MSG_TYPE.CANCEL:
@@ -110,49 +135,80 @@ export class Protocol extends EventEmitter {
         case MSG_TYPE.ERROR:
           this.handleError(peerId, payload);
           break;
+        case MSG_TYPE.FILE_LIST_REQUEST:
+          await this.handleFileListRequest(conn, peerId, payload);
+          break;
+        case MSG_TYPE.FILE_LIST_RESPONSE:
+          this.handleFileListResponse(conn, peerId, payload);
+          break;
+        case MSG_TYPE.METADATA_REQUEST:
+          await this.handleMetadataRequest(conn, peerId, payload);
+          break;
+        case MSG_TYPE.METADATA_RESPONSE:
+          this.handleMetadataResponse(conn, peerId, payload);
+          break;
         default:
           console.warn(`Unknown message type: ${type}`);
       }
     } catch (error) {
       console.error(`Error handling message from ${peerId.substring(0, 8)}:`, error.message);
+      console.error(error.stack);
     }
   }
 
   /**
    * REQUEST: Peer needs a chunk
    */
-  handleRequest(conn, peerId, payload) {
+//  async handleRequest(conn, peerId, payload) {
+//    const { requestId, chunkHash } = payload;
+//    
+//    console.log(`📥 REQUEST from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
+//    
+//    // Check if we have this chunk (regardless of sharing status)
+//    // This enables topic-based content-addressing for ALL our chunks
+//    if (!this.storage.hasChunk(chunkHash)) {
+//      console.log(`   ⚠️  Don't have chunk`);
+//      return;
+//    }
+//    
+//    // Get chunk info from database
+//    const chunkInfo = this.db.getChunk(chunkHash);
+//    if (!chunkInfo) {
+//      console.log(`   ⚠️  Chunk not in database`);
+//      return;
+//    }
+//    
+//    console.log(`   ✓ Have chunk (${chunkInfo.size} bytes)`);
+//    
+//    const merkleProof = await this.generateMerkleProof(chunkHash);
+//    
+//    // Send OFFER
+//    this.sendOffer(conn, requestId, chunkHash, chunkInfo.size, merkleProof);
+//  }
+
+
+  async handleRequest(conn, peerId, payload) {
     const { requestId, chunkHash } = payload;
-    
+
     console.log(`📥 REQUEST from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
-    
-    // Check if we have this chunk
-    if (!this.storage.hasChunk(chunkHash)) {
+
+    const chunkLocation = this.db.getChunkLocation(chunkHash);
+    if (!chunkLocation) {
       console.log(`   ⚠️  Don't have chunk`);
       return;
     }
-    
-    // Get chunk info from database
-    const chunkInfo = this.db.getChunk(chunkHash);
-    if (!chunkInfo) {
-      console.log(`   ⚠️  Chunk not in database`);
-      return;
-    }
-    
-    console.log(`   ✓ Have chunk (${chunkInfo.size} bytes)`);
-    
-    // TODO: Generate Merkle proof (Phase 4.3.1)
-    // For now, send offer without proof
-    const merkleProof = [];
-    
-    // Send OFFER
-    this.sendOffer(conn, requestId, chunkHash, chunkInfo.size, merkleProof);
+
+    console.log(`   ✓ Have chunk (${chunkLocation.chunk_size} bytes)`);
+
+    const merkleProof = await this.generateMerkleProof(chunkHash);
+    this.sendOffer(conn, requestId, chunkHash, chunkLocation.chunk_size, merkleProof);
   }
+
 
   /**
    * OFFER: Peer can provide chunk
    */
-  handleOffer(conn, peerId, payload) {
+  async handleOffer(conn, peerId, payload) {
     const { requestId, chunkHash, chunkSize, merkleProof } = payload;
     
     console.log(`📨 OFFER from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
@@ -169,10 +225,14 @@ export class Protocol extends EventEmitter {
       return;
     }
     
-    // TODO: Validate Merkle proof (Phase 4.3.1)
-    // For now, accept all offers
+    // Validate Merkle proof
+    const isValidProof = await this.validateMerkleProof(chunkHash, merkleProof);
+    if (!isValidProof) {
+      console.log(`   ⚠️  Invalid Merkle proof - rejecting offer`);
+      return;
+    }
     
-    console.log(`   ✓ Valid offer (${chunkSize} bytes)`);
+    console.log(`   ✓ Valid offer (${chunkSize} bytes)${merkleProof && merkleProof.fileRoot ? ' [proof verified]' : ''}`);
     
     // Store offer
     request.offers.push({
@@ -201,15 +261,29 @@ export class Protocol extends EventEmitter {
     
     console.log(`📤 DOWNLOAD request from ${peerId.substring(0, 8)}: ${chunkHash.substring(0, 16)}...`);
     
-    // Verify we have the chunk
-    if (!this.storage.hasChunk(chunkHash)) {
+    const chunkLocation = this.db.getChunkLocation(chunkHash);
+    if (!chunkLocation) {
       this.sendError(conn, requestId, 'Chunk not found');
       return;
     }
     
     try {
-      // Load chunk from storage
-      const chunkData = this.storage.loadChunk(chunkHash);
+      let chunkData = Buffer.allocUnsafe(chunkLocation.chunk_size);
+      const fd = fs.openSync(chunkLocation.path, 'r');
+      try {
+        const bytesRead = fs.readSync(
+          fd,
+          chunkData,
+          0,
+          chunkLocation.chunk_size,
+          chunkLocation.chunk_offset
+        );
+        if (bytesRead !== chunkLocation.chunk_size) {
+          chunkData = chunkData.subarray(0, bytesRead);
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
       
       console.log(`   📦 Sending chunk (${chunkData.length} bytes)`);
       
@@ -225,49 +299,178 @@ export class Protocol extends EventEmitter {
   /**
    * CHUNK_DATA: Received chunk data
    */
+//  handleChunkData(conn, peerId, payload) {
+//    const { requestId, chunkHash, data } = payload;
+//    
+//    // Convert data back to Buffer (it comes as base64 in JSON)
+//    const chunkData = Buffer.from(data, 'base64');
+//    
+//
+//    console.log(`📦 CHUNK_DATA from ${peerId.substring(0, 8)}: ${chunkData.length} bytes`);
+//    
+//    // Update progress
+//    const download = this.activeDownloads.get(requestId);
+//    if (download) {
+//      download.receivedSize = chunkData.length;
+//      this.emit('chunk:progress', {
+//        requestId,
+//        chunkHash,
+//        current: chunkData.length,
+//        total: download.expectedSize,
+//        percentage: (chunkData.length / download.expectedSize) * 100
+//      });
+//    }
+//    
+//    // Verify hash
+//    const actualHash = crypto.createHash('sha256').update(chunkData).digest('hex');
+//    
+//    if (actualHash !== chunkHash) {
+//      console.error(`   ❌ Hash mismatch! Expected ${chunkHash.substring(0, 16)}... got ${actualHash.substring(0, 16)}...`);
+//      
+//      // Clear timeout on error
+//      const request = this.activeRequests.get(requestId);
+//      if (request && request.timeout) {
+//        clearTimeout(request.timeout);
+//      }
+//      
+//      this.activeRequests.delete(requestId);
+//      this.activeDownloads.delete(requestId);
+//      
+//      this.emit('chunk:error', { requestId, chunkHash, error: 'Hash mismatch' });
+//      return;
+//    }
+//    
+//    console.log(`   ✓ Hash verified`);
+//    
+//    // Store chunk
+//    try {
+//      file = db.getFileByChunkHash(chunkHash)
+//  
+//      fs.writeFileSync(file.path, data, {
+//        start: chunk.offset
+//      })
+//    
+//      // this.storage.storeChunk(chunkHash, chunkData);
+//      this.db.addChunk(chunkHash, chunkData.length);
+//      
+//      console.log(`   ✓ Chunk stored`);
+//      
+//      // CRITICAL: Clear timeout before cleaning up request
+//      const request = this.activeRequests.get(requestId);
+//      if (request && request.timeout) {
+//        clearTimeout(request.timeout);
+//        console.log(`   ✓ Timeout cleared`);
+//      }
+//      
+//      // Clean up request and download
+//      this.activeRequests.delete(requestId);
+//      this.activeDownloads.delete(requestId);
+//      
+//      // Emit success
+//      this.emit('chunk:downloaded', {
+//        requestId,
+//        chunkHash,
+//        size: chunkData.length,
+//        peerId
+//      });
+//      
+//    } catch (error) {
+//      console.error(`   ❌ Error storing chunk:`, error.message);
+//      
+//      // Clear timeout on error
+//      const request = this.activeRequests.get(requestId);
+//      if (request && request.timeout) {
+//        clearTimeout(request.timeout);
+//      }
+//      
+//      this.activeRequests.delete(requestId);
+//      this.activeDownloads.delete(requestId);
+//      
+//      this.emit('chunk:error', { requestId, chunkHash, error: error.message });
+//    }
+//  }
+
+
   handleChunkData(conn, peerId, payload) {
     const { requestId, chunkHash, data } = payload;
-    
-    // Convert data back to Buffer (it comes as base64 in JSON)
     const chunkData = Buffer.from(data, 'base64');
-    
+
     console.log(`📦 CHUNK_DATA from ${peerId.substring(0, 8)}: ${chunkData.length} bytes`);
-    
-    // Verify hash
+
+    const download = this.activeDownloads.get(requestId);
+    if (download) {
+      download.receivedSize = chunkData.length;
+      this.emit('chunk:progress', {
+        requestId,
+        chunkHash,
+        current: chunkData.length,
+        total: download.expectedSize,
+        percentage: (chunkData.length / download.expectedSize) * 100
+      });
+    }
+
     const actualHash = crypto.createHash('sha256').update(chunkData).digest('hex');
-    
     if (actualHash !== chunkHash) {
       console.error(`   ❌ Hash mismatch! Expected ${chunkHash.substring(0, 16)}... got ${actualHash.substring(0, 16)}...`);
+
+      const request = this.activeRequests.get(requestId);
+      if (request && request.timeout) {
+        clearTimeout(request.timeout);
+      }
+
+      this.activeRequests.delete(requestId);
+      this.activeDownloads.delete(requestId);
+
       this.emit('chunk:error', { requestId, chunkHash, error: 'Hash mismatch' });
       return;
     }
-    
+
     console.log(`   ✓ Hash verified`);
-    
-    // Store chunk
+
     try {
-      this.storage.storeChunk(chunkHash, chunkData);
-      this.db.addChunk(chunkHash, chunkData.length);
-      
-      console.log(`   ✓ Chunk stored`);
-      
-      // Clean up request
+      const chunkLocation = this.db.getChunkWriteLocation(chunkHash);
+      if (!chunkLocation) {
+        throw new Error('Chunk metadata missing for output file');
+      }
+
+      const fd = fs.openSync(chunkLocation.path, 'r+');
+      try {
+        fs.writeSync(fd, chunkData, 0, chunkData.length, chunkLocation.chunk_offset);
+      } finally {
+        fs.closeSync(fd);
+      }
+
+      console.log(`   ✓ Chunk written`);
+
+      const request = this.activeRequests.get(requestId);
+      if (request && request.timeout) {
+        clearTimeout(request.timeout);
+      }
+
       this.activeRequests.delete(requestId);
       this.activeDownloads.delete(requestId);
-      
-      // Emit success
+
       this.emit('chunk:downloaded', {
         requestId,
         chunkHash,
         size: chunkData.length,
         peerId
       });
-      
     } catch (error) {
-      console.error(`   ❌ Error storing chunk:`, error.message);
+      console.error(`   ❌ Error writing chunk:`, error.message);
+
+      const request = this.activeRequests.get(requestId);
+      if (request && request.timeout) {
+        clearTimeout(request.timeout);
+      }
+
+      this.activeRequests.delete(requestId);
+      this.activeDownloads.delete(requestId);
+
       this.emit('chunk:error', { requestId, chunkHash, error: error.message });
     }
   }
+
 
   /**
    * CANCEL: Request cancelled
@@ -288,6 +491,120 @@ export class Protocol extends EventEmitter {
     console.error(`❌ ERROR from ${peerId.substring(0, 8)}: ${error}`);
     
     this.emit('chunk:error', { requestId, error });
+  }
+
+  /**
+   * FILE_LIST_REQUEST: Peer requests list of shared files in topic
+   */
+  async handleFileListRequest(conn, peerId, payload) {
+    const { requestId, topicKey } = payload;
+
+    console.log(`📄 FILE_LIST_REQUEST from ${peerId.substring(0, 8)}...`);
+
+    const topic = this.db.getTopicByKey(topicKey);
+    if (!topic) {
+      console.log(`   ⚠️  Unknown topic key`);
+      return;
+    }
+
+    const shares = this.db.getTopicShares(topic.id);
+    const files = shares
+      .filter((share) => share.share_type === 'file')
+      .map((share) => {
+        const file = this.db.getFile(share.share_path);
+        if (!file || file.file_modified_at <= 0) {
+          return null;
+        }
+
+        return {
+          name: path.basename(share.share_path),
+          path: share.share_path,
+          merkleRoot: share.merkle_root,
+          size: file.size,
+          chunkSize: file.chunk_size,
+          chunkCount: file.chunk_count
+        };
+      })
+      .filter(Boolean);
+
+    this.sendFileListResponse(conn, requestId, topicKey, files);
+  }
+
+  handleFileListResponse(conn, peerId, payload) {
+    const { requestId, files } = payload;
+
+    const request = this.activeFileListRequests.get(requestId);
+    if (!request) {
+      return;
+    }
+
+    console.log(`📄 FILE_LIST_RESPONSE from ${peerId.substring(0, 8)} (${files.length} files)`);
+    this.emit('file:list', { requestId, peerId, files });
+  }
+
+  /**
+   * METADATA_REQUEST: Peer requests metadata for a file
+   */
+  async handleMetadataRequest(conn, peerId, payload) {
+    const { requestId, merkleRoot, topicKey } = payload;
+
+    console.log(`📑 METADATA_REQUEST from ${peerId.substring(0, 8)}: ${merkleRoot.substring(0, 16)}...`);
+
+    const topic = this.db.getTopicByKey(topicKey);
+    if (!topic) {
+      this.sendError(conn, requestId, 'Unknown topic');
+      return;
+    }
+
+    const share = this.db.getTopicShareByMerkleRoot(topic.id, merkleRoot);
+    if (!share) {
+      this.sendError(conn, requestId, 'File not shared in topic');
+      return;
+    }
+
+    const file = this.db.getFile(share.share_path);
+    if (!file || file.file_modified_at <= 0) {
+      this.sendError(conn, requestId, 'File metadata unavailable');
+      return;
+    }
+
+    const chunks = this.db.getFileChunks(file.id);
+    const metadata = {
+      merkleRoot,
+      name: path.basename(share.share_path),
+      path: share.share_path,
+      size: file.size,
+      chunkSize: file.chunk_size,
+      chunkCount: file.chunk_count,
+      chunks: chunks.map((chunk) => ({
+        hash: chunk.chunk_hash,
+        offset: chunk.chunk_offset,
+        size: chunk.chunk_size
+      }))
+    };
+
+    this.sendMetadataResponse(conn, requestId, metadata);
+  }
+
+  handleMetadataResponse(conn, peerId, payload) {
+    const { requestId, metadata } = payload;
+
+    const request = this.activeMetadataRequests.get(requestId);
+    if (!request) {
+      return;
+    }
+
+    if (metadata.merkleRoot !== request.merkleRoot) {
+      return;
+    }
+
+    if (request.timeout) {
+      clearTimeout(request.timeout);
+    }
+    this.activeMetadataRequests.delete(requestId);
+
+    console.log(`📑 METADATA_RESPONSE from ${peerId.substring(0, 8)} (${metadata.chunkCount} chunks)`);
+    this.emit('metadata:response', { requestId, peerId, metadata });
   }
 
   // ============================================================================
@@ -329,6 +646,31 @@ export class Protocol extends EventEmitter {
   }
 
   /**
+   * Request shared file list from topic
+   */
+  requestFileList(topicKey, timeout = 5000) {
+    const requestId = crypto.randomBytes(16).toString('hex');
+    const topicKeyHex = topicKey.toString('hex');
+
+    this.activeFileListRequests.set(requestId, {
+      topicKey,
+      timestamp: Date.now(),
+      timeout: setTimeout(() => {
+        this.activeFileListRequests.delete(requestId);
+        this.emit('file:list:timeout', { requestId });
+      }, timeout)
+    });
+
+    const message = this.encodeMessage(MSG_TYPE.FILE_LIST_REQUEST, {
+      requestId,
+      topicKey: topicKeyHex
+    });
+
+    this.network.broadcast(topicKey, message);
+    return requestId;
+  }
+
+  /**
    * Send OFFER
    */
   sendOffer(conn, requestId, chunkHash, chunkSize, merkleProof) {
@@ -341,6 +683,43 @@ export class Protocol extends EventEmitter {
     
     conn.write(message);
     console.log(`   📨 Sent OFFER`);
+  }
+
+  sendFileListResponse(conn, requestId, topicKey, files) {
+    const message = this.encodeMessage(MSG_TYPE.FILE_LIST_RESPONSE, {
+      requestId,
+      topicKey,
+      files
+    });
+
+    conn.write(message);
+  }
+
+  /**
+   * Request file metadata by merkle root
+   */
+  requestMetadata(topicKey, merkleRoot, timeout = 10000) {
+    const requestId = crypto.randomBytes(16).toString('hex');
+    const topicKeyHex = topicKey.toString('hex');
+
+    this.activeMetadataRequests.set(requestId, {
+      merkleRoot,
+      topicKey,
+      timestamp: Date.now(),
+      timeout: setTimeout(() => {
+        this.activeMetadataRequests.delete(requestId);
+        this.emit('metadata:timeout', { requestId, merkleRoot });
+      }, timeout)
+    });
+
+    const message = this.encodeMessage(MSG_TYPE.METADATA_REQUEST, {
+      requestId,
+      merkleRoot,
+      topicKey: topicKeyHex
+    });
+
+    this.network.broadcast(topicKey, message);
+    return requestId;
   }
 
   /**
@@ -367,11 +746,21 @@ export class Protocol extends EventEmitter {
     
     offer.conn.write(message);
     
-    // Track download
+    // Track download with progress info
     this.activeDownloads.set(requestId, {
       chunkHash: request.chunkHash,
       peerId,
+      expectedSize: offer.chunkSize,
+      receivedSize: 0,
       startedAt: Date.now()
+    });
+    
+    // Emit download started
+    this.emit('chunk:download-started', {
+      requestId,
+      chunkHash: request.chunkHash,
+      peerId,
+      size: offer.chunkSize
     });
   }
 
@@ -385,6 +774,15 @@ export class Protocol extends EventEmitter {
       data: chunkData.toString('base64') // JSON-safe encoding
     });
     
+    conn.write(message);
+  }
+
+  sendMetadataResponse(conn, requestId, metadata) {
+    const message = this.encodeMessage(MSG_TYPE.METADATA_RESPONSE, {
+      requestId,
+      metadata
+    });
+
     conn.write(message);
   }
 
@@ -439,6 +837,20 @@ export class Protocol extends EventEmitter {
         this.activeRequests.delete(requestId);
       }
     }
+
+    for (const [requestId, request] of this.activeFileListRequests) {
+      if (now - request.timestamp > maxAge) {
+        clearTimeout(request.timeout);
+        this.activeFileListRequests.delete(requestId);
+      }
+    }
+
+    for (const [requestId, request] of this.activeMetadataRequests) {
+      if (now - request.timestamp > maxAge) {
+        clearTimeout(request.timeout);
+        this.activeMetadataRequests.delete(requestId);
+      }
+    }
   }
 
   /**
@@ -461,8 +873,111 @@ export class Protocol extends EventEmitter {
     for (const [requestId, request] of this.activeRequests) {
       clearTimeout(request.timeout);
     }
+
+    for (const [requestId, request] of this.activeFileListRequests) {
+      clearTimeout(request.timeout);
+    }
+
+    for (const [requestId, request] of this.activeMetadataRequests) {
+      clearTimeout(request.timeout);
+    }
     
     this.activeRequests.clear();
     this.activeDownloads.clear();
+    this.activeFileListRequests.clear();
+    this.activeMetadataRequests.clear();
+  }
+
+  // ============================================================================
+  // MERKLE PROOF GENERATION & VALIDATION
+  // ============================================================================
+
+  /**
+   * Generate Merkle proof for a chunk
+   */
+  async generateMerkleProof(chunkHash) {
+    console.log(`[DEBUG] generateMerkleProof called for ${chunkHash.substring(0, 16)}...`);
+    
+    // Find all files that contain this chunk
+    const files = this.db.getFilesWithChunk(chunkHash);
+    console.log(`[DEBUG] Found ${files.length} files with this chunk`);
+    
+    if (files.length === 0) {
+      console.log(`[DEBUG] No files found, returning empty proof`);
+      return [];
+    }
+    
+    // Use the first file (could be smarter - pick smallest file, etc.)
+    const file = files[0];
+    console.log(`[DEBUG] Using file: ${file.path}`);
+    
+    // Get all chunks for this file
+    const fileChunks = this.db.getFileChunks(file.id);
+    console.log(`[DEBUG] File has ${fileChunks.length} chunks`);
+    
+    // Find the index of our chunk
+    const chunkIndex = fileChunks.findIndex(fc => fc.chunk_hash === chunkHash);
+    console.log(`[DEBUG] Chunk index: ${chunkIndex}`);
+    
+    if (chunkIndex === -1) {
+      console.log(`[DEBUG] Chunk not found in file chunks, returning empty proof`);
+      return [];
+    }
+    
+    // Get all chunk hashes in order
+    const chunkHashes = fileChunks.map(fc => fc.chunk_hash);
+    
+    // Import merkle module
+    console.log(`[DEBUG] Importing merkle module...`);
+    const { generateMerkleProof } = await import('./merkle.js');
+    console.log(`[DEBUG] Merkle module imported`);
+    
+    try {
+      const proof = generateMerkleProof(chunkHashes, chunkIndex);
+      console.log(`[DEBUG] Merkle proof generated, siblings: ${proof.proof.length}`);
+      
+      // Return simplified proof for network transmission
+      const simplifiedProof = {
+        fileRoot: file.merkle_root,
+        chunkIndex: chunkIndex,
+        siblings: proof.proof.map(p => ({
+          hash: p.hash,
+          isLeft: p.isLeft
+        }))
+      };
+      
+      console.log(`[DEBUG] Returning simplified proof`);
+      return simplifiedProof;
+    } catch (error) {
+      console.error('[DEBUG] Error generating merkle proof:', error.message);
+      console.error('[DEBUG] Stack:', error.stack);
+      return [];
+    }
+  }
+
+  /**
+   * Validate Merkle proof
+   */
+  async validateMerkleProof(chunkHash, merkleProof) {
+    // If no proof provided, skip validation (backward compatibility)
+    if (!merkleProof || merkleProof.length === 0 || !merkleProof.fileRoot) {
+      return true; // Accept for now
+    }
+    
+    // Import merkle module
+    const { verifyMerkleProof } = await import('./merkle.js');
+    
+    try {
+      const isValid = verifyMerkleProof(
+        chunkHash,
+        merkleProof.siblings,
+        merkleProof.fileRoot
+      );
+      
+      return isValid;
+    } catch (error) {
+      console.error('Error validating merkle proof:', error.message);
+      return false;
+    }
   }
 }

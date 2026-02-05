@@ -4,17 +4,8 @@
  */
 
 import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
 
 const SCHEMA = `
--- Chunks: Content-addressed storage metadata
-CREATE TABLE IF NOT EXISTS chunks (
-  hash TEXT PRIMARY KEY,
-  size INTEGER NOT NULL,
-  stored_at INTEGER NOT NULL
-);
-
 -- Files: Tracked files on filesystem
 CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,9 +23,10 @@ CREATE TABLE IF NOT EXISTS file_chunks (
   file_id INTEGER NOT NULL,
   chunk_index INTEGER NOT NULL,
   chunk_hash TEXT NOT NULL,
+  chunk_offset INTEGER NOT NULL,
+  chunk_size INTEGER NOT NULL,
   PRIMARY KEY (file_id, chunk_index),
-  FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
-  FOREIGN KEY (chunk_hash) REFERENCES chunks(hash)
+  FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
 -- Directories: For directory tracking
@@ -84,30 +76,17 @@ export class SwarmDB {
   }
 
   /**
-   * Add a chunk to the database
-   */
-  addChunk(hash, size) {
-    const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO chunks (hash, size, stored_at)
-      VALUES (?, ?, ?)
-    `);
-    stmt.run(hash, size, Date.now());
-  }
-
-  /**
-   * Check if a chunk exists
+   * Check if a chunk exists in any tracked file
    */
   hasChunk(hash) {
-    const stmt = this.db.prepare('SELECT 1 FROM chunks WHERE hash = ?');
+    const stmt = this.db.prepare(`
+      SELECT 1
+      FROM file_chunks fc
+      JOIN files f ON f.id = fc.file_id
+      WHERE fc.chunk_hash = ? AND f.file_modified_at > 0
+      LIMIT 1
+    `);
     return stmt.get(hash) !== undefined;
-  }
-
-  /**
-   * Get chunk info
-   */
-  getChunk(hash) {
-    const stmt = this.db.prepare('SELECT * FROM chunks WHERE hash = ?');
-    return stmt.get(hash);
   }
 
   /**
@@ -142,6 +121,14 @@ export class SwarmDB {
   }
 
   /**
+   * Get file by merkle root
+   */
+  getFileByMerkleRoot(merkleRoot) {
+    const stmt = this.db.prepare('SELECT * FROM files WHERE merkle_root = ?');
+    return stmt.get(merkleRoot);
+  }
+
+  /**
    * Get file by ID
    */
   getFileById(id) {
@@ -168,19 +155,19 @@ export class SwarmDB {
   /**
    * Add file chunks mapping
    */
-  addFileChunks(fileId, chunkHashes) {
+  addFileChunks(fileId, chunks) {
     const stmt = this.db.prepare(`
-      INSERT INTO file_chunks (file_id, chunk_index, chunk_hash)
-      VALUES (?, ?, ?)
+      INSERT INTO file_chunks (file_id, chunk_index, chunk_hash, chunk_offset, chunk_size)
+      VALUES (?, ?, ?, ?, ?)
     `);
 
-    const insertMany = this.db.transaction((chunks) => {
-      chunks.forEach((hash, index) => {
-        stmt.run(fileId, index, hash);
+    const insertMany = this.db.transaction((entries) => {
+      entries.forEach((chunk, index) => {
+        stmt.run(fileId, index, chunk.hash, chunk.offset, chunk.size);
       });
     });
 
-    insertMany(chunkHashes);
+    insertMany(chunks);
   }
 
   /**
@@ -188,13 +175,42 @@ export class SwarmDB {
    */
   getFileChunks(fileId) {
     const stmt = this.db.prepare(`
-      SELECT chunk_index, chunk_hash, c.size
-      FROM file_chunks fc
-      JOIN chunks c ON fc.chunk_hash = c.hash
+      SELECT chunk_index, chunk_hash, chunk_offset, chunk_size
+      FROM file_chunks
       WHERE file_id = ?
       ORDER BY chunk_index
     `);
     return stmt.all(fileId);
+  }
+
+  /**
+   * Get chunk location (file path + offset/size) by hash
+   */
+  getChunkLocation(chunkHash) {
+    const stmt = this.db.prepare(`
+      SELECT f.id AS file_id, f.path, f.merkle_root, fc.chunk_index, fc.chunk_offset, fc.chunk_size
+      FROM file_chunks fc
+      JOIN files f ON f.id = fc.file_id
+      WHERE fc.chunk_hash = ? AND f.file_modified_at > 0
+      ORDER BY f.added_at DESC
+      LIMIT 1
+    `);
+    return stmt.get(chunkHash);
+  }
+
+  /**
+   * Get chunk location for writes (includes incomplete downloads)
+   */
+  getChunkWriteLocation(chunkHash) {
+    const stmt = this.db.prepare(`
+      SELECT f.id AS file_id, f.path, f.merkle_root, fc.chunk_index, fc.chunk_offset, fc.chunk_size
+      FROM file_chunks fc
+      JOIN files f ON f.id = fc.file_id
+      WHERE fc.chunk_hash = ?
+      ORDER BY f.added_at DESC
+      LIMIT 1
+    `);
+    return stmt.get(chunkHash);
   }
 
   /**
@@ -215,9 +231,9 @@ export class SwarmDB {
    */
   getStats() {
     const fileCount = this.db.prepare('SELECT COUNT(*) as count FROM files').get().count;
-    const chunkCount = this.db.prepare('SELECT COUNT(*) as count FROM chunks').get().count;
+    const chunkCount = this.db.prepare('SELECT COUNT(*) as count FROM file_chunks').get().count;
     const totalSize = this.db.prepare('SELECT SUM(size) as total FROM files').get().total || 0;
-    const chunkSize = this.db.prepare('SELECT SUM(size) as total FROM chunks').get().total || 0;
+    const chunkSize = this.db.prepare('SELECT SUM(chunk_size) as total FROM file_chunks').get().total || 0;
 
     return {
       files: fileCount,
@@ -278,6 +294,14 @@ export class SwarmDB {
   }
 
   /**
+   * Get topic by key
+   */
+  getTopicByKey(topicKey) {
+    const stmt = this.db.prepare('SELECT * FROM topics WHERE topic_key = ?');
+    return stmt.get(topicKey);
+  }
+
+  /**
    * Get topic by ID
    */
   getTopicById(id) {
@@ -307,6 +331,14 @@ export class SwarmDB {
   updateTopicJoinTime(topicId) {
     const stmt = this.db.prepare('UPDATE topics SET last_joined_at = ? WHERE id = ?');
     stmt.run(Date.now(), topicId);
+  }
+
+  /**
+   * Update file modified time (used to mark downloads complete)
+   */
+  updateFileModifiedAt(fileId, fileModifiedAt) {
+    const stmt = this.db.prepare('UPDATE files SET file_modified_at = ? WHERE id = ?');
+    stmt.run(fileModifiedAt, fileId);
   }
 
   /**
@@ -343,6 +375,16 @@ export class SwarmDB {
   getTopicShares(topicId) {
     const stmt = this.db.prepare('SELECT * FROM topic_shares WHERE topic_id = ? ORDER BY shared_at DESC');
     return stmt.all(topicId);
+  }
+
+  /**
+   * Get a share by merkle root within a topic
+   */
+  getTopicShareByMerkleRoot(topicId, merkleRoot) {
+    const stmt = this.db.prepare(
+      'SELECT * FROM topic_shares WHERE topic_id = ? AND merkle_root = ?'
+    );
+    return stmt.get(topicId, merkleRoot);
   }
 
   /**
