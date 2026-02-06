@@ -20,7 +20,7 @@ const swarmfs = new SwarmFS(DATA_DIR);
 if (!swarmfs.isInitialized()) {
   console.log('Initializing SwarmFS...');
   swarmfs.init();
-  console.log(`Initialized at ${DATA_DIR}\n`);
+  console.log(`✓ Initialized at ${DATA_DIR}\n`);
 }
 
 // Wrapper to handle errors and cleanup
@@ -33,7 +33,7 @@ function wrapCommand(commandFunc, keepAlive = false) {
         swarmfs.close();
       }
     } catch (error) {
-      console.error('Error:', error.message);
+      console.error('✗ Error:', error.message);
       if (!keepAlive) {
         swarmfs.close();
       }
@@ -130,7 +130,7 @@ topicCmd
     try {
       await cmd.topicJoinCommand(swarmfs, name);
       
-      console.log('\nNetwork active');
+      console.log('\n✓ Network active');
       console.log('Press Ctrl+C to stop\n');
       
       // Keep process alive
@@ -138,7 +138,7 @@ topicCmd
       setupGracefulShutdown();
 
     } catch (error) {
-      console.error('Error:', error.message);
+      console.error('✗ Error:', error.message);
       swarmfs.close();
       process.exit(1);
     }
@@ -169,19 +169,19 @@ program
       if (swarmfs.protocol) {
         swarmfs.protocol.once('chunk:downloaded', () => {
           downloadComplete = true;
-          console.log('\nDownload complete!');
+          console.log('\n✓ Download complete!');
           swarmfs.close();
           process.exit(0);
         });
         
         swarmfs.protocol.once('chunk:timeout', () => {
-          console.log('\nRequest timed out - no peers responded');
+          console.log('\n⏱️  Request timed out - no peers responded');
           swarmfs.close();
           process.exit(1);
         });
         
         swarmfs.protocol.once('chunk:error', (info) => {
-          console.error(`\nError: ${info.error}`);
+          console.error(`\n❌ Error: ${info.error}`);
           swarmfs.close();
           process.exit(1);
         });
@@ -192,7 +192,27 @@ program
       setupGracefulShutdown();
 
     } catch (error) {
-      console.error('Error:', error.message);
+      console.error('✗ Error:', error.message);
+      swarmfs.close();
+      process.exit(1);
+    }
+  });
+
+program
+  .command('browse <topic>')
+  .description('List shared files in a topic')
+  .action(wrapCommand(cmd.browseCommand));
+
+program
+  .command('download <topic> <merkleRoot> <outputPath>')
+  .description('Download a complete file from a topic')
+  .action(async (topic, merkleRoot, outputPath) => {
+    try {
+      await cmd.downloadCommand(swarmfs, topic, merkleRoot, outputPath);
+      swarmfs.close();
+      process.exit(0);
+    } catch (error) {
+      console.error('✗ Error:', error.message);
       swarmfs.close();
       process.exit(1);
     }
@@ -204,6 +224,30 @@ program
   .action(wrapCommand(cmd.networkCommand));
 
 // ============================================================================
+// TUI
+// ============================================================================
+
+program
+  .command('tui')
+  .description('Start terminal UI (keeps connections alive)')
+  .option('-v, --verbose', 'Enable verbose debug output')
+  .action(async (options) => {
+    try {
+      if (options?.verbose) {
+        process.env.SWARMFS_VERBOSE = '1';
+      }
+      const { startTui } = await import('./src/tui.js');
+      process.stdin.resume();
+      setupGracefulShutdown();
+      await startTui(swarmfs);
+    } catch (error) {
+      console.error('✗ Error:', error.message);
+      swarmfs.close();
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
 // REPL
 // ============================================================================
 
@@ -211,9 +255,13 @@ program
   .command('shell')
   .alias('repl')
   .description('Start interactive shell (keeps connections alive)')
-  .action(() => {
+  .option('-v, --verbose', 'Enable verbose debug output')
+  .action((options) => {
     console.log('\nStarting REPL mode...');
     console.log('Use "exit" to quit, "help" for commands\n');
+    if (options?.verbose) {
+      process.env.SWARMFS_VERBOSE = '1';
+    }
     swarmfs.close();
     
     // Import and run REPL

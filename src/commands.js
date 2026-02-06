@@ -5,7 +5,9 @@
 
 import fs from 'fs';
 import path from 'path';
+import terminalKit from 'terminal-kit';
 
+const term = terminalKit.terminal;
 
 // Utility functions
 export function formatBytes(bytes) {
@@ -16,16 +18,44 @@ export function formatBytes(bytes) {
   return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }
 
+/**
+ * Browse shared files in a topic
+ */
+export async function browseCommand(swarmfs, topicName, options = {}) {
+  swarmfs.open();
+
+  if (!swarmfs.network || !swarmfs.protocol) {
+    console.log(`Joining topic "${topicName}"...`);
+    await swarmfs.joinTopic(topicName);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  console.log(`\nBrowsing topic "${topicName}"...`);
+  const files = await swarmfs.browseTopic(topicName, options.timeout || 5000);
+
+  if (files.length === 0) {
+    console.log('No shared files found.');
+    return files;
+  }
+
+  console.log(`\nShared Files (${files.length}):\n`);
+  files.forEach((file) => {
+    console.log(`  ${file.name}`);
+    console.log(`    Size: ${formatBytes(file.size)}`);
+    console.log(`    Merkle Root: ${file.merkleRoot}`);
+    console.log('');
+  });
+
+  return files;
+}
 
 export function formatDate(timestamp) {
   return new Date(timestamp).toLocaleString();
 }
 
-
 // ============================================================================
 // FILE COMMANDS
 // ============================================================================
-
 
 export async function addCommand(swarmfs, targetPath) {
   const filePath = targetPath || '.';
@@ -67,7 +97,6 @@ export async function addCommand(swarmfs, targetPath) {
   }
 }
 
-
 export async function statusCommand(swarmfs) {
   swarmfs.open();
 
@@ -90,7 +119,6 @@ export async function statusCommand(swarmfs) {
     console.log('');
   }
 }
-
 
 export async function verifyCommand(swarmfs, filePath) {
   swarmfs.open();
@@ -117,7 +145,6 @@ export async function verifyCommand(swarmfs, filePath) {
   return result;
 }
 
-
 export async function infoCommand(swarmfs, filePath) {
   swarmfs.open();
 
@@ -141,13 +168,12 @@ export async function infoCommand(swarmfs, filePath) {
   if (info.chunks && info.chunks.length > 0) {
     console.log(`\n  Chunks:`);
     info.chunks.forEach((chunk, i) => {
-      console.log(`    ${i}: ${chunk.chunk_hash.substring(0, 16)}... (${formatBytes(chunk.size)})`);
+      console.log(`    ${i}: ${chunk.chunk_hash.substring(0, 16)}... (${formatBytes(chunk.chunk_size)})`);
     });
   }
   
   return info;
 }
-
 
 export async function statsCommand(swarmfs) {
   swarmfs.open();
@@ -169,11 +195,9 @@ export async function statsCommand(swarmfs) {
   return stats;
 }
 
-
 // ============================================================================
 // TOPIC COMMANDS
 // ============================================================================
-
 
 export async function topicCreateCommand(swarmfs, name, options = {}) {
   swarmfs.open();
@@ -188,7 +212,6 @@ export async function topicCreateCommand(swarmfs, name, options = {}) {
   
   return result;
 }
-
 
 export async function topicListCommand(swarmfs) {
   swarmfs.open();
@@ -216,7 +239,6 @@ export async function topicListCommand(swarmfs) {
   
   return topics;
 }
-
 
 export async function topicInfoCommand(swarmfs, name) {
   swarmfs.open();
@@ -246,7 +268,6 @@ export async function topicInfoCommand(swarmfs, name) {
   return info;
 }
 
-
 export async function topicShareCommand(swarmfs, topicName, sharePath) {
   swarmfs.open();
 
@@ -261,14 +282,12 @@ export async function topicShareCommand(swarmfs, topicName, sharePath) {
   return result;
 }
 
-
 export async function topicUnshareCommand(swarmfs, topicName, sharePath) {
   swarmfs.open();
 
   await swarmfs.unsharePath(topicName, sharePath);
   console.log(`✓ Stopped sharing ${sharePath} in ${topicName}`);
 }
-
 
 export async function topicJoinCommand(swarmfs, name, options = {}) {
   swarmfs.open();
@@ -283,7 +302,6 @@ export async function topicJoinCommand(swarmfs, name, options = {}) {
   }
 }
 
-
 export async function topicLeaveCommand(swarmfs, name) {
   swarmfs.open();
 
@@ -291,11 +309,9 @@ export async function topicLeaveCommand(swarmfs, name) {
   console.log(`✓ Left topic: ${name}`);
 }
 
-
 // ============================================================================
 // NETWORK COMMANDS
 // ============================================================================
-
 
 export async function requestCommand(swarmfs, topicName, chunkHash, options = {}) {
   // Validate hash format
@@ -320,9 +336,72 @@ export async function requestCommand(swarmfs, topicName, chunkHash, options = {}
   console.log(`Request ID: ${requestId.substring(0, 16)}...`);
   console.log('\nWaiting for offers...\n');
 
+  if (process.stdout.isTTY && swarmfs.protocol) {
+    let progressBar = null;
+    let expectedSize = 0;
+
+    const onStart = (info) => {
+      expectedSize = info.size || 0;
+      progressBar = term.progressBar({
+        title: 'Download',
+        width: Math.min(60, (term.width || 80) - 20),
+        percent: true,
+        eta: true
+      });
+      progressBar.update(0);
+    };
+
+    const onProgress = (info) => {
+      if (!progressBar) {
+        return;
+      }
+
+      const pct = expectedSize > 0 ? Math.min(1, info.current / expectedSize) : 0;
+      progressBar.update(pct);
+    };
+
+    const onDone = (info) => {
+      if (info.requestId !== requestId) {
+        return;
+      }
+      if (progressBar) {
+        progressBar.update(1);
+        term('\n');
+      }
+      cleanup();
+    };
+
+    const onTimeout = (info) => {
+      if (info.requestId !== requestId) {
+        return;
+      }
+      cleanup();
+    };
+
+    const onError = (info) => {
+      if (info.requestId !== requestId) {
+        return;
+      }
+      cleanup();
+    };
+
+    const cleanup = () => {
+      swarmfs.protocol.removeListener('chunk:download-started', onStart);
+      swarmfs.protocol.removeListener('chunk:progress', onProgress);
+      swarmfs.protocol.removeListener('chunk:downloaded', onDone);
+      swarmfs.protocol.removeListener('chunk:timeout', onTimeout);
+      swarmfs.protocol.removeListener('chunk:error', onError);
+    };
+
+    swarmfs.protocol.on('chunk:download-started', onStart);
+    swarmfs.protocol.on('chunk:progress', onProgress);
+    swarmfs.protocol.on('chunk:downloaded', onDone);
+    swarmfs.protocol.on('chunk:timeout', onTimeout);
+    swarmfs.protocol.on('chunk:error', onError);
+  }
+
   return requestId;
 }
-
 
 export async function networkCommand(swarmfs) {
   swarmfs.open();
@@ -348,11 +427,103 @@ export async function networkCommand(swarmfs) {
   return stats;
 }
 
+/**
+ * Download a complete file by requesting all chunks
+ */
+export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath, options = {}) {
+  swarmfs.open();
+
+  // Auto-join topic if not connected
+  if (!swarmfs.network || !swarmfs.protocol) {
+    console.log(`Joining topic "${topicName}"...`);
+    await swarmfs.joinTopic(topicName);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  console.log(`\nDownloading file from topic "${topicName}"...`);
+  console.log(`Merkle Root: ${merkleRoot}`);
+  console.log(`Output: ${outputPath}\n`);
+
+  let progressBar = null;
+  let totalChunks = 0;
+  let downloadedChunks = 0;
+  let initializedItems = false;
+  let lastDownloadedChunks = 0;
+
+  if (process.stdout.isTTY) {
+    progressBar = term.progressBar({
+      title: 'File download',
+      width: Math.min(60, (term.width || 80) - 20),
+      percent: true,
+      eta: true
+    });
+    progressBar.update(0);
+  }
+
+  try {
+    const result = await swarmfs.downloadFile(topicName, merkleRoot, outputPath, {
+      onProgress: (info) => {
+        if (!progressBar) {
+          return;
+        }
+
+        if (typeof info.totalChunks === 'number') {
+          totalChunks = info.totalChunks;
+        }
+        if (typeof info.downloadedChunks === 'number') {
+          downloadedChunks = info.downloadedChunks;
+        }
+
+        if (!initializedItems && totalChunks > 0) {
+          initializedItems = true;
+          progressBar.update({ items: totalChunks, progress: 0 });
+        }
+
+        if (initializedItems) {
+          progressBar.update({
+            progress: totalChunks > 0 ? Math.min(1, downloadedChunks / totalChunks) : 0,
+            items: totalChunks
+          });
+
+          const delta = downloadedChunks - lastDownloadedChunks;
+          if (delta > 0) {
+            for (let i = 0; i < delta; i++) {
+              progressBar.itemDone();
+            }
+            lastDownloadedChunks = downloadedChunks;
+          }
+        } else {
+          const pct = totalChunks > 0 ? Math.min(1, downloadedChunks / totalChunks) : 0;
+          progressBar.update(pct);
+        }
+      }
+    });
+
+    if (progressBar) {
+      progressBar.update(1);
+      term('\n');
+    }
+    
+    console.log(`\n✅ File downloaded successfully!`);
+    console.log(`  Path: ${result.path}`);
+    console.log(`  Size: ${formatBytes(result.size)}`);
+    console.log(`  Chunks: ${result.totalChunks}`);
+    console.log(`  Downloaded: ${result.chunksDownloaded}`);
+    console.log(`  Already had: ${result.chunksAlreadyHad}`);
+    
+    return result;
+  } catch (error) {
+    if (progressBar) {
+      term('\n');
+    }
+    console.error(`\n❌ Download failed: ${error.message}`);
+    throw error;
+  }
+}
 
 // ============================================================================
 // COMMAND REGISTRY
 // ============================================================================
-
 
 export const commands = {
   // File commands
@@ -373,15 +544,15 @@ export const commands = {
   
   // Network commands
   request: requestCommand,
+  download: downloadCommand,
+  browse: browseCommand,
   network: networkCommand
 };
-
 
 // Helper to get command by name (handles aliases)
 export function getCommand(name) {
   return commands[name];
 }
-
 
 // Helper to list all commands
 export function listCommands() {

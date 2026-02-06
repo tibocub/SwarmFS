@@ -33,6 +33,37 @@ console.log('Type "help" for commands, "exit" to quit\n');
 // Command history
 const history = [];
 
+// Auto-join topics marked with auto_join flag
+async function autoJoinTopics() {
+  try {
+    swarmfs.open();
+    const topics = await swarmfs.db.getAutoJoinTopics();
+    
+    if (topics.length > 0) {
+      console.log(`Auto-joining ${topics.length} topic(s)...\n`);
+      
+      for (const topic of topics) {
+        try {
+          await cmd.topicJoinCommand(swarmfs, topic.name);
+          console.log('');
+        } catch (error) {
+          console.error(`  Error joining ${topic.name}:`, error.message);
+        }
+      }
+      
+      console.log('');
+    }
+  } catch (error) {
+    console.error('Error during auto-join:', error.message);
+  }
+}
+
+// Run auto-join before starting prompt
+autoJoinTopics().then(() => {
+  // Start the REPL
+  rl.prompt();
+});
+
 // Parse command line into args
 function parseArgs(line) {
   const args = [];
@@ -87,6 +118,8 @@ async function executeCommand(line) {
     console.log('  topic leave <n>       Leave topic');
     console.log('\nNetwork:');
     console.log('  request <topic> <chunkHash>');
+    console.log('  browse <topic>');
+    console.log('  download <topic> <merkleRoot> <outputPath>');
     console.log('  network                 Show network status');
     console.log('\nREPL:');
     console.log('  help                    Show this help');

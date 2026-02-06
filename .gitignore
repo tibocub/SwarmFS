@@ -1,6 +1,9 @@
 # SwarmFS data dir
 swarmfs-data
 
+# Big files for file transfer tests
+*.mp4
+
 # dependencies (bun install)
 node_modules
 
