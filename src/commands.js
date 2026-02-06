@@ -9,6 +9,7 @@ import terminalKit from 'terminal-kit';
 
 const term = terminalKit.terminal;
 
+
 // Utility functions
 export function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
@@ -503,6 +504,7 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
       progressBar.update(1);
       term('\n');
     }
+
     
     console.log(`\n✅ File downloaded successfully!`);
     console.log(`  Path: ${result.path}`);
@@ -516,6 +518,7 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
     if (progressBar) {
       term('\n');
     }
+
     console.error(`\n❌ Download failed: ${error.message}`);
     throw error;
   }

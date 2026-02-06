@@ -26,6 +26,7 @@ export class SwarmNetwork extends EventEmitter {
     
     // Initialize Hyperswarm
     debug('[NETWORK] Creating Hyperswarm instance...');
+
     this.swarm = new Hyperswarm({
       maxPeers: this.config.maxConnections
     });

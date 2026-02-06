@@ -166,34 +166,6 @@ export class Protocol extends EventEmitter {
   /**
    * REQUEST: Peer needs a chunk
    */
-//  async handleRequest(conn, peerId, payload) {
-//    const { requestId, chunkHash } = payload;
-//    
-//    console.log(`📥 REQUEST from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
-//    
-//    // Check if we have this chunk (regardless of sharing status)
-//    // This enables topic-based content-addressing for ALL our chunks
-//    if (!this.storage.hasChunk(chunkHash)) {
-//      console.log(`   ⚠️  Don't have chunk`);
-//      return;
-//    }
-//    
-//    // Get chunk info from database
-//    const chunkInfo = this.db.getChunk(chunkHash);
-//    if (!chunkInfo) {
-//      console.log(`   ⚠️  Chunk not in database`);
-//      return;
-//    }
-//    
-//    console.log(`   ✓ Have chunk (${chunkInfo.size} bytes)`);
-//    
-//    const merkleProof = await this.generateMerkleProof(chunkHash);
-//    
-//    // Send OFFER
-//    this.sendOffer(conn, requestId, chunkHash, chunkInfo.size, merkleProof);
-//  }
-
-
   async handleRequest(conn, peerId, payload) {
     const { requestId, chunkHash } = payload;
 
@@ -306,98 +278,6 @@ export class Protocol extends EventEmitter {
   /**
    * CHUNK_DATA: Received chunk data
    */
-//  handleChunkData(conn, peerId, payload) {
-//    const { requestId, chunkHash, data } = payload;
-//    
-//    // Convert data back to Buffer (it comes as base64 in JSON)
-//    const chunkData = Buffer.from(data, 'base64');
-//    
-//
-//    console.log(`📦 CHUNK_DATA from ${peerId.substring(0, 8)}: ${chunkData.length} bytes`);
-//    
-//    // Update progress
-//    const download = this.activeDownloads.get(requestId);
-//    if (download) {
-//      download.receivedSize = chunkData.length;
-//      this.emit('chunk:progress', {
-//        requestId,
-//        chunkHash,
-//        current: chunkData.length,
-//        total: download.expectedSize,
-//        percentage: (chunkData.length / download.expectedSize) * 100
-//      });
-//    }
-//    
-//    // Verify hash
-//    const actualHash = crypto.createHash('sha256').update(chunkData).digest('hex');
-//    
-//    if (actualHash !== chunkHash) {
-//      console.error(`   ❌ Hash mismatch! Expected ${chunkHash.substring(0, 16)}... got ${actualHash.substring(0, 16)}...`);
-//      
-//      // Clear timeout on error
-//      const request = this.activeRequests.get(requestId);
-//      if (request && request.timeout) {
-//        clearTimeout(request.timeout);
-//      }
-//      
-//      this.activeRequests.delete(requestId);
-//      this.activeDownloads.delete(requestId);
-//      
-//      this.emit('chunk:error', { requestId, chunkHash, error: 'Hash mismatch' });
-//      return;
-//    }
-//    
-//    console.log(`   ✓ Hash verified`);
-//    
-//    // Store chunk
-//    try {
-//      file = db.getFileByChunkHash(chunkHash)
-//  
-//      fs.writeFileSync(file.path, data, {
-//        start: chunk.offset
-//      })
-//    
-//      // this.storage.storeChunk(chunkHash, chunkData);
-//      this.db.addChunk(chunkHash, chunkData.length);
-//      
-//      console.log(`   ✓ Chunk stored`);
-//      
-//      // CRITICAL: Clear timeout before cleaning up request
-//      const request = this.activeRequests.get(requestId);
-//      if (request && request.timeout) {
-//        clearTimeout(request.timeout);
-//        console.log(`   ✓ Timeout cleared`);
-//      }
-//      
-//      // Clean up request and download
-//      this.activeRequests.delete(requestId);
-//      this.activeDownloads.delete(requestId);
-//      
-//      // Emit success
-//      this.emit('chunk:downloaded', {
-//        requestId,
-//        chunkHash,
-//        size: chunkData.length,
-//        peerId
-//      });
-//      
-//    } catch (error) {
-//      console.error(`   ❌ Error storing chunk:`, error.message);
-//      
-//      // Clear timeout on error
-//      const request = this.activeRequests.get(requestId);
-//      if (request && request.timeout) {
-//        clearTimeout(request.timeout);
-//      }
-//      
-//      this.activeRequests.delete(requestId);
-//      this.activeDownloads.delete(requestId);
-//      
-//      this.emit('chunk:error', { requestId, chunkHash, error: error.message });
-//    }
-//  }
-
-
   handleChunkData(conn, peerId, payload) {
     const { requestId, chunkHash, data } = payload;
     const chunkData = Buffer.from(data, 'base64');
