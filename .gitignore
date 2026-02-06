@@ -4,6 +4,10 @@ swarmfs-data
 # Big files for file transfer tests
 *.mp4
 
+# packages lock files
+package-lock.json
+bun.lock
+
 # dependencies (bun install)
 node_modules
 

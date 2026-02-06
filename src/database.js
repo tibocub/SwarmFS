@@ -3,7 +3,7 @@
  * Uses better-sqlite3 for metadata storage
  */
 
-import Database from 'better-sqlite3';
+import { Database } from './sqlite.js';
 
 const SCHEMA = `
 -- Files: Tracked files on filesystem

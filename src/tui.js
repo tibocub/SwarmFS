@@ -190,10 +190,12 @@ export async function startTui(swarmfs) {
     term.styleReset();
   }
 
-  function renderPromptLine(y) {
-    writeFixed(1, y, Math.max(1, (term.width || 80)), '');
-    term.moveTo(1, y);
-    term('> ');
+  function renderPromptPrefix(y) {
+    writeFixed(1, y, 2, '> ');
+  }
+
+  function clearPromptLine(y) {
+    writeFixed(1, y, Math.max(1, term.width || 80), '');
   }
 
   function renderFrame() {
@@ -205,8 +207,9 @@ export async function startTui(swarmfs) {
 
     renderStatusBar(l.statusY, l.width);
     if (!state.inputActive) {
-      renderPromptLine(l.promptY);
+      clearPromptLine(l.promptY);
     }
+    renderPromptPrefix(l.promptY);
 
     frameDirty = false;
   }
@@ -227,8 +230,9 @@ export async function startTui(swarmfs) {
 
     renderStatusBar(l.statusY, l.width);
     if (!state.inputActive) {
-      renderPromptLine(l.promptY);
+      clearPromptLine(l.promptY);
     }
+    renderPromptPrefix(l.promptY);
   }
 
   function restoreConsole() {
@@ -378,6 +382,8 @@ export async function startTui(swarmfs) {
     const w = Math.max(10, l.width - 2);
 
     state.inputActive = true;
+    renderPromptPrefix(y);
+    writeFixed(x, y, Math.max(1, l.width - 2), '');
     term.moveTo(x, y);
 
     term.inputField({
@@ -413,8 +419,6 @@ export async function startTui(swarmfs) {
       return;
     }
   });
-
-  term.on('resize', () => scheduleRender());
 
   term.on('resize', () => {
     frameDirty = true;
