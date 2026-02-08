@@ -20,12 +20,12 @@ export const PROTOCOL_VERSION = 1;
 
 // Message types
 export const MSG_TYPE = {
-  REQUEST: 0x01,      // Request a chunk by hash
-  OFFER: 0x02,        // Offer to provide chunk (with Merkle proof)
-  DOWNLOAD: 0x03,     // Accept offer and start download
-  CHUNK_DATA: 0x04,   // Actual chunk bytes
-  CANCEL: 0x05,       // Cancel request
-  ERROR: 0x06,        // Error response
+  REQUEST: 0x01,            // Request a chunk by hash
+  OFFER: 0x02,              // Offer to provide chunk (with Merkle proof)
+  DOWNLOAD: 0x03,           // Accept offer and start download
+  CHUNK_DATA: 0x04,         // Actual chunk bytes
+  CANCEL: 0x05,             // Cancel request
+  ERROR: 0x06,              // Error response
   FILE_LIST_REQUEST: 0x07,  // Request list of shared files in topic
   FILE_LIST_RESPONSE: 0x08, // Response with shared files
   METADATA_REQUEST: 0x09,   // Request file metadata by merkle root

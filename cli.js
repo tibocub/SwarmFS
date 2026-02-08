@@ -10,6 +10,17 @@ import { SwarmFS } from './src/swarmfs.js';
 import { getDataDir } from './src/config.js';
 import * as cmd from './src/commands.js';
 
+import path from "path";
+import { fileURLToPath } from "url";
+
+if (process.versions.bun) {
+  // Tell terminal-kit where its runtime files live inside the bundled binary
+  process.env.TERMKIT_PATH = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "node_modules/terminal-kit/lib"
+  );
+}
+
 const program = new Command();
 
 // Get data directory from config

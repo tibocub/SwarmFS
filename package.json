@@ -1,28 +1,16 @@
 {
-
   "name": "swarmfs",
-
   "version": "0.0.1",
-
   "type": "module",
-
-  "main": "src/commander-cli.js",
-
+  "main": "cli.js",
   "private": true,
-
   "dependencies": {
-
-    "better-sqlite3": "^12.6.2",
-
     "commander": "^14.0.3",
-
     "hyperswarm": "^4.16.0",
-
-    "merkletreejs": "^0.6.0",
-
     "terminal-kit": "^3.1.2"
-
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.6.2"
   }
-
 }
 

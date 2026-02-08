@@ -1,14 +1,15 @@
 /**
- * SwarmFS - Main class
+ * SwarmFS - Main class with Parallel Merkle Tree Support
  * Coordinates database, storage, and file operations
  */
 
 import fs from 'fs';
 import path from 'path';
 import { SwarmDB } from './database.js';
-import { chunkBuffer, DEFAULT_CHUNK_SIZE } from './chunk.js';
+import { DEFAULT_CHUNK_SIZE } from './chunk.js';
 import { hashBuffer } from './hash.js';
-import { getMerkleRoot } from './merkle.js';
+import { getMerkleRoot, buildMerkleTree } from './merkle.js';
+import { buildFileMerkleTreeParallel, buildMultipleFileMerkleTrees } from './merkle-tree-parallel.js';
 
 export class SwarmFS {
   constructor(dataDir) {
@@ -56,10 +57,18 @@ export class SwarmFS {
   }
 
   /**
-   * Add a file to SwarmFS
-   * Also used internally by addDirectory
+   * Add a file to SwarmFS using parallel merkle tree building
+   * @param {string} filePath - Path to file
+   * @param {number} chunkSize - Chunk size in bytes
+   * @param {object} options - Options { useParallel, workerCount, onProgress }
    */
-  async addFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE) {
+  async addFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE, options = {}) {
+    const {
+      useParallel = true,
+      workerCount = null,
+      onProgress = null
+    } = options;
+
     // Resolve to absolute path
     const absolutePath = path.resolve(filePath);
 
@@ -76,33 +85,121 @@ export class SwarmFS {
 
     const fileSize = stats.size;
 
-    // Hash each chunk without copying the file
-    const chunkHashes = [];
-    const chunkEntries = [];
-    let offset = 0;
-    const fd = fs.openSync(absolutePath, 'r');
+    // Decide whether to use parallel or single-threaded approach
+    const shouldUseParallel = useParallel && (fileSize > 1024 * 1024); // Use parallel for files > 1MB
 
-    try {
-      while (offset < fileSize) {
-        const length = Math.min(chunkSize, fileSize - offset);
-        let buffer = Buffer.allocUnsafe(length);
-        const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
+    let chunkHashes;
+    let chunkEntries;
+    let merkleRoot;
 
-        if (bytesRead !== length) {
-          buffer = buffer.subarray(0, bytesRead);
+    if (shouldUseParallel) {
+      // Use parallel merkle tree builder
+      try {
+        const tree = await buildFileMerkleTreeParallel(
+          absolutePath,
+          chunkSize,
+          {
+            workerCount,
+            debug: true, // Enable debug logging
+            onProgress: (status) => {
+              if (onProgress && status.phase === 'hashing') {
+                const percent = (status.completed / status.total * 100).toFixed(1);
+                onProgress(`Hashing chunks: ${percent}%`);
+              }
+            }
+          }
+        );
+
+        // Verify tree structure
+        if (!tree || !tree.levels || !Array.isArray(tree.levels[0]) || tree.levels[0].length === 0) {
+          throw new Error('Invalid merkle tree structure returned');
         }
 
-        const hash = hashBuffer(buffer);
-        chunkHashes.push(hash);
-        chunkEntries.push({ hash, offset, size: buffer.length });
-        offset += buffer.length;
-      }
-    } finally {
-      fs.closeSync(fd);
-    }
+        // Extract chunk hashes from tree levels (level 0 = leaf hashes)
+        chunkHashes = tree.levels[0];
+        merkleRoot = tree.root;
 
-    // Build Merkle tree
-    const merkleRoot = getMerkleRoot(chunkHashes);
+        // Build chunk entries with offset and size info
+        chunkEntries = chunkHashes.map((hash, index) => {
+          const offset = index * chunkSize;
+          const size = Math.min(chunkSize, fileSize - offset);
+          return { hash, offset, size };
+        });
+
+      } catch (parallelError) {
+        // Fallback to single-threaded if parallel fails
+        if (onProgress) {
+          onProgress('Parallel processing failed, falling back to single-threaded...');
+        }
+        console.warn(`Parallel processing failed: ${parallelError.message}, using fallback`);
+        
+        // Force single-threaded processing
+        chunkHashes = [];
+        chunkEntries = [];
+        let offset = 0;
+        const fd = fs.openSync(absolutePath, 'r');
+
+        try {
+          while (offset < fileSize) {
+            const length = Math.min(chunkSize, fileSize - offset);
+            let buffer = Buffer.allocUnsafe(length);
+            const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
+
+            if (bytesRead !== length) {
+              buffer = buffer.subarray(0, bytesRead);
+            }
+
+            const hash = hashBuffer(buffer);
+            chunkHashes.push(hash);
+            chunkEntries.push({ hash, offset, size: buffer.length });
+            offset += buffer.length;
+
+            if (onProgress && chunkEntries.length % 100 === 0) {
+              const percent = (offset / fileSize * 100).toFixed(1);
+              onProgress(`Hashing chunks: ${percent}%`);
+            }
+          }
+        } finally {
+          fs.closeSync(fd);
+        }
+
+        merkleRoot = getMerkleRoot(chunkHashes);
+      }
+
+    } else {
+      // Use single-threaded approach (original implementation)
+      chunkHashes = [];
+      chunkEntries = [];
+      let offset = 0;
+      const fd = fs.openSync(absolutePath, 'r');
+
+      try {
+        while (offset < fileSize) {
+          const length = Math.min(chunkSize, fileSize - offset);
+          let buffer = Buffer.allocUnsafe(length);
+          const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
+
+          if (bytesRead !== length) {
+            buffer = buffer.subarray(0, bytesRead);
+          }
+
+          const hash = hashBuffer(buffer);
+          chunkHashes.push(hash);
+          chunkEntries.push({ hash, offset, size: buffer.length });
+          offset += buffer.length;
+
+          if (onProgress && chunkEntries.length % 100 === 0) {
+            const percent = (offset / fileSize * 100).toFixed(1);
+            onProgress(`Hashing chunks: ${percent}%`);
+          }
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+
+      // Build Merkle tree
+      merkleRoot = getMerkleRoot(chunkHashes);
+    }
 
     // Add file to database
     const fileId = this.db.addFile(
@@ -128,9 +225,19 @@ export class SwarmFS {
   }
 
   /**
-   * Add a directory to SwarmFS recursively
+   * Add a directory to SwarmFS recursively with parallel processing
+   * @param {string} dirPath - Directory path
+   * @param {number} chunkSize - Chunk size
+   * @param {object} options - Options { useParallel, workerCount, batchSize, onProgress }
    */
-  async addDirectory(dirPath, chunkSize = DEFAULT_CHUNK_SIZE) {
+  async addDirectory(dirPath, chunkSize = DEFAULT_CHUNK_SIZE, options = {}) {
+    const {
+      useParallel = true,
+      workerCount = null,
+      batchSize = 4, // Process 4 files concurrently
+      onProgress = null
+    } = options;
+
     const absolutePath = path.resolve(dirPath);
 
     // Import scanner here to avoid circular deps
@@ -147,21 +254,72 @@ export class SwarmFS {
 
     // Get all files
     const allFiles = getAllFiles(tree);
-
-    // Add each file
     const results = [];
     const fileHashes = new Map();
 
-    for (let i = 0; i < allFiles.length; i++) {
-      const filePath = allFiles[i];
-      console.log(`  [${i + 1}/${allFiles.length}] Adding ${path.basename(filePath)}...`);
-      
-      try {
-        const result = await this.addFile(filePath, chunkSize);
-        results.push(result);
-        fileHashes.set(result.path, result.merkleRoot);
-      } catch (error) {
-        console.error(`    Error: ${error.message}`);
+    if (useParallel && allFiles.length > 1) {
+      // Process files in batches using parallel merkle tree building
+      console.log(`Processing files in parallel (batch size: ${batchSize})...`);
+
+      for (let i = 0; i < allFiles.length; i += batchSize) {
+        const batch = allFiles.slice(i, Math.min(i + batchSize, allFiles.length));
+        
+        // Process batch in parallel
+        const batchPromises = batch.map(async (filePath, batchIndex) => {
+          const globalIndex = i + batchIndex;
+          const fileName = path.basename(filePath);
+          console.log(`  [${globalIndex + 1}/${allFiles.length}] Adding ${fileName}...`);
+          
+          try {
+            const result = await this.addFile(filePath, chunkSize, {
+              useParallel: true,
+              workerCount,
+              onProgress: (msg) => {
+                if (onProgress) {
+                  onProgress(`[${globalIndex + 1}/${allFiles.length}] ${msg}`);
+                }
+              }
+            });
+            
+            return { success: true, result, filePath };
+          } catch (error) {
+            console.error(`    ✗ Error adding ${fileName}: ${error.message}`);
+            return { success: false, error: error.message, filePath };
+          }
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+        
+        // Collect successful results
+        for (const item of batchResults) {
+          if (item.success) {
+            results.push(item.result);
+            fileHashes.set(item.result.path, item.result.merkleRoot);
+          }
+        }
+      }
+
+    } else {
+      // Single-threaded processing (original implementation)
+      for (let i = 0; i < allFiles.length; i++) {
+        const filePath = allFiles[i];
+        console.log(`  [${i + 1}/${allFiles.length}] Adding ${path.basename(filePath)}...`);
+        
+        try {
+          const result = await this.addFile(filePath, chunkSize, {
+            useParallel: false,
+            onProgress: (msg) => {
+              if (onProgress) {
+                onProgress(`[${i + 1}/${allFiles.length}] ${msg}`);
+              }
+            }
+          });
+          
+          results.push(result);
+          fileHashes.set(result.path, result.merkleRoot);
+        } catch (error) {
+          console.error(`    Error: ${error.message}`);
+        }
       }
     }
 
@@ -224,9 +382,10 @@ export class SwarmFS {
   }
 
   /**
-   * Verify a file's integrity
+   * Verify a file's integrity using parallel merkle tree building
    */
-  async verifyFile(filePath) {
+  async verifyFile(filePath, options = {}) {
+    const { useParallel = true, workerCount = null } = options;
     const absolutePath = path.resolve(filePath);
     const fileInfo = this.getFileInfo(absolutePath);
 
@@ -242,21 +401,37 @@ export class SwarmFS {
       };
     }
 
-    // Read current file
-    const currentData = fs.readFileSync(absolutePath);
-    
+    const stats = fs.statSync(absolutePath);
+
     // Check size
-    if (currentData.length !== fileInfo.size) {
+    if (stats.size !== fileInfo.size) {
       return {
         valid: false,
-        error: `Size mismatch: expected ${fileInfo.size}, got ${currentData.length}`
+        error: `Size mismatch: expected ${fileInfo.size}, got ${stats.size}`
       };
     }
 
-    // Chunk and verify
-    const chunks = chunkBuffer(currentData, fileInfo.chunk_size);
-    const currentHashes = chunks.map(chunk => hashBuffer(chunk));
-    const currentRoot = getMerkleRoot(currentHashes);
+    // Rebuild merkle tree and compare
+    let currentRoot;
+    let currentHashes;
+
+    if (useParallel && stats.size > 1024 * 1024) {
+      // Use parallel verification
+      const tree = await buildFileMerkleTreeParallel(
+        absolutePath,
+        fileInfo.chunk_size,
+        { workerCount }
+      );
+      currentRoot = tree.root;
+      currentHashes = tree.levels[0];
+    } else {
+      // Use single-threaded verification
+      const currentData = fs.readFileSync(absolutePath);
+      const { chunkBuffer } = await import('./chunk.js');
+      const chunks = chunkBuffer(currentData, fileInfo.chunk_size);
+      currentHashes = chunks.map(chunk => hashBuffer(chunk));
+      currentRoot = getMerkleRoot(currentHashes);
+    }
 
     // Compare Merkle roots
     if (currentRoot !== fileInfo.merkle_root) {
@@ -281,7 +456,7 @@ export class SwarmFS {
 
     return {
       valid: true,
-      chunks: chunks.length,
+      chunks: currentHashes.length,
       merkleRoot: currentRoot
     };
   }
