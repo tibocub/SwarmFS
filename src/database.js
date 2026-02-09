@@ -198,6 +198,18 @@ export class SwarmDB {
     return stmt.get(chunkHash);
   }
 
+  getChunkLocations(chunkHash, limit = 10) {
+    const stmt = this.db.prepare(`
+      SELECT f.id AS file_id, f.path, f.merkle_root, fc.chunk_index, fc.chunk_offset, fc.chunk_size
+      FROM file_chunks fc
+      JOIN files f ON f.id = fc.file_id
+      WHERE fc.chunk_hash = ? AND f.file_modified_at > 0
+      ORDER BY f.added_at DESC
+      LIMIT ?
+    `);
+    return stmt.all(chunkHash, limit);
+  }
+
   /**
    * Get chunk location for writes (includes incomplete downloads)
    */

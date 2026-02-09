@@ -32,13 +32,12 @@ export class SwarmNetwork extends EventEmitter {
     });
     
     // Track active topics and connections
-    this.topics = new Map(); // topicKey -> { discovery, name }
-    this.connections = new Map(); // peerId -> { conn, topics: Set }
-    
-    // Setup connection handler
-    this.swarm.on('connection', (conn, info) => {
-      this.handleConnection(conn, info);
-    });
+    // topics: topicKeyHex -> { discovery, name, key, connections: Map<peerId, conn> }
+    this.topics = new Map();
+    // peerConnections: peerId -> { conn, topics: Set<topicKeyHex> }
+    this.peerConnections = new Map();
+
+    this.setupSwarmHandlers();
     
     debug('[NETWORK] SwarmNetwork initialized');
   }
@@ -72,7 +71,8 @@ export class SwarmNetwork extends EventEmitter {
     this.topics.set(topicKeyHex, {
       discovery,
       name: topicName,
-      key: topicKey
+      key: topicKey,
+      connections: new Map()
     });
 
     this.emit('topic:joined', topicName, topicKeyHex);
@@ -99,10 +99,15 @@ export class SwarmNetwork extends EventEmitter {
     this.topics.delete(topicKeyHex);
 
     // Close connections that only belonged to this topic
-    for (const [peerId, peerInfo] of this.connections) {
+    for (const [peerId, peerInfo] of this.peerConnections) {
       peerInfo.topics.delete(topicKeyHex);
       if (peerInfo.topics.size === 0) {
-        peerInfo.conn.destroy();
+        try {
+          peerInfo.conn.destroy();
+        } catch {
+          // ignore
+        }
+        this.peerConnections.delete(peerId);
       }
     }
 
@@ -113,52 +118,88 @@ export class SwarmNetwork extends EventEmitter {
   /**
    * Handle new peer connection
    */
-  handleConnection(conn, info) {
-    const peerId = conn.remotePublicKey.toString('hex');
-    
-    debug(`\n[NETWORK] 🔗 Peer connected: ${peerId.substring(0, 16)}...`);
+  setupSwarmHandlers() {
+    this.swarm.on('connection', (conn, info) => {
+      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
 
-    // Find which topic this connection belongs to
-    const topicKey = info.topics[0]?.toString('hex');
-    const topic = this.topics.get(topicKey);
+      conn.on('error', (err) => {
+        console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
+      });
 
-    if (topic) {
-      debug(`[NETWORK]    Topic: ${topic.name}`);
-    }
+      // Hyperswarm can report multiple topics. Sometimes info.topics is empty.
+      // We only track connections under topics we joined.
+      const joinedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
+      const inferredTopicKeys = joinedTopicKeys.length > 0
+        ? joinedTopicKeys
+        : Array.from(this.topics.keys()).map((hex) => Buffer.from(hex, 'hex'));
 
-    // Store connection info
-    const peerInfo = this.connections.get(peerId) || {
-      conn,
-      topics: new Set()
-    };
+      debug(`\n[NETWORK] 🔗 Peer connected: ${peerId.substring(0, 16)}...`);
+      if (inferredTopicKeys.length === 0) {
+        debug('[NETWORK]    No joined topics yet; connection will not be attributed to a topic');
+      }
 
-    if (topicKey) {
-      peerInfo.topics.add(topicKey);
-    }
+      if (!this.peerConnections.has(peerId)) {
+        this.peerConnections.set(peerId, { conn, topics: new Set() });
+      }
 
-    this.connections.set(peerId, peerInfo);
+      const peerConn = this.peerConnections.get(peerId);
 
-    // Emit event for protocol layer (Phase 4.3)
-    this.emit('peer:connect', conn, {
-      peerId,
-      topics: Array.from(peerInfo.topics)
+      for (const t of inferredTopicKeys) {
+        const topicKeyHex = t.toString('hex');
+        const topic = this.topics.get(topicKeyHex);
+        if (!topic) {
+          continue;
+        }
+
+        peerConn.topics.add(topicKeyHex);
+        topic.connections.set(peerId, conn);
+
+        debug(`[NETWORK]    Topic: ${topic.name}`);
+
+        // Emit both event styles for compatibility across older/newer layers.
+        this.emit('peer:connected', { conn, peerId, topicKey: t });
+        this.emit('peer:connect', { conn, peerId, topicKey: t });
+      }
+
+      this.setupConnectionHandlers(conn, peerId);
     });
+  }
 
-    // Handle disconnection
-    conn.on('close', () => {
-      debug(`\n[NETWORK] ❌ Peer disconnected: ${peerId.substring(0, 16)}...`);
-      this.connections.delete(peerId);
-      this.emit('peer:disconnect', peerId);
-    });
-
-    // Handle data - CRITICAL for protocol
+  setupConnectionHandlers(conn, peerId) {
     conn.on('data', (data) => {
-      debug(`[NETWORK] 📨 Data from ${peerId.substring(0, 8)}: ${data.length} bytes`);
+      const peerConn = this.peerConnections.get(peerId);
+      const topics = peerConn ? Array.from(peerConn.topics) : [];
+
+      // If we know the topic(s), emit one event per topic for deterministic routing.
+      if (topics.length > 0) {
+        for (const topicKeyHex of topics) {
+          this.emit('peer:data', { conn, peerId, topicKey: Buffer.from(topicKeyHex, 'hex'), data });
+        }
+        return;
+      }
+
+      // Fallback: positional payload (older callers)
       this.emit('peer:data', conn, peerId, data);
     });
 
-    conn.on('error', (err) => {
-      console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
+    conn.on('close', () => {
+      debug(`\n[NETWORK] ❌ Peer disconnected: ${peerId.substring(0, 16)}...`);
+
+      const peerConn = this.peerConnections.get(peerId);
+      const topics = peerConn ? Array.from(peerConn.topics) : [];
+
+      for (const topicKeyHex of topics) {
+        const topic = this.topics.get(topicKeyHex);
+        if (topic) {
+          topic.connections.delete(peerId);
+        }
+
+        const topicKey = Buffer.from(topicKeyHex, 'hex');
+        this.emit('peer:disconnected', { peerId, topicKey });
+        this.emit('peer:disconnect', { peerId, topicKey });
+      }
+
+      this.peerConnections.delete(peerId);
     });
   }
 
@@ -168,7 +209,7 @@ export class SwarmNetwork extends EventEmitter {
   getStats() {
     return {
       topics: this.topics.size,
-      connections: this.connections.size,
+      connections: Array.from(this.topics.values()).reduce((acc, t) => acc + (t.connections?.size || 0), 0),
       activeTopics: Array.from(this.topics.values()).map(t => t.name)
     };
   }
@@ -182,11 +223,19 @@ export class SwarmNetwork extends EventEmitter {
 
     debug(`[NETWORK] Broadcasting ${data.length} bytes to topic ${topicKeyHex.substring(0, 16)}...`);
 
-    for (const [peerId, peerInfo] of this.connections) {
-      if (peerInfo.topics.has(topicKeyHex)) {
+    const topic = this.topics.get(topicKeyHex);
+    if (!topic || !topic.connections) {
+      debug('[NETWORK] Broadcast: topic not joined');
+      return 0;
+    }
+
+    for (const [peerId, conn] of topic.connections) {
+      try {
         debug(`[NETWORK]   -> Sending to peer ${peerId.substring(0, 8)}`);
-        peerInfo.conn.write(data);
+        conn.write(data);
         sent++;
+      } catch (err) {
+        console.error(`[NETWORK] ⚠️  Broadcast error to ${peerId.substring(0, 8)}:`, err.message);
       }
     }
 
@@ -206,15 +255,20 @@ export class SwarmNetwork extends EventEmitter {
     }
 
     // Close all connections
-    for (const [peerId, peerInfo] of this.connections) {
-      peerInfo.conn.destroy();
+    for (const [peerId, peerInfo] of this.peerConnections) {
+      try {
+        peerInfo.conn.destroy();
+      } catch {
+        // ignore
+      }
+      this.peerConnections.delete(peerId);
     }
 
     // Destroy swarm
     await this.swarm.destroy();
 
     this.topics.clear();
-    this.connections.clear();
+    this.peerConnections.clear();
 
     debug('[NETWORK] ✓ Network closed');
   }

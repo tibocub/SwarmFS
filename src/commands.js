@@ -310,7 +310,6 @@ export async function topicLeaveCommand(swarmfs, name) {
   console.log(`✓ Left topic: ${name}`);
 }
 
-// ============================================================================
 // NETWORK COMMANDS
 // ============================================================================
 
@@ -337,95 +336,95 @@ export async function requestCommand(swarmfs, topicName, chunkHash, options = {}
   console.log(`Request ID: ${requestId.substring(0, 16)}...`);
   console.log('\nWaiting for offers...\n');
 
-  if (process.stdout.isTTY && swarmfs.protocol) {
-    let progressBar = null;
-    let expectedSize = 0;
+  if (!process.stdout.isTTY || !swarmfs.protocol) {
+    return { requestId };
+  }
 
-    const onStart = (info) => {
-      expectedSize = info.size || 0;
-      progressBar = term.progressBar({
-        title: 'Download',
-        width: Math.min(60, (term.width || 80) - 20),
-        percent: true,
-        eta: true
-      });
-      progressBar.update(0);
-    };
+  const enableProgressBar = process.stdout.isTTY && process.env.SWARMFS_REPL !== '1';
+  let progressBar = null;
+  let lastPct = -1;
 
-    const onProgress = (info) => {
-      if (!progressBar) {
-        return;
-      }
+  if (enableProgressBar) {
+    progressBar = term.progressBar({
+      title: 'Chunk download',
+      width: Math.min(60, (term.width || 80) - 20),
+      percent: true
+    });
+    progressBar.update(0);
+  }
 
-      const pct = expectedSize > 0 ? Math.min(1, info.current / expectedSize) : 0;
+  const cleanup = () => {
+    swarmfs.protocol.off('chunk:download-started', onStart);
+    swarmfs.protocol.off('chunk:progress', onProgress);
+    swarmfs.protocol.off('chunk:downloaded', onDone);
+    swarmfs.protocol.off('chunk:timeout', onTimeout);
+    swarmfs.protocol.off('chunk:error', onError);
+  };
+
+  const onStart = (info) => {
+    if (!progressBar || info.requestId !== requestId) {
+      return;
+    }
+    progressBar.update(0);
+  };
+
+  const onProgress = (info) => {
+    if (info.requestId !== requestId) {
+      return;
+    }
+    if (!progressBar) {
+      return;
+    }
+    const pct = info.total > 0 ? Math.min(1, info.current / info.total) : 0;
+    const pctInt = Math.floor(pct * 100);
+    if (pctInt !== lastPct) {
+      lastPct = pctInt;
       progressBar.update(pct);
-    };
+    }
+  };
 
-    const onDone = (info) => {
-      if (info.requestId !== requestId) {
-        return;
-      }
-      if (progressBar) {
-        progressBar.update(1);
-        term('\n');
-      }
-      cleanup();
-    };
+  const stopProgressBar = () => {
+    if (!progressBar) {
+      return;
+    }
+    progressBar.update(1);
+    if (typeof progressBar.stop === 'function') {
+      progressBar.stop();
+    }
+    term('\n');
+  };
 
-    const onTimeout = (info) => {
-      if (info.requestId !== requestId) {
-        return;
-      }
-      cleanup();
-    };
+  const onDone = (info) => {
+    if (info.requestId !== requestId) {
+      return;
+    }
+    stopProgressBar();
+    cleanup();
+  };
 
-    const onError = (info) => {
-      if (info.requestId !== requestId) {
-        return;
-      }
-      cleanup();
-    };
+  const onTimeout = (info) => {
+    if (info.requestId !== requestId) {
+      return;
+    }
+    stopProgressBar();
+    cleanup();
+  };
 
-    const cleanup = () => {
-      swarmfs.protocol.removeListener('chunk:download-started', onStart);
-      swarmfs.protocol.removeListener('chunk:progress', onProgress);
-      swarmfs.protocol.removeListener('chunk:downloaded', onDone);
-      swarmfs.protocol.removeListener('chunk:timeout', onTimeout);
-      swarmfs.protocol.removeListener('chunk:error', onError);
-    };
+  const onError = (info) => {
+    if (info.requestId !== requestId) {
+      return;
+    }
+    stopProgressBar();
+    cleanup();
+  };
 
-    swarmfs.protocol.on('chunk:download-started', onStart);
-    swarmfs.protocol.on('chunk:progress', onProgress);
-    swarmfs.protocol.on('chunk:downloaded', onDone);
-    swarmfs.protocol.on('chunk:timeout', onTimeout);
-    swarmfs.protocol.on('chunk:error', onError);
-  }
+  swarmfs.protocol.on('chunk:download-started', onStart);
+  swarmfs.protocol.on('chunk:progress', onProgress);
+  swarmfs.protocol.on('chunk:downloaded', onDone);
+  swarmfs.protocol.on('chunk:timeout', onTimeout);
+  swarmfs.protocol.on('chunk:error', onError);
 
-  return requestId;
-}
-
-export async function networkCommand(swarmfs) {
-  swarmfs.open();
-  
-  if (!swarmfs.network) {
-    console.log('Network not active. Join a topic first.');
-    return null;
-  }
-  
-  const stats = swarmfs.network.getStats();
-  console.log('\nNetwork Status:');
-  console.log(`  Active Topics: ${stats.topics}`);
-  console.log(`  Connected Peers: ${stats.connections}`);
-  console.log(`  Topics: ${stats.activeTopics.join(', ') || 'none'}`);
-  
-  if (swarmfs.protocol) {
-    const protocolStats = swarmfs.protocol.getStats();
-    console.log(`\nProtocol Status:`);
-    console.log(`  Active Requests: ${protocolStats.activeRequests}`);
-    console.log(`  Active Downloads: ${protocolStats.activeDownloads}`);
-  }
-  
-  return stats;
+  return { requestId };
 }
 
 /**
@@ -445,13 +444,14 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
   console.log(`Merkle Root: ${merkleRoot}`);
   console.log(`Output: ${outputPath}\n`);
 
+  const enableProgressBar = process.stdout.isTTY && process.env.SWARMFS_REPL !== '1';
   let progressBar = null;
   let totalChunks = 0;
   let downloadedChunks = 0;
   let initializedItems = false;
   let lastDownloadedChunks = 0;
 
-  if (process.stdout.isTTY) {
+  if (enableProgressBar) {
     progressBar = term.progressBar({
       title: 'File download',
       width: Math.min(60, (term.width || 80) - 20),
@@ -465,6 +465,11 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
     const result = await swarmfs.downloadFile(topicName, merkleRoot, outputPath, {
       onProgress: (info) => {
         if (!progressBar) {
+          if (typeof info.totalChunks === 'number' && typeof info.downloadedChunks === 'number') {
+            if (info.totalChunks > 0 && (info.downloadedChunks === info.totalChunks || info.downloadedChunks % 50 === 0)) {
+              console.log(`Progress: ${info.downloadedChunks}/${info.totalChunks}`);
+            }
+          }
           return;
         }
 
@@ -502,26 +507,56 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
 
     if (progressBar) {
       progressBar.update(1);
+      if (typeof progressBar.stop === 'function') {
+        progressBar.stop();
+      }
       term('\n');
     }
 
-    
     console.log(`\n✅ File downloaded successfully!`);
     console.log(`  Path: ${result.path}`);
     console.log(`  Size: ${formatBytes(result.size)}`);
     console.log(`  Chunks: ${result.totalChunks}`);
     console.log(`  Downloaded: ${result.chunksDownloaded}`);
     console.log(`  Already had: ${result.chunksAlreadyHad}`);
-    
+
     return result;
   } catch (error) {
     if (progressBar) {
+      if (typeof progressBar.stop === 'function') {
+        progressBar.stop();
+      }
       term('\n');
     }
 
     console.error(`\n❌ Download failed: ${error.message}`);
     throw error;
   }
+}
+
+export async function networkCommand(swarmfs) {
+  swarmfs.open();
+
+  if (!swarmfs.network) {
+    console.log('Network not active. Join a topic first.');
+    return null;
+  }
+
+  const stats = swarmfs.network.getStats();
+  console.log(`\nNetwork Status:`);
+  if (typeof stats.peerCount === 'number') {
+    console.log(`  Peers: ${stats.peerCount}`);
+  }
+  if (typeof stats.topics === 'number') {
+    console.log(`  Topics: ${stats.topics}`);
+  }
+  if (stats.topicsDetails) {
+    console.log(`  Topic Details:`);
+    for (const topic of stats.topicsDetails) {
+      console.log(`    ${topic.name}: ${topic.peers} peer(s)`);
+    }
+  }
+  return stats;
 }
 
 // ============================================================================

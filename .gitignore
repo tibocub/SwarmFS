@@ -2,7 +2,9 @@
 swarmfs-data
 
 # Big files for file transfer tests
+Movies
 *.mp4
+*.mkv
 
 # packages lock files
 package-lock.json
