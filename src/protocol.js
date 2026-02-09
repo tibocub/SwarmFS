@@ -29,7 +29,10 @@ export const MSG_TYPE = {
   FILE_LIST_REQUEST: 0x07,  // Request list of shared files in topic
   FILE_LIST_RESPONSE: 0x08, // Response with shared files
   METADATA_REQUEST: 0x09,   // Request file metadata by merkle root
-  METADATA_RESPONSE: 0x0a   // Response with file metadata
+  METADATA_RESPONSE: 0x0a,  // Response with file metadata
+  HAVE: 0x0b,               // Announce single chunk
+  BITFIELD: 0x0c,           // Send complete bitfield
+  BITFIELD_REQUEST: 0x0d    // Request peer's bitfield
 };
 
 export class Protocol extends EventEmitter {
@@ -49,18 +52,146 @@ export class Protocol extends EventEmitter {
     this.activeDownloads = new Map(); // requestId -> { chunkHash, peerId, data }
     this.activeFileListRequests = new Map(); // requestId -> { topicKey, timeout }
     this.activeMetadataRequests = new Map(); // requestId -> { merkleRoot, topicKey, timeout }
+
+    // Stream reassembly buffers per peer (Hyperswarm delivers arbitrary-sized data chunks)
+    this._peerBuffers = new Map(); // peerId -> Buffer
     
     // Setup network event handlers
-    debug('[PROTOCOL] Setting up peer:data handler...');
+    debug('[PROTOCOL] Setting up peer handler...');
+
+		this.network.on('peer:connected', (conn, peerId, topicKey) => {
+      // Backward-compat: older SwarmNetwork versions may have emitted positional args
+      // New SwarmNetwork emits a single object: { conn, peerId, topicKey }
+      if (conn && typeof conn === 'object' && conn.conn && conn.peerId) {
+        const { conn: c, peerId: p, topicKey: t } = conn;
+        debug('[PROTOCOL] peer:connected (object payload)', p?.substring?.(0, 8));
+        this.onPeerConnected(c, p, t);
+        return;
+      }
+
+      debug('[PROTOCOL] peer:connected (positional payload)', peerId?.substring?.(0, 8));
+      this.onPeerConnected(conn, peerId, topicKey);
+    });
+    
+    this.network.on('peer:disconnected', (peerId, topicKey) => {
+      // New SwarmNetwork emits a single object: { peerId, topicKey }
+      if (peerId && typeof peerId === 'object' && peerId.peerId) {
+        const { peerId: p, topicKey: t } = peerId;
+        debug('[PROTOCOL] peer:disconnected (object payload)', p?.substring?.(0, 8));
+        this.onPeerDisconnected(p, t);
+        return;
+      }
+
+      debug('[PROTOCOL] peer:disconnected (positional payload)', peerId?.substring?.(0, 8));
+      this.onPeerDisconnected(peerId, topicKey);
+    });
+    
     this.network.on('peer:data', async (conn, peerId, data) => {
-      debug(`[PROTOCOL] peer:data event fired: ${data.length} bytes from ${peerId.substring(0, 8)}`);
-      await this.handleMessage(conn, peerId, data);
+      // New SwarmNetwork emits a single object: { conn, peerId, topicKey, data }
+      if (conn && typeof conn === 'object' && conn.data && conn.conn && conn.peerId) {
+        const { conn: c, peerId: p, data: d } = conn;
+        debug('[PROTOCOL] peer:data (object payload)', p?.substring?.(0, 8), 'len=', d?.length);
+        await this.handleData(c, p, d);
+        return;
+      }
+
+      debug('[PROTOCOL] peer:data (positional payload)', peerId?.substring?.(0, 8), 'len=', data?.length);
+      await this.handleData(conn, peerId, data);
     });
     
     debug('[PROTOCOL] Protocol initialized successfully');
     
     // Cleanup old requests periodically
     this.cleanupInterval = setInterval(() => this.cleanup(), 30000);
+  }
+
+  _findValidChunkSource(chunkHash, limit = 10) {
+    const locations = typeof this.db.getChunkLocations === 'function'
+      ? this.db.getChunkLocations(chunkHash, limit)
+      : (this.db.getChunkLocation(chunkHash) ? [this.db.getChunkLocation(chunkHash)] : []);
+
+    for (const loc of locations) {
+      if (!loc) {
+        continue;
+      }
+      try {
+        const chunkData = this._readChunkBytes(loc);
+        const actualHash = crypto.createHash('sha256').update(chunkData).digest('hex');
+        if (actualHash === chunkHash) {
+          return { location: loc, chunkData };
+        }
+        console.warn(
+          `   ⚠️  Stale chunk mapping candidate: ${actualHash.substring(0, 16)}... not ${chunkHash.substring(0, 16)}... (${loc.path})`
+        );
+      } catch (err) {
+        console.warn(`   ⚠️  Failed to read chunk candidate (${loc.path}): ${err.message}`);
+      }
+    }
+
+    return null;
+  }
+
+  _readChunkBytes(chunkLocation) {
+    let chunkData = Buffer.allocUnsafe(chunkLocation.chunk_size);
+    const fd = fs.openSync(chunkLocation.path, 'r');
+    try {
+      const bytesRead = fs.readSync(
+        fd,
+        chunkData,
+        0,
+        chunkLocation.chunk_size,
+        chunkLocation.chunk_offset
+      );
+      if (bytesRead !== chunkLocation.chunk_size) {
+        chunkData = chunkData.subarray(0, bytesRead);
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    return chunkData;
+  }
+  
+  onPeerConnected(conn, peerId, topicKey) {
+    console.log(`Peer connected: ${peerId.substring(0, 8)}`);
+    
+    // Notify download sessions about new peer
+    this.emit('peer:connected', { conn, peerId, topicKey });
+    
+    // Request bitfield from peer (to learn what chunks they have)
+    // this.requestBitfield(conn, peerId);
+  }
+  
+  onPeerDisconnected(peerId, topicKey) {
+    console.log(`Peer disconnected: ${peerId.substring(0, 8)}`);
+    
+    // Notify download sessions
+    this.emit('peer:disconnected', { peerId, topicKey });
+  }
+  
+  /**
+   * Request bitfield from peer (learn what chunks they have)
+   */
+  requestBitfield(conn, peerId) {
+    const message = this.encodeMessage(MSG_TYPE.BITFIELD_REQUEST, {
+      requestId: crypto.randomBytes(16).toString('hex')
+    });
+    
+    conn.write(message);
+  }
+  
+  /**
+   * Send our bitfield to peer
+   */
+  sendBitfield(conn, session) {
+    const bitfield = session.ourBitfield;
+    
+    const message = this.encodeMessage(MSG_TYPE.BITFIELD, {
+      merkleRoot: session.merkleRoot,
+      bitfield: bitfield.buffer.toString('base64'),
+      chunkCount: session.totalChunks
+    });
+    
+    conn.write(message);
   }
 
   /**
@@ -100,6 +231,45 @@ export class Protocol extends EventEmitter {
     const payload = JSON.parse(payloadBuffer.toString('utf8'));
     
     return { version, type, payload };
+  }
+
+  _tryDecodeFrames(peerId) {
+    let buf = this._peerBuffers.get(peerId);
+    if (!buf || buf.length === 0) {
+      return [];
+    }
+
+    const frames = [];
+    while (buf.length >= 6) {
+      const length = buf.readUInt32BE(2);
+      const total = 6 + length;
+      if (buf.length < total) {
+        break;
+      }
+
+      const frame = buf.subarray(0, total);
+      frames.push(frame);
+      buf = buf.subarray(total);
+    }
+
+    this._peerBuffers.set(peerId, buf);
+    return frames;
+  }
+
+  async handleData(conn, peerId, data) {
+    try {
+      const prev = this._peerBuffers.get(peerId);
+      const next = prev && prev.length > 0 ? Buffer.concat([prev, data]) : data;
+      this._peerBuffers.set(peerId, next);
+
+      const frames = this._tryDecodeFrames(peerId);
+      for (const frame of frames) {
+        await this.handleMessage(conn, peerId, frame);
+      }
+    } catch (error) {
+      console.error(`Error handling data stream from ${peerId.substring(0, 8)}:`, error.message);
+      console.error(error.stack);
+    }
   }
 
   /**
@@ -154,6 +324,15 @@ export class Protocol extends EventEmitter {
         case MSG_TYPE.METADATA_RESPONSE:
           this.handleMetadataResponse(conn, peerId, payload);
           break;
+        case MSG_TYPE.HAVE:
+          this.handleHave(conn, peerId, payload);
+          break;
+        case MSG_TYPE.BITFIELD:
+          this.handleBitfield(conn, peerId, payload);
+          break;
+        case MSG_TYPE.BITFIELD_REQUEST:
+          this.handleBitfieldRequest(conn, peerId, payload);
+          break;
         default:
           console.warn(`Unknown message type: ${type}`);
       }
@@ -169,17 +348,18 @@ export class Protocol extends EventEmitter {
   async handleRequest(conn, peerId, payload) {
     const { requestId, chunkHash } = payload;
 
-    console.log(`📥 REQUEST from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
+    console.log(`REQUEST from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
 
-    const chunkLocation = this.db.getChunkLocation(chunkHash);
-    if (!chunkLocation) {
-      console.log(`   ⚠️  Don't have chunk`);
+    const found = this._findValidChunkSource(chunkHash, 20);
+    if (!found) {
+      console.log(`   ⚠️  Don't have chunk (or all local candidates invalid/unreadable)`);
       return;
     }
 
-    console.log(`   ✓ Have chunk (${chunkLocation.chunk_size} bytes)`);
+    const { location: chunkLocation } = found;
+    console.log(`Have chunk (${chunkLocation.chunk_size} bytes)`);
 
-    const merkleProof = await this.generateMerkleProof(chunkHash);
+    const merkleProof = await this.generateMerkleProof(chunkHash, chunkLocation.file_id);
     this.sendOffer(conn, requestId, chunkHash, chunkLocation.chunk_size, merkleProof);
   }
 
@@ -190,28 +370,28 @@ export class Protocol extends EventEmitter {
   async handleOffer(conn, peerId, payload) {
     const { requestId, chunkHash, chunkSize, merkleProof } = payload;
     
-    console.log(`📨 OFFER from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
+    console.log(`OFFER from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
     
     // Check if we're still waiting for this
     const request = this.activeRequests.get(requestId);
     if (!request) {
-      console.log(`   ⚠️  Request expired or completed`);
+      console.log(`Request expired or completed`);
       return;
     }
     
     if (request.chunkHash !== chunkHash) {
-      console.log(`   ⚠️  Chunk hash mismatch`);
+      console.log(`Chunk hash mismatch`);
       return;
     }
     
     // Validate Merkle proof
     const isValidProof = await this.validateMerkleProof(chunkHash, merkleProof);
     if (!isValidProof) {
-      console.log(`   ⚠️  Invalid Merkle proof - rejecting offer`);
+      console.log(`Invalid Merkle proof - rejecting offer`);
       return;
     }
     
-    console.log(`   ✓ Valid offer (${chunkSize} bytes)${merkleProof && merkleProof.fileRoot ? ' [proof verified]' : ''}`);
+    console.log(`Valid offer (${chunkSize} bytes)${merkleProof && merkleProof.fileRoot ? ' [proof verified]' : ''}`);
     
     // Store offer
     request.offers.push({
@@ -238,41 +418,18 @@ export class Protocol extends EventEmitter {
   handleDownload(conn, peerId, payload) {
     const { requestId, chunkHash } = payload;
     
-    console.log(`📤 DOWNLOAD request from ${peerId.substring(0, 8)}: ${chunkHash.substring(0, 16)}...`);
+    console.log(`DOWNLOAD request from ${peerId.substring(0, 8)}: ${chunkHash.substring(0, 16)}...`);
     
-    const chunkLocation = this.db.getChunkLocation(chunkHash);
-    if (!chunkLocation) {
-      this.sendError(conn, requestId, 'Chunk not found');
+    const found = this._findValidChunkSource(chunkHash, 20);
+    if (!found) {
+      this.sendError(conn, requestId, 'Chunk not found (or all local candidates invalid/unreadable)');
       return;
     }
-    
-    try {
-      let chunkData = Buffer.allocUnsafe(chunkLocation.chunk_size);
-      const fd = fs.openSync(chunkLocation.path, 'r');
-      try {
-        const bytesRead = fs.readSync(
-          fd,
-          chunkData,
-          0,
-          chunkLocation.chunk_size,
-          chunkLocation.chunk_offset
-        );
-        if (bytesRead !== chunkLocation.chunk_size) {
-          chunkData = chunkData.subarray(0, bytesRead);
-        }
-      } finally {
-        fs.closeSync(fd);
-      }
-      
-      console.log(`   📦 Sending chunk (${chunkData.length} bytes)`);
-      
-      // Send chunk data
-      this.sendChunkData(conn, requestId, chunkHash, chunkData);
-      
-    } catch (error) {
-      console.error(`   ❌ Error loading chunk:`, error.message);
-      this.sendError(conn, requestId, error.message);
-    }
+
+    const { location: chunkLocation, chunkData } = found;
+    console.log(`Sending chunk (${chunkData.length} bytes)`);
+
+    this.sendChunkData(conn, requestId, chunkHash, chunkData);
   }
 
   /**
@@ -282,7 +439,7 @@ export class Protocol extends EventEmitter {
     const { requestId, chunkHash, data } = payload;
     const chunkData = Buffer.from(data, 'base64');
 
-    console.log(`📦 CHUNK_DATA from ${peerId.substring(0, 8)}: ${chunkData.length} bytes`);
+    console.log(`CHUNK_DATA from ${peerId.substring(0, 8)}: ${chunkData.length} bytes`);
 
     const download = this.activeDownloads.get(requestId);
     if (download) {
@@ -298,7 +455,7 @@ export class Protocol extends EventEmitter {
 
     const actualHash = crypto.createHash('sha256').update(chunkData).digest('hex');
     if (actualHash !== chunkHash) {
-      console.error(`   ❌ Hash mismatch! Expected ${chunkHash.substring(0, 16)}... got ${actualHash.substring(0, 16)}...`);
+      console.error(`Hash mismatch! Expected ${chunkHash.substring(0, 16)}... got ${actualHash.substring(0, 16)}...`);
 
       const request = this.activeRequests.get(requestId);
       if (request && request.timeout) {
@@ -312,50 +469,25 @@ export class Protocol extends EventEmitter {
       return;
     }
 
-    console.log(`   ✓ Hash verified`);
+    console.log(`Hash verified`);
 
-    try {
-      const chunkLocation = this.db.getChunkWriteLocation(chunkHash);
-      if (!chunkLocation) {
-        throw new Error('Chunk metadata missing for output file');
-      }
-
-      const fd = fs.openSync(chunkLocation.path, 'r+');
-      try {
-        fs.writeSync(fd, chunkData, 0, chunkData.length, chunkLocation.chunk_offset);
-      } finally {
-        fs.closeSync(fd);
-      }
-
-      console.log(`   ✓ Chunk written`);
-
-      const request = this.activeRequests.get(requestId);
-      if (request && request.timeout) {
-        clearTimeout(request.timeout);
-      }
-
-      this.activeRequests.delete(requestId);
-      this.activeDownloads.delete(requestId);
-
-      this.emit('chunk:downloaded', {
-        requestId,
-        chunkHash,
-        size: chunkData.length,
-        peerId
-      });
-    } catch (error) {
-      console.error(`   ❌ Error writing chunk:`, error.message);
-
-      const request = this.activeRequests.get(requestId);
-      if (request && request.timeout) {
-        clearTimeout(request.timeout);
-      }
-
-      this.activeRequests.delete(requestId);
-      this.activeDownloads.delete(requestId);
-
-      this.emit('chunk:error', { requestId, chunkHash, error: error.message });
+    const request = this.activeRequests.get(requestId);
+    if (request && request.timeout) {
+      clearTimeout(request.timeout);
     }
+
+    this.activeRequests.delete(requestId);
+    this.activeDownloads.delete(requestId);
+
+    // IMPORTANT: Protocol does not know the caller's intended output file.
+    // It only verifies integrity and forwards the chunk bytes to the download session.
+    this.emit('chunk:downloaded', {
+      requestId,
+      chunkHash,
+      size: chunkData.length,
+      peerId,
+      data
+    });
   }
 
 
@@ -364,7 +496,7 @@ export class Protocol extends EventEmitter {
    */
   handleCancel(peerId, payload) {
     const { requestId } = payload;
-    console.log(`🚫 CANCEL from ${peerId.substring(0, 8)}: ${requestId}`);
+    console.log(`CANCEL from ${peerId.substring(0, 8)}: ${requestId}`);
     
     this.activeRequests.delete(requestId);
     this.activeDownloads.delete(requestId);
@@ -375,7 +507,7 @@ export class Protocol extends EventEmitter {
    */
   handleError(peerId, payload) {
     const { requestId, error } = payload;
-    console.error(`❌ ERROR from ${peerId.substring(0, 8)}: ${error}`);
+    console.error(`ERROR from ${peerId.substring(0, 8)}: ${error}`);
     
     this.emit('chunk:error', { requestId, error });
   }
@@ -386,11 +518,11 @@ export class Protocol extends EventEmitter {
   async handleFileListRequest(conn, peerId, payload) {
     const { requestId, topicKey } = payload;
 
-    console.log(`📄 FILE_LIST_REQUEST from ${peerId.substring(0, 8)}...`);
+    console.log(`FILE_LIST_REQUEST from ${peerId.substring(0, 8)}...`);
 
     const topic = this.db.getTopicByKey(topicKey);
     if (!topic) {
-      console.log(`   ⚠️  Unknown topic key`);
+      console.log(`Unknown topic key`);
       return;
     }
 
@@ -425,7 +557,7 @@ export class Protocol extends EventEmitter {
       return;
     }
 
-    console.log(`📄 FILE_LIST_RESPONSE from ${peerId.substring(0, 8)} (${files.length} files)`);
+    console.log(`FILE_LIST_RESPONSE from ${peerId.substring(0, 8)} (${files.length} files)`);
     this.emit('file:list', { requestId, peerId, files });
   }
 
@@ -435,7 +567,7 @@ export class Protocol extends EventEmitter {
   async handleMetadataRequest(conn, peerId, payload) {
     const { requestId, merkleRoot, topicKey } = payload;
 
-    console.log(`📑 METADATA_REQUEST from ${peerId.substring(0, 8)}: ${merkleRoot.substring(0, 16)}...`);
+    console.log(`METADATA_REQUEST from ${peerId.substring(0, 8)}: ${merkleRoot.substring(0, 16)}...`);
 
     const topic = this.db.getTopicByKey(topicKey);
     if (!topic) {
@@ -490,8 +622,53 @@ export class Protocol extends EventEmitter {
     }
     this.activeMetadataRequests.delete(requestId);
 
-    console.log(`📑 METADATA_RESPONSE from ${peerId.substring(0, 8)} (${metadata.chunkCount} chunks)`);
+    console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${metadata.chunkCount} chunks)`);
     this.emit('metadata:response', { requestId, peerId, metadata });
+  }
+
+ /**
+  * HAVE: Peer announces they have a chunk
+  */
+  handleHave(conn, peerId, payload) {
+    const { chunkIndex, chunkHash, merkleRoot } = payload;
+    
+    console.log(`HAVE from ${peerId.substring(0, 8)}: chunk ${chunkIndex}`);
+    
+    // Emit event for download sessions to handle
+    this.emit('peer:have', { peerId, chunkIndex, chunkHash, merkleRoot });
+  }
+  
+  /**
+   * BITFIELD: Peer sends their complete bitfield
+   */
+  handleBitfield(conn, peerId, payload) {
+    const { merkleRoot, bitfield, chunkCount } = payload;
+    
+    console.log(`BITFIELD from ${peerId.substring(0, 8)}: ${chunkCount} chunks`);
+    
+    // Import BitField
+    import('./bitfield.js').then(({ BitField }) => {
+      const peerBitfield = BitField.fromBase64(bitfield, chunkCount);
+      
+      // Emit event for download sessions
+      this.emit('peer:bitfield', { peerId, bitfield: peerBitfield, merkleRoot });
+    });
+  }
+  
+  /**
+   * BITFIELD_REQUEST: Peer requests our bitfield
+   */
+  handleBitfieldRequest(conn, peerId, payload) {
+    const { requestId } = payload;
+    
+    console.log(`BITFIELD_REQUEST from ${peerId.substring(0, 8)}`);
+    
+    // For now, we don't have a global bitfield to send
+    // This would be implemented when we have active download sessions
+    // that track which chunks we have
+    
+    // Emit event so download sessions can respond
+    this.emit('bitfield:request', { conn, peerId, requestId });
   }
 
   // ============================================================================
@@ -504,7 +681,7 @@ export class Protocol extends EventEmitter {
   requestChunk(topicKey, chunkHash, timeout = 30000) {
     const requestId = crypto.randomBytes(16).toString('hex');
     
-    console.log(`\n📤 Requesting chunk: ${chunkHash.substring(0, 16)}...`);
+    console.log(`\nRequesting chunk: ${chunkHash.substring(0, 16)}...`);
     console.log(`   Request ID: ${requestId.substring(0, 16)}...`);
     
     // Track request
@@ -514,7 +691,7 @@ export class Protocol extends EventEmitter {
       offers: [],
       timestamp: Date.now(),
       timeout: setTimeout(() => {
-        console.log(`   ⏱️  Request timeout for ${chunkHash.substring(0, 16)}...`);
+        console.log(`Request timeout for ${chunkHash.substring(0, 16)}...`);
         this.activeRequests.delete(requestId);
         this.emit('chunk:timeout', { requestId, chunkHash });
       }, timeout)
@@ -527,7 +704,7 @@ export class Protocol extends EventEmitter {
     });
     
     const sent = this.network.broadcast(topicKey, message);
-    console.log(`   📡 Broadcast to ${sent} peer(s)`);
+    console.log(`Broadcast to ${sent} peer(s)`);
     
     return requestId;
   }
@@ -569,7 +746,7 @@ export class Protocol extends EventEmitter {
     });
     
     conn.write(message);
-    console.log(`   📨 Sent OFFER`);
+    console.log(`Sent OFFER`);
   }
 
   sendFileListResponse(conn, requestId, topicKey, files) {
@@ -623,7 +800,7 @@ export class Protocol extends EventEmitter {
       throw new Error('Offer not found');
     }
     
-    console.log(`\n✓ Accepting offer from ${peerId.substring(0, 8)}...`);
+    console.log(`\nAccepting offer from ${peerId.substring(0, 8)}...`);
     
     // Send DOWNLOAD message
     const message = this.encodeMessage(MSG_TYPE.DOWNLOAD, {
@@ -694,7 +871,7 @@ export class Protocol extends EventEmitter {
       return;
     }
     
-    console.log(`🚫 Cancelling request: ${requestId.substring(0, 16)}...`);
+    console.log(`Cancelling request: ${requestId.substring(0, 16)}...`);
     
     // Broadcast CANCEL
     const message = this.encodeMessage(MSG_TYPE.CANCEL, { requestId });
@@ -719,7 +896,7 @@ export class Protocol extends EventEmitter {
     
     for (const [requestId, request] of this.activeRequests) {
       if (now - request.timestamp > maxAge) {
-        console.log(`🧹 Cleaning up old request: ${requestId.substring(0, 16)}...`);
+        console.log(`Cleaning up old request: ${requestId.substring(0, 16)}...`);
         clearTimeout(request.timeout);
         this.activeRequests.delete(requestId);
       }
@@ -782,20 +959,32 @@ export class Protocol extends EventEmitter {
   /**
    * Generate Merkle proof for a chunk
    */
-  async generateMerkleProof(chunkHash) {
+  async generateMerkleProof(chunkHash, preferredFileId = null) {
     console.log(`[DEBUG] generateMerkleProof called for ${chunkHash.substring(0, 16)}...`);
-    
-    // Find all files that contain this chunk
-    const files = this.db.getFilesWithChunk(chunkHash);
-    console.log(`[DEBUG] Found ${files.length} files with this chunk`);
-    
-    if (files.length === 0) {
+
+    let file = null;
+    if (preferredFileId) {
+      file = this.db.getFileById(preferredFileId);
+    }
+
+    if (!file) {
+      const locs = typeof this.db.getChunkLocations === 'function' ? this.db.getChunkLocations(chunkHash, 20) : [];
+      if (locs.length > 0) {
+        file = this.db.getFileById(locs[0].file_id);
+      }
+    }
+
+    if (!file) {
+      const files = this.db.getFilesWithChunk(chunkHash);
+      console.log(`[DEBUG] Found ${files.length} files with this chunk`);
+      file = files[0] || null;
+    }
+
+    if (!file) {
       console.log(`[DEBUG] No files found, returning empty proof`);
       return [];
     }
-    
-    // Use the first file (could be smarter - pick smallest file, etc.)
-    const file = files[0];
+
     console.log(`[DEBUG] Using file: ${file.path}`);
     
     // Get all chunks for this file

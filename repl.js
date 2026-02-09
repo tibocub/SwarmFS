@@ -10,6 +10,8 @@ import { SwarmFS } from './src/swarmfs.js';
 import { getDataDir } from './src/config.js';
 import * as cmd from './src/commands.js';
 
+process.env.SWARMFS_REPL = '1';
+
 const DATA_DIR = getDataDir();
 const swarmfs = new SwarmFS(DATA_DIR);
 
@@ -194,7 +196,27 @@ async function executeCommand(line) {
 rl.on('line', async (line) => {
   if (line.trim()) {
     history.push(line);
-    await executeCommand(line);
+    try {
+      await executeCommand(line);
+    } finally {
+      try {
+        if (process.stdin && process.stdin.isTTY && typeof process.stdin.setRawMode === 'function') {
+          process.stdin.setRawMode(false);
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        process.stdin.resume();
+      } catch {
+        // ignore
+      }
+      try {
+        rl.resume();
+      } catch {
+        // ignore
+      }
+    }
   }
   rl.prompt();
 });
