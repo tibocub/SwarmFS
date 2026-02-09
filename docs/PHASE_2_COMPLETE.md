@@ -1,232 +1,88 @@
-# SwarmFS Phase 2: Complete ✓
+# Networking model and protocol
 
-## What We Built
+This document explains how SwarmFS finds peers and moves data between them.
 
-Phase 2 implemented the metadata layer and CLI, bringing SwarmFS to life as a working file tracking and verification system.
+SwarmFS is built around two ideas:
 
-### Components Implemented
+- **Discovery is topic-based** (you join a “swarm” of peers)
+- **Data is content-addressed** (you request by Merkle root / chunk hash, then verify)
 
-1. **Database Layer** (`src/database.js`)
-   - SQLite-based metadata storage
-   - Tables for files, file chunks, directories, topics
-   - CRUD operations for all entities
-   - Statistics and queries
-   - File persistence (using mock implementation)
+## Topics and swarms
 
-2. **SwarmFS Core** (`src/swarmfs.js`)
-   - Main coordinator class
-   - Initialize/open functionality
-   - Add files with automatic hashing (no chunk copies)
-   - File verification with corruption detection
-   - File tracking and metadata management
+A **topic** is a 32-byte key used for peer discovery via Hyperswarm.
 
-3. **Command Line Interface** (`cli.js`)
-   - Simple switch-based CLI (no external dependencies)
-   - 7 commands: init, add, status, verify, info, stats, help
-   - User-friendly output with formatting
-   - Error handling
+- A public-ish topic can be derived from a human name (example: `music`).
+- A private topic can be a shared secret (example: a random string shared out-of-band).
 
-### CLI Commands
+When you `join` a topic, Hyperswarm connects you to peers who joined the same key.
+That group of currently connected peers is the **swarm**.
 
-```bash
-swarmfs init                 # Initialize SwarmFS
-swarmfs add <file>          # Track a file
-swarmfs status              # List tracked files
-swarmfs verify <file>       # Verify integrity
-swarmfs info <file>         # Show file details
-swarmfs stats               # Storage statistics
-swarmfs help                # Show usage
-```
+SwarmFS keeps track of which peer connection is associated with which topic so that:
 
-### Test Results
+- you can broadcast requests only to peers in the right community
+- you don’t mix file discovery across unrelated topics
 
-Comprehensive integration test passing:
-- Initialization working
-- File addition and tracking
-- Status display
-- Verification of valid files
-- Corruption detection
-- Statistics reporting
-- Direct file I/O operational
+## Protocol overview
 
-### Code Statistics
+SwarmFS uses a small message protocol on top of Hyperswarm connections.
 
-- **Phase 2 additions**: ~800 lines
-- **Total project**: ~1400 lines
-- **Test coverage**: Integration test + unit tests from Phase 1
+### Goals
 
-## Architecture
+- Request and download chunks from multiple peers
+- Verify data while downloading
+- Avoid trusting peer-provided metadata blindly
 
-```
-User
-  │
-  ├─> CLI (cli.js)
-       │
-       ├─> SwarmFS (swarmfs.js)
-            │
-            ├─> Database (database.js)
-            │    └─> Mock SQLite (lib/better-sqlite3.js)
-            │
-            └─> Core Utils (chunk.js, hash.js, merkle.js)
-```
+### Core message types
 
-## Storage Layout
+At a high level:
 
-```
-swarmfs-data/
-└── swarmfs.db              # SQLite database (JSON in mock)
-```
+- `REQUEST`: ask for a chunk by its hash
+- `OFFER`: a peer claims it has the chunk (optionally with proof/metadata)
+- `DOWNLOAD`: accept an offer and request the actual bytes
+- `CHUNK_DATA`: raw bytes of the chunk
+- `CANCEL`: stop a request (timeouts, endgame cleanup)
+- `ERROR`: explicit error response
 
-## Key Features Working
+There are also discovery/metadata messages:
 
-### 1. Merkle Tree Verification
-Each file has a Merkle root that allows efficient verification:
-- Verify entire file with single root hash comparison
-- Detect specific corrupted chunks
-- Future: verify chunks from peers
+- `FILE_LIST_REQUEST` / `FILE_LIST_RESPONSE`
+- `METADATA_REQUEST` / `METADATA_RESPONSE`
+- `HAVE`, `BITFIELD`, `BITFIELD_REQUEST`
 
-### 2. File Tracking
-Files tracked by absolute path:
-- Can track files anywhere on filesystem
-- Metadata stored centrally
-- Original files remain in place (no copying)
+## Download lifecycle (conceptual)
 
-### 3. Integrity Verification
-Verify files without re-hashing from scratch:
-- Compare Merkle roots
-- Identify corrupted chunks
-- Size and content validation
+1. **You join a topic** and connect to peers.
+2. You obtain a **Merkle root** (from browsing/indexing, or from someone sharing it).
+3. You request file **metadata** (size, chunk hashes) by Merkle root.
+4. You start a download session:
+   - decide which chunks are missing
+   - schedule chunk requests across peers
+5. For each chunk:
+   - request / receive bytes
+   - verify SHA-256 hash matches the expected chunk hash
+   - write to the correct file offset
+6. At the end, verify the **final Merkle root**.
 
-## Example Usage Session
+SwarmFS can use “endgame” mode near the end: request remaining chunks from multiple peers and cancel duplicates when one arrives.
 
-```bash
-# Initialize
-$ swarmfs init
-✓ SwarmFS initialized
+## Seeding (serving data)
 
-# Add files
-$ swarmfs add document.pdf
-✓ File added successfully
-  Size: 2.5 MB
-  Merkle Root: abc123...
+When a peer receives a chunk request:
 
-# Check status
-$ swarmfs status
-Tracked Files (1):
-  /home/user/document.pdf
-    Size: 2.5 MB
+- it looks up where that chunk exists locally
+- reads the bytes from disk
+- verifies the bytes hash to the requested chunk hash
+- only then serves it
 
-# Verify integrity
-$ swarmfs verify document.pdf
-✓ File is valid
-  File verified: document.pdf
+This extra verification is important because local metadata can become stale (files moved/modified). Serving bad bytes wastes everyone’s time.
 
-# File gets corrupted...
-$ swarmfs verify document.pdf
-✗ File verification failed
-  Corrupted file: document.pdf
-```
+## Framing and stream handling
 
-## Test note
-Chunk storage copies are no longer used. Verify that `swarmfs-data/chunks/` does not exist after adding files.
+Hyperswarm delivers a byte stream. Protocol messages are framed with a header including payload length.
+Receivers may need to buffer partial data until a full frame is available.
 
-## Design Decisions
+## Practical implications
 
-### Mock Database
-Since better-sqlite3 can't be installed, we created a mock implementation:
-- File-based persistence (JSON)
-- Same API as better-sqlite3
-- Easy to swap with real implementation later
-- Add this to package.json when network available:
-  ```json
-  "dependencies": {
-    "better-sqlite3": "^9.0.0"
-  }
-  ```
-  Then change import in `src/database.js` back to `'better-sqlite3'`
-
-### Data Directory
-Currently in project root (`swarmfs-data/`). In production:
-- Could be `~/.swarmfs/` (user-wide)
-- Or configurable via config file
-- Or per-project like Git
-
-### CLI Without Dependencies
-Simple argument parsing instead of commander.js:
-- No external dependencies
-- Easy to understand
-- Can upgrade to commander later if desired
-
-## What's Ready for Phase 3
-
-With Phase 2 complete, we have:
-- ✓ File hashing
-- ✓ Merkle tree verification
-- ✓ Persistent metadata storage
-- ✓ Direct file I/O with chunk metadata
-- ✓ Working CLI for file management
-
-**Next up:**
-- Directory support (recursive scanning)
-- Directory Merkle trees
-- Better database queries
-- Background file watching (optional)
-
-## What's Ready for Phase 4 (Networking)
-
-The local infrastructure is complete. Phase 4 will add:
-- Hyperswarm P2P connections
-- Topic-based discovery
-- Chunk transfer protocol
-- Merkle proof verification over network
-- Multi-peer concurrent downloads
-
-## Known Limitations
-
-1. **Mock Database**: Not a real SQLite, but close enough for development
-2. **No Deduplication Yet**: Metadata-only chunk tracking (no chunk copies)
-3. **Single-threaded**: All operations synchronous (fine for prototype)
-4. **No Background Watching**: Files tracked at point in time only
-
-## Running the Tests
-
-```bash
-# Phase 1 tests (core utilities)
-npm test
-
-# Phase 2 integration test (CLI commands)
-./test-phase2.sh
-```
-
-## Project Status
-
-**Phase 1**: ✓ Complete (Core infrastructure)
-**Phase 2**: ✓ Complete (Storage & CLI)
-**Phase 3**: Ready (Directories)
-**Phase 4**: Ready (Networking)
-
----
-
-## File Sizes Summary
-
-```
-src/
-  chunk.js           48 lines  (chunking)
-  hash.js            47 lines  (hashing)
-  merkle.js         146 lines  (Merkle trees)
-  database.js       215 lines  (database layer)
-  swarmfs.js        227 lines  (main coordinator)
-
-lib/
-  better-sqlite3.js 181 lines  (mock database)
-
-cli.js              261 lines  (command-line interface)
-
-Total: ~1,235 lines of implementation code
-```
-
-## Conclusion
-
-Phase 2 successfully bridges Phase 1's core algorithms with a practical, usable system. All file operations work correctly, verification is reliable, and the CLI provides a clean interface.
-
-**Status**: ✓ READY FOR PHASE 3 (Directories) or PHASE 4 (Networking)
+- **You can be offline-friendly**: as long as at least one peer has the data.
+- **Integrity is end-to-end**: data can be verified without trusting peers.
+- **Communities matter**: topics are the main “where do I look?” primitive.

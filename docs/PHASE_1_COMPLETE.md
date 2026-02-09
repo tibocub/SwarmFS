@@ -1,142 +1,77 @@
-# SwarmFS Phase 1: Complete ✓
+# Content addressing, chunks, and Merkle verification
 
-## What We Built
+SwarmFS identifies files by **what they contain**, not where they live.
+That means the same file copied to different computers has the same identifier, and you can verify it after downloading.
 
-Phase 1 focused on implementing the core infrastructure for content-addressed storage with Merkle tree verification. All components are fully tested and working.
+This document explains the core primitives SwarmFS uses:
 
-### Components Implemented
+- **Chunking** (split files into pieces)
+- **Hashing** (SHA-256 content hashes)
+- **Merkle trees** (a single root hash for the whole file)
+- **Merkle proofs** (verify a chunk without downloading the entire file first)
 
-1. **Chunking System** (`src/chunking.js`)
-   - Fixed-size chunking (256KB default)
-   - Handles edge cases (empty files, odd sizes, exact multiples)
-   - Chunk count calculation utilities
+## Content identifiers
 
-2. **Hashing System** (`src/hashing.js`)
-   - SHA-256 hashing for content addressing
-   - Buffer and multi-buffer hashing
-   - Hash combination for Merkle tree nodes
+In SwarmFS, a file is identified by a **Merkle root**.
 
-3. **Merkle Tree System** (`src/merkle.js`)
-   - Binary Merkle tree construction from leaf hashes
-   - Handles odd number of leaves (duplicates last leaf)
-   - Merkle proof generation
-   - Merkle proof verification
-   - Tree visualization utilities
+- **Chunk hash**: `sha256(chunkBytes)`
+- **Merkle root**: root of a binary Merkle tree built from the ordered chunk hashes
 
-### Test Coverage
+If two files have the same bytes (and the same chunking parameters), they will produce the same Merkle root.
 
-- **53 tests, 100% passing**
-- Covers all edge cases:
-  - Empty files
-  - Single chunks
-  - Perfect binary trees (2, 4, 8... chunks)
-  - Odd leaf counts (3, 5, 7... chunks)
-  - Large files (1MB+ simulation)
-  - Proof verification (valid and invalid)
-  - Corruption detection
+## Chunking model
 
-### Code Statistics
+Files are split into **fixed-size chunks** (typically ~256 KiB).
 
-- **567 lines** of well-documented code
-- **8 files** organized into logical modules
-- **Zero external dependencies** (pure Node.js)
+- The last chunk may be smaller.
+- The order of chunks is part of the identity (chunk index 0, 1, 2, ...).
 
-## Key Achievements
+Why fixed-size chunking?
 
-✓ Content-addressed chunking working correctly
-✓ Merkle tree construction handles all cases
-✓ Proof generation and verification fully functional
-✓ Corruption detection working as expected
-✓ Clean, modular architecture ready for expansion
+- It is simple.
+- It enables parallel downloads.
+- It supports resume and repair by chunk.
 
-## What This Enables
+## Merkle trees (file verification)
 
-The Phase 1 implementation provides the foundation for:
+SwarmFS builds a standard binary Merkle tree:
 
-1. **Efficient P2P transfers**: Download different chunks from different peers simultaneously
-2. **Partial verification**: Verify individual chunks without downloading entire file
-3. **Corruption recovery**: Detect and re-download only corrupted chunks
-4. **Content deduplication**: Same chunks across files share storage (future)
-5. **Incremental updates**: Verify what changed between versions (future)
+- Leaves are chunk hashes, in chunk index order.
+- Internal nodes are hashes of their children.
+- If there is an odd number of leaves at a level, the last hash is duplicated to form a pair.
 
-## Example Usage
+The **Merkle root** is:
 
-```javascript
-import { chunkBuffer } from './src/chunking.js';
-import { hashBuffer } from './src/hashing.js';
-import { buildMerkleTree, generateMerkleProof, verifyMerkleProof } from './src/merkle.js';
+- A compact identifier for the whole file.
+- A strong integrity check.
 
-// Process file
-const chunks = chunkBuffer(fileData);
-const hashes = chunks.map(hashBuffer);
-const tree = buildMerkleTree(hashes);
+## Merkle proofs (chunk verification)
 
-// Later: verify a chunk from peer
-const proof = generateMerkleProof(hashes, chunkIndex);
-const isValid = verifyMerkleProof(peerChunkHash, proof.proof, tree.root);
-```
+When a peer offers a chunk, it can include a **Merkle proof**.
+The proof is a list of sibling hashes along the path from leaf to root.
 
-## Next Phase Preview
+This lets the downloader check:
 
-**Phase 2** will add:
-- SQLite database for metadata
-- Content-addressable storage (CAS) on filesystem
-- CLI commands (init, add, status, verify)
-- File tracking with absolute paths
+- the chunk bytes match the expected chunk hash
+- the chunk hash can be proven to belong to the requested Merkle root
 
-**Phase 3** will add:
-- Directory Merkle trees
-- Recursive file scanning
-- More sophisticated CLI
+This matters because it allows:
 
-**Phase 4** will add:
-- Hyperswarm P2P networking
-- Topic-based content discovery
-- Chunk transfer protocol
-- Proof-based peer verification
+- downloading from untrusted peers
+- verifying data progressively
 
-## Running the Code
+## End-to-end verification
 
-```bash
-# Run tests
-npm test
+SwarmFS verifies data in multiple layers:
 
-# Run workflow example
-node examples/workflow.js
-```
+- **Chunk hash verification** when chunks arrive
+- **Final Merkle root verification** when the file is complete
 
-## Architecture Diagram
+If final verification fails, SwarmFS can pinpoint the first mismatching chunk (useful for diagnosing ordering/offset issues).
 
-```
-File (e.g., 1MB)
-     |
-     v
-[Chunk] [Chunk] [Chunk] [Chunk]  (256KB each)
-   |       |       |       |
-   v       v       v       v
- Hash0   Hash1   Hash2   Hash3     (SHA-256)
-   |       |       |       |
-   +-------+       +-------+
-       |               |
-       v               v
-   Parent0         Parent1          (Combined hashes)
-       |               |
-       +-------+-------+
-               |
-               v
-            Root Hash                (Merkle root = content ID)
-```
+## Why this is useful
 
-## Key Design Decisions
-
-1. **Fixed-size chunks**: Simple, predictable (can add CDC later)
-2. **Binary Merkle tree**: Standard, well-understood, proof-friendly
-3. **SHA-256 hashing**: Industry standard, secure, widely supported
-4. **Duplicate odd leaves**: Standard Merkle tree approach for unbalanced trees
-5. **Zero dependencies**: Keep it simple, minimize attack surface
-
-## Conclusion
-
-Phase 1 is complete and production-ready. All core algorithms are implemented, tested, and documented. The foundation is solid for building the storage layer (Phase 2) and networking layer (Phase 4).
-
-**Status**: ✓ READY FOR PHASE 2
+- **Resume**: missing chunks can be requested again.
+- **Repair**: corrupted chunks can be re-downloaded.
+- **Multi-source downloads**: different peers can serve different chunks.
+- **No “trust me”**: the receiver can independently verify data.
