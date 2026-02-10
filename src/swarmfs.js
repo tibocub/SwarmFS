@@ -21,6 +21,30 @@ export class SwarmFS {
     this.protocol = null;
   }
 
+  _chooseChunkSizeForFile(fileSize) {
+    if (typeof fileSize !== 'number' || !Number.isFinite(fileSize) || fileSize < 0) {
+      return DEFAULT_CHUNK_SIZE;
+    }
+
+    if (fileSize >= 16 * 1024 * 1024 * 1024) {
+      return 4 * 1024 * 1024;
+    }
+
+    if (fileSize >= 4 * 1024 * 1024 * 1024) {
+      return 2 * 1024 * 1024;
+    }
+
+    if (fileSize >= 1024 * 1024 * 1024) {
+      return 1024 * 1024;
+    }
+
+    if (fileSize >= 256 * 1024 * 1024) {
+      return 512 * 1024;
+    }
+
+    return DEFAULT_CHUNK_SIZE;
+  }
+
   /**
    * Initialize SwarmFS (create data directory, database, etc.)
    */
@@ -63,7 +87,7 @@ export class SwarmFS {
    * @param {number} chunkSize - Chunk size in bytes
    * @param {object} options - Options { useParallel, workerCount, onProgress }
    */
-  async addFile(filePath, chunkSize = DEFAULT_CHUNK_SIZE, options = {}) {
+  async addFile(filePath, chunkSize = null, options = {}) {
     const {
       useParallel = false, //    <-- Not efficent enought (same or worst than single-threaded)
       workerCount = null,
@@ -85,6 +109,10 @@ export class SwarmFS {
     }
 
     const fileSize = stats.size;
+
+    if (chunkSize === null || chunkSize === undefined) {
+      chunkSize = this._chooseChunkSizeForFile(fileSize);
+    }
 
     // Decide whether to use parallel or single-threaded approach
     const shouldUseParallel = useParallel && (fileSize > 1024 * 1024); // Use parallel for files > 1MB
@@ -231,11 +259,11 @@ export class SwarmFS {
    * @param {number} chunkSize - Chunk size
    * @param {object} options - Options { useParallel, workerCount, batchSize, onProgress }
    */
-  async addDirectory(dirPath, chunkSize = DEFAULT_CHUNK_SIZE, options = {}) {
+  async addDirectory(dirPath, chunkSize = null, options = {}) {
     const {
       useParallel = false, //  <-- still slower than single threaded merkle tree builder
       workerCount = null,
-      batchSize = 4, // Process 4 files concurrently
+      batchSize = 8,
       onProgress = null
     } = options;
 

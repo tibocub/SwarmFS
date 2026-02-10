@@ -144,6 +144,31 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 - Content discovery is still evolving (topic-scoped index is young)
 - Performance tuning is ongoing (disk IO scheduling, backpressure, congestion control)
 
+### Performance TODOs (ideas to evaluate)
+
+- **Adaptive chunk size per file**
+  - Keep a small default for small files.
+  - Increase chunk size for very large files to reduce message/CPU overhead.
+  - Requires keeping chunk size in metadata (already supported).
+- **Batch transfers / grouped chunks**
+  - Allow requesting/serving a contiguous range of chunks in one response.
+  - Receiver verifies and writes a group as a unit.
+- **Merkle multi-proofs / subtree proofs**
+  - Instead of per-chunk proofs, request/serve proofs for a whole range/subtree.
+  - Align chunk groups to power-of-two subtrees to make proofs compact.
+- **Pipelined hashing + verification**
+  - Keep downloads flowing while verification happens in parallel batches.
+- **Adaptive download strategy**
+  - Many peers: rarest-first / parallel chunking.
+  - Few peers: larger sequential ranges.
+  - One peer: sequential streaming (torrent-style).
+- **Proof caching / reuse**
+  - Cache proof fragments per file to avoid recomputing siblings repeatedly.
+- **Alternative hashing (BLAKE3)**
+  - Evaluate for CPU-bound cases (would be a compatibility break; needs careful rollout).
+- **Compression of protocol metadata**
+  - Compact encodings (varints), hash dedup in proofs, optional compression for proof blocks.
+
 ## License
 
 MIT
