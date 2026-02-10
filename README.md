@@ -1,204 +1,173 @@
-# SwarmFS - P2P File Sharing with Content-Addressed Storage
+# SwarmFS
 
-BitTorrent's raw power, IPFS' content-addressability and Hyperswarm's
-simplicity and reliability.
+SwarmFS is a peer-to-peer file sharing system that lets you share files and folders **without a central server**.
 
-SwarmFS is a P2P file sharing system inspired by BitTorrent and
-IPFS, implementing content-addressed storage with Merkle trees
-for verification and efficient chunk-based transfers.
-Content discovery and hole-punching also comes build-it
+It combines:
+- **BitTorrent-style chunking** (download from multiple peers, resume, repair)
+- **IPFS-style content addressing** (files are identified by what they contain, not where they are or who hosts them)
+- **Hyperswarm discovery** (find peers by “topic”, with NAT traversal/hole-punching)
 
-## Understanding the design
+If you can share a link, you can share a file.
 
-#### Topics
-A topic is a hash derived from a string provided by the user.
-It can be useful to make public groups (for example by looking
-for the "music" or "books" you can easily find a lot of peers
-to share files with) or to make private groups, by using a
-randomly generated 32bit SHA256 hass to give to your friends
-for them to join your private topic.
+## Why SwarmFS (non-technical view)
 
-#### Swarm
-A swarm is the group of peers connected to a same topic
+Centralized services (Google Drive, Dropbox, etc.) are convenient, but:
+- your data is stored on someone else’s servers
+- access can be limited by accounts, regions, pricing, quotas, policy changes
+- availability depends on the service staying up (and you keeping access)
 
-If a topic isn't specified for a request, the request will be sent
-to all connected topics.
+SwarmFS aims to make sharing feel like sending a link, while the storage is **distributed across the people who care about the data**.
 
-Initially, joining topics will only help you find peers to make
-requests to. And since SwarmFS is content-addressed, it means
-that you need to know the hash of a file in order to request it.
-It might sound ironic and frustrating if you're new to content-
-addressing, but it's in fact really cool since it allow us to make
-data highly available over the network and content discovery is
-still possible by letting users provide a list of public files/dirs
-they hosts. Users can either share a file publicly (over every topic
-they connect to), or privately (only over whitelisted topics). And 
-index of a topic is not an actual file or document, a topic index
-is the centralized representation of all it's connected users public
-files, and the main index is a local copy of all public files found
-when connecting to a peer the user can use to make quick searchs.
+## The idea in one minute
 
+- **A “topic”** is a group you join (think “music”, “my-friends”, “project-x”).
+- When you join a topic, SwarmFS uses Hyperswarm to discover peers.
+- Files are split into chunks; each chunk is hashed; the full file is identified by a **Merkle root**.
+- To download a file, you request its Merkle root in a topic; peers offer chunks; you verify chunks as they arrive.
 
-### What SwarmFS steals to others:
-BitTorrent
-- Read and write directly from/to files
-- The chunk system, to allow downloading a single file from multiple
-  peers at the same time or allow to seed chunks even while a file
-  is not entirely downloaded, also allow to redownload only the
-  corrupted part of a file instead of an entire file or resume an
-  interrupted download.
+You don’t download “from a server”. You download from the swarm.
 
-IPFS
-- Content Addressing (Unlike IPFS, SwarmFS only implement content-
-addressing at the topic scope, which mean you will only send requests
-to users connected to the same topics as you).
+## How SwarmFS compares
 
-SoulSeek
-- The public content indexing. Once again this is topic-based, so
-  unlike SoulSeek, a SwarmFS user need to join a topics to access its
-  public index and request files to the topic users.
+### Compared to Google Drive / Dropbox
 
+- **No central storage provider**: peers collectively provide availability.
+- **No account required to share**: sharing is content-addressed.
+- **Integrity by default**: Merkle verification detects corruption and tampering.
 
-Note: We can only get closer to BitTorrent's speed that IPFS' because
-we made the compromise of not going full global content-addressing
-like IPFS do. There is of course no geographical restriction and
-limiting requests to only some topics make inter-peer communications
-a lot faster.
+Tradeoff: there is no single company guaranteeing uptime; availability comes from peers staying online.
 
-This means we can't implement IPFS global content-addressing by using
-topics as groups of interrest and communities or as private-use name-
-spaced pools of data on your private server. But as long as you have a
-rough idea of where to look, content-addressing will take care of the
-rest.
+### Compared to BitTorrent
 
-### SwarmFS advantages over:
-BitTorrent:
-- No port or firewall configuration required
-- SwarmFS Don't need trackers, hosting a file is much simpler
-  than generating and hosting a torrent
+- **No trackers required** (peer discovery via Hyperswarm topics).
+- **Not tied to “.torrent files”**: the content identifier is the Merkle root.
+- **Designed for “share this folder in this community”** workflows.
 
+### Compared to IPFS
 
-## Project Status
+- **Topic-scoped discovery** instead of a global DHT.
+  This makes “communities” and “private groups” a first-class concept.
+- Still **content-addressed**, still verified.
 
-**Phase 1: Core Infrastructure ✓ COMPLETE**
-**Phase 2: Storage & CLI ✓ COMPLETE**
-**Phase 3: Directory Support ✓ COMPLETE**
+Tradeoff: SwarmFS is not trying to be a single global network for all content.
 
-All local functionality is implemented and tested:
-- ✓ File chunking (fixed 256KB chunks)
-- ✓ SHA-256 hashing
-- ✓ Binary Merkle tree construction
-- ✓ Merkle proof generation and verification
-- ✓ Directory Merkle trees
-- ✓ Recursive directory scanning
-- ✓ SQLite database with file/chunk tracking
-- ✓ Content-addressable chunk storage
-- ✓ Command-line interface with directory support
-- ✓ File verification and corruption detection
-- ✓ Auto-initialization
-- ✓ Centralized tracking (files from anywhere)
-- ✓ 53/53 unit tests + integration tests passing
+## Quick start
 
-## Architecture
+### Requirements
 
-### Content-Addressed Storage
-Files are split into fixed-size chunks (256KB default), each chunk is hashed with SHA-256, and a Merkle tree is built from the chunk hashes. The Merkle root serves as the content identifier for the file.
+- Node.js (project uses ESM: `"type": "module"`)
 
-### Merkle Trees
-- **For files**: Binary tree built from chunk hashes
-- **For directories** (planned): Tree built from file/subdirectory roots
-- Supports proof generation for verifying individual chunks without full file
-
-### Key Features (Planned)
-- Concurrent downloads from multiple peers
-- Seed while downloading (BitTorrent-style)
-- Partial file corruption repair
-- Content deduplication
-- Topic/group-based P2P discovery (via Hyperswarm)
-
-
-## CLI Usage
-
-SwarmFS provides a command-line interface for managing files and directories:
+### Install
 
 ```bash
-# Add current directory (auto-initializes if needed)
-node cli.js add
-node cli.js add .
+npm install
+```
 
-# Add specific file or directory
-node cli.js add myfile.txt
-node cli.js add myproject/
+### Local file tracking
 
-# Check tracked files
+```bash
+node cli.js add [path]
 node cli.js status
-
-# Verify file integrity
-node cli.js verify myfile.txt
-
-# Show detailed information
-node cli.js info myfile.txt
-
-# View statistics
+node cli.js verify <path>
+node cli.js info <path>
 node cli.js stats
-
-# Get help
-node cli.js help
 ```
 
-### Key Features
+### Networking (topics)
 
-- **Auto-initialization**: No need to run `init` - starts automatically
-- **Centralized tracking**: One database tracks files from anywhere on your system
-- **Directory support**: Add entire directories recursively
-- **Smart defaults**: `swarmfs add` with no args adds current directory
-- **Ignore patterns**: Automatically skips node_modules, .git, etc.
+```bash
+node cli.js topic create <name>
+node cli.js topic join <name>
 
-### Chunking
-```javascript
-import { chunkBuffer, calculateChunkCount } from './src/chunking.js';
-
-const chunks = chunkBuffer(fileBuffer, 256 * 1024); // 256KB chunks
-const count = calculateChunkCount(fileSize, 256 * 1024);
+node cli.js browse <topic>
+node cli.js download <topic> <merkleRoot> <outputPath>
+node cli.js network
 ```
 
-### Hashing
-```javascript
-import { hashBuffer, combineHashes } from './src/hashing.js';
+Interactive modes:
 
-const hash = hashBuffer(chunk);
-const parentHash = combineHashes(leftHash, rightHash);
+```bash
+node cli.js shell
+node cli.js tui
 ```
 
-### Merkle Trees
-```javascript
-import { buildMerkleTree, generateMerkleProof, verifyMerkleProof } from './src/merkle.js';
+## Concepts
 
-// Build tree from chunk hashes
-const tree = buildMerkleTree(chunkHashes);
-console.log('Root:', tree.root);
+- **Topic**: a human name (or shared secret) turned into a 32-byte key used for discovery.
+- **Swarm**: peers currently connected under a topic.
+- **Chunks**: fixed-size pieces of files (default ~256 KiB).
+- **Merkle root**: the file identifier; also used to verify the full file at the end.
 
-// Generate proof for chunk
-const proof = generateMerkleProof(chunkHashes, chunkIndex);
+## Documentation (deep dives)
 
-// Verify proof
-const isValid = verifyMerkleProof(proof.leaf, proof.proof, tree.root);
-```
+Docs are intentionally kept for topics that are too long for the README:
 
-## Next Steps
+- `docs/PHASE_1_COMPLETE.md` — Content addressing, chunking, Merkle trees
+- `docs/PHASE_2_COMPLETE.md` — Protocol + networking model (topics, messages, verification)
+- `docs/PHASE_3_COMPLETE.md` — Database model + sharing/indexing semantics
 
-- [ ] Hyperswarm P2P networking
-- [ ] Topic-based content discovery  
-- [ ] Chunk transfer protocol
-- [ ] Multi-peer concurrent downloads
-- [ ] Merkle proof verification over network
+## Roadmap
 
-## Design Principles
+This is the living roadmap: what’s done, what’s next, and what we know needs work.
 
-1. **Content-addressing without metadata**: Hash based on content only, not filename
-2. **Centralized metadata, decentralized storage**: Single SQLite DB tracks files anywhere on disk
-3. **Direct read/write**: No file copying like Git, work with originals
-4. **Topic-based P2P**: Compromise between BitTorrent (swarm-per-file) and IPFS (global DHT)
+### Done
+
+- Fixed-size chunking and SHA-256 hashing
+- Merkle tree construction + per-chunk verification
+- File metadata + chunk metadata persisted (SQLite via `better-sqlite3` on Node and Bun's built-in SQLite on Bun)
+- Topic-based peer discovery (Hyperswarm)
+- Chunk transfer protocol (request/offer/download/chunk_data)
+- Multi-peer downloads and endgame mode
+- Final file verification and corruption diagnostics
+- Directory tracking and deterministic directory hashing
+- CLI + REPL + TUI
+
+### Next (high priority)
+
+- Improve “public index” browsing UX (search, filters, pagination)
+- Better resilience when peers go offline mid-transfer
+- Smarter peer selection and rate limiting
+- Better sharing controls (per-topic allowlist/denylist, “private share” tokens)
+
+### Planned
+
+- Background re-announce + periodic integrity checks
+- Partial file download (ranges / selective chunks)
+- Multi-file bundles (directory download as a single request)
+- DHT-free “invite links” for private swarms
+- Optional encryption-at-rest for local metadata
+
+### Known issues / drawbacks
+
+- Availability depends on peers (there is no central always-on pinning by default)
+- NAT traversal isn’t perfect; some networks may reduce connectivity
+- Content discovery is still evolving (topic-scoped index is young)
+- Performance tuning is ongoing (disk IO scheduling, backpressure, congestion control)
+
+### Performance TODOs (ideas to evaluate)
+
+- **Adaptive chunk size per file**
+  - Keep a small default for small files.
+  - Increase chunk size for very large files to reduce message/CPU overhead.
+  - Requires keeping chunk size in metadata (already supported).
+- **Batch transfers / grouped chunks**
+  - Allow requesting/serving a contiguous range of chunks in one response.
+  - Receiver verifies and writes a group as a unit.
+- **Merkle multi-proofs / subtree proofs**
+  - Instead of per-chunk proofs, request/serve proofs for a whole range/subtree.
+  - Align chunk groups to power-of-two subtrees to make proofs compact.
+- **Pipelined hashing + verification**
+  - Keep downloads flowing while verification happens in parallel batches.
+- **Adaptive download strategy**
+  - Many peers: rarest-first / parallel chunking.
+  - Few peers: larger sequential ranges.
+  - One peer: sequential streaming (torrent-style).
+- **Proof caching / reuse**
+  - Cache proof fragments per file to avoid recomputing siblings repeatedly.
+- **Alternative hashing (BLAKE3)**
+  - Evaluate for CPU-bound cases (would be a compatibility break; needs careful rollout).
+- **Compression of protocol metadata**
+  - Compact encodings (varints), hash dedup in proofs, optional compression for proof blocks.
 
 ## License
 
