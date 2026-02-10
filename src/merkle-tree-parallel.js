@@ -4,11 +4,13 @@
  */
 
 import { Worker } from 'worker_threads';
+import fs from 'fs';
 import { cpus } from 'os';
 import { stat } from 'fs/promises';
 import { buildMerkleTree, getMerkleRoot } from './merkle.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { hashBuffer } from './hash.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -171,7 +173,6 @@ export async function buildFileMerkleTreeParallel(filePath, chunkSize = 256 * 10
     // Read file sequentially and distribute chunks to workers
     if (debug) console.log(`[DEBUG] Reading file and distributing to ${workerCount} workers...`);
     
-    const fs = await import('fs');
     const fd = fs.openSync(filePath, 'r');
     
     try {
@@ -285,8 +286,6 @@ export async function buildFileMerkleTreeParallel(filePath, chunkSize = 256 * 10
  * Single-threaded fallback for small files
  */
 async function buildFileMerkleTreeSingleThreaded(filePath, chunkSize, onProgress) {
-  const fs = await import('fs');
-  const { hashBuffer } = await import('./hash.js');
   
   const stats = await fs.promises.stat(filePath);
   const fileSize = stats.size;
