@@ -2,7 +2,7 @@
 
 # SwarmFS
 
-SwarmFS is an P2P file-sharing protocol that aims to be faster
+SwarmFS is a P2P file-sharing protocol that aims to be faster
 than IPFS and easier than BitTorrent to setup and use.
 
 It's heavily inspired from BitTorrent and IPFS but here is what's different:
@@ -167,6 +167,9 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 - Multi-file bundles (directory download as a single request)
 - DHT-free “invite links” for private swarms
 - Optional encryption-at-rest for local metadata
+- Refactor current browsing system (request every user's shared files and aggregate localy) with autobase
+- IPNS-like topic-based domains (a permanent addresses with and editable endpoint) with autobase
+- Virtual directories (manage your tracked files, links and virtual directories in the SwarmFS virtual file-system)
 
 ### Known issues / drawbacks
 
