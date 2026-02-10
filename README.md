@@ -1,110 +1,141 @@
+## ! EARLY ALPHA - breaking changes expected !
+
 # SwarmFS
 
-SwarmFS is a peer-to-peer file sharing system that lets you share files and folders **without a central server**.
+SwarmFS is an P2P file-sharing protocol that aims to be faster
+than IPFS and easier than BitTorrent to setup and use.
 
-It combines:
-- **BitTorrent-style chunking** (download from multiple peers, resume, repair)
-- **IPFS-style content addressing** (files are identified by what they contain, not where they are or who hosts them)
-- **Hyperswarm discovery** (find peers by “topic”, with NAT traversal/hole-punching)
+It's heavily inspired from BitTorrent and IPFS but here is what's different:
 
-If you can share a link, you can share a file.
+SwarmFS vs BitTorrent
+- BitTorrent uses a centralized tracker to find peers, SwarmFS is 100% decentralized
+- SwarmFS uses content-addressing regardless of the file's name, owner, path, or any other metadata. That means data is more resilient in SwarmFS than in a torrent.
 
-## Why SwarmFS (non-technical view)
+SwarmFS vs IPFS
+- IPFS do content-addressing on the entire network (all connected peers), which takes a lot of time
+- SwarmFS do content-addressing over specific topics. SwarmFS encourages the users to make specific topics reather that mixing every file and request together (much fast and it's easier to make private networks)
+- SwarmFS don't forces you to know the hash of the file you want to download, it comes with a public-sharing and public content browsing features to easily share and download files in a topic.
 
-Centralized services (Google Drive, Dropbox, etc.) are convenient, but:
-- your data is stored on someone else’s servers
-- access can be limited by accounts, regions, pricing, quotas, policy changes
-- availability depends on the service staying up (and you keeping access)
 
-SwarmFS aims to make sharing feel like sending a link, while the storage is **distributed across the people who care about the data**.
+At its core:
 
-## The idea in one minute
+- **Content addressing** (SHA-256) and **Merkle trees** for integrity
+- **Chunked transfers** (BitTorrent-style)
+- **Topic-scoped peer discovery** via Hyperswarm
+- A small protocol for **browsing**, **metadata exchange**, and **chunk transfer**
 
-- **A “topic”** is a group you join (think “music”, “my-friends”, “project-x”).
-- When you join a topic, SwarmFS uses Hyperswarm to discover peers.
-- Files are split into chunks; each chunk is hashed; the full file is identified by a **Merkle root**.
-- To download a file, you request its Merkle root in a topic; peers offer chunks; you verify chunks as they arrive.
 
-You don’t download “from a server”. You download from the swarm.
+This repository’s README/docs are written for:
 
-## How SwarmFS compares
+- new contributors who want to understand the architecture quickly
+- ourselves as a dev log/reference for “what exists and how it works”
 
-### Compared to Google Drive / Dropbox
 
-- **No central storage provider**: peers collectively provide availability.
-- **No account required to share**: sharing is content-addressed.
-- **Integrity by default**: Merkle verification detects corruption and tampering.
+## Project goals (engineering)
 
-Tradeoff: there is no single company guaranteeing uptime; availability comes from peers staying online.
+- Verified downloads from untrusted peers
+- Resume/repair at the chunk level
+- Multi-peer downloads and endgame mode
+- Topic-scoped content discovery (browse what peers in a topic share)
 
-### Compared to BitTorrent
+Non-goals (for now):
 
-- **No trackers required** (peer discovery via Hyperswarm topics).
-- **Not tied to “.torrent files”**: the content identifier is the Merkle root.
-- **Designed for “share this folder in this community”** workflows.
+- Global IPFS-like DHT content routing
+- A polished end-user UX (website/video will cover that)
 
-### Compared to IPFS
 
-- **Topic-scoped discovery** instead of a global DHT.
-  This makes “communities” and “private groups” a first-class concept.
-- Still **content-addressed**, still verified.
-
-Tradeoff: SwarmFS is not trying to be a single global network for all content.
-
-## Quick start
+## Running the project
 
 ### Requirements
 
-- Node.js (project uses ESM: `"type": "module"`)
+- Node.js (ESM project: `"type": "module"`)
+- Bun is supported as a runtime (TUI integration already checks `process.versions.bun`)
 
-### Install
+### Install (also compatible with Bun)
 
 ```bash
 npm install
 ```
 
-### Local file tracking
+### CLI (main entrypoint)
 
 ```bash
+node cli.js help
+
 node cli.js add [path]
 node cli.js status
 node cli.js verify <path>
 node cli.js info <path>
 node cli.js stats
-```
 
-### Networking (topics)
-
-```bash
 node cli.js topic create <name>
 node cli.js topic join <name>
-
+node cli.js topic share <topic> <path>
 node cli.js browse <topic>
 node cli.js download <topic> <merkleRoot> <outputPath>
-node cli.js network
 ```
 
-Interactive modes:
+Interactive modes (keeps the P2P networking alive):
 
 ```bash
 node cli.js shell
 node cli.js tui
 ```
 
-## Concepts
+### Debugging
 
-- **Topic**: a human name (or shared secret) turned into a 32-byte key used for discovery.
-- **Swarm**: peers currently connected under a topic.
-- **Chunks**: fixed-size pieces of files (default ~256 KiB).
-- **Merkle root**: the file identifier; also used to verify the full file at the end.
+- Set `SWARMFS_VERBOSE=1` to enable verbose logs in networking/protocol.
+- The protocol currently prints a lot of `[DEBUG] ...` output during message handling and proof generation.
 
-## Documentation (deep dives)
 
-Docs are intentionally kept for topics that are too long for the README:
+## Architecture (high level)
 
-- `docs/PHASE_1_COMPLETE.md` — Content addressing, chunking, Merkle trees
-- `docs/PHASE_2_COMPLETE.md` — Protocol + networking model (topics, messages, verification)
-- `docs/PHASE_3_COMPLETE.md` — Database model + sharing/indexing semantics
+Data flow for a typical download:
+
+1. Join topic (Hyperswarm)
+2. Browse topic → aggregate file list (Merkle roots)
+3. Request metadata by Merkle root (chunk list)
+4. Schedule chunk requests across peers
+5. Receive chunks → verify hash → write at correct offsets
+6. Verify final Merkle root
+
+### Concepts
+
+- **Topic**: 32-byte key used for Hyperswarm discovery. Stored in DB as hex.
+- **Merkle root**: file identifier.
+- **Chunk hash**: leaf hash in the file Merkle tree.
+- **Chunk size**: stored per file (`file.chunk_size`). Files may have different chunk sizes.
+
+### Codebase tour
+
+- `cli.js`
+  - Commander CLI wiring + keep-alive commands (`topic join`, `request`, `tui`, `shell`).
+- `src/commands.js`
+  - CLI command implementations (thin wrappers around `SwarmFS`).
+- `src/swarmfs.js`
+  - Main coordinator: DB, hashing/Merkle, directory scanning, network/protocol wiring.
+- `src/database.js`, `src/sqlite.js`
+  - Persistent metadata store.
+- `src/network.js`
+  - Hyperswarm wrapper; topic-aware peer tracking.
+- `src/protocol.js`
+  - Message framing + request/offer/download/chunk_data + browse/metadata.
+- `src/download.js`
+  - Download session state machine, scheduling, endgame, verification/write.
+- `src/chunk-scheduler.js`, `src/peer-manager.js`, `src/bitfield.js`
+  - Scheduling + peer state.
+- `src/merkle.js`
+  - Merkle tree construction + proof helpers.
+- `src/merkle-tree-parallel.js`, `src/merkle-worker.js`
+  - Parallel Merkle building experiments.
+
+
+## Developer documentation
+
+- `docs/Chunks, Hashes and Merkle Trees.md` — Content addressing + Merkle tree implementation notes
+- `docs/P2P Networking and File Transfer.md` — Protocol, message framing, and networking behavior
+- `docs/Database and Local Data.md` — Local metadata model + topic sharing semantics
+
 
 ## Roadmap
 
@@ -112,7 +143,7 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 
 ### Done
 
-- Fixed-size chunking and SHA-256 hashing
+- Adaptative-size chunking and SHA-256 hashing
 - Merkle tree construction + per-chunk verification
 - File metadata + chunk metadata persisted (SQLite via `better-sqlite3` on Node and Bun's built-in SQLite on Bun)
 - Topic-based peer discovery (Hyperswarm)
@@ -120,7 +151,7 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 - Multi-peer downloads and endgame mode
 - Final file verification and corruption diagnostics
 - Directory tracking and deterministic directory hashing
-- CLI + REPL + TUI
+- Basic CLI, REPL and TUI
 
 ### Next (high priority)
 
@@ -164,10 +195,11 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
   - One peer: sequential streaming (torrent-style).
 - **Proof caching / reuse**
   - Cache proof fragments per file to avoid recomputing siblings repeatedly.
-- **Alternative hashing (BLAKE3)**
-  - Evaluate for CPU-bound cases (would be a compatibility break; needs careful rollout).
+- **Replace SHA256 with BLAKE3**
+  - Bao streaming
 - **Compression of protocol metadata**
   - Compact encodings (varints), hash dedup in proofs, optional compression for proof blocks.
+
 
 ## License
 
