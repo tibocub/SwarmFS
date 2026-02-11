@@ -87,6 +87,17 @@ export class DownloadSession extends EventEmitter {
     this._protocolHandlers = null;
 
     this._requestToChunkIndex = new Map();
+
+    // SUBTREE_DATA is sent as a single binary frame.
+    // Hyperswarm/secret-stream has an atomic write limit of 16,777,215 bytes.
+    // Keep our subtree requests below that so we don't trigger disconnect loops.
+    const MAX_ATOMIC_WRITE = 16777215;
+    const SUBTREE_DATA_OVERHEAD = 6 + (1 + 16 + 32 + 4 + 2 + 4);
+    const maxData = Math.max(0, MAX_ATOMIC_WRITE - SUBTREE_DATA_OVERHEAD);
+    const maxChunksPerSubtree = Math.max(1, Math.floor(maxData / Math.max(1, this.chunkSize)));
+    this.subtreeChunkCount = Math.min(16, maxChunksPerSubtree);
+    this._subtreeRequestMap = new Map(); // requestId -> number[] chunkIndices
+    this._subtreeTimeouts = new Map(); // requestId -> Timeout
   }
 
   _clearAllChunkTimeouts() {
@@ -252,29 +263,33 @@ export class DownloadSession extends EventEmitter {
     const onPeerDisconnected = (info) => this.onPeerDisconnected(info);
     const onChunkOffer = (info) => this.onChunkOffer(info);
     const onChunkReceived = (info) => this.onChunkReceived(info);
+    const onSubtreeReceived = (info) => this.onSubtreeReceived(info);
 
     this._protocolHandlers = {
       onPeerConnected,
       onPeerDisconnected,
       onChunkOffer,
-      onChunkReceived
+      onChunkReceived,
+      onSubtreeReceived
     };
 
     this.protocol.on('peer:connected', onPeerConnected);
     this.protocol.on('peer:disconnected', onPeerDisconnected);
     this.protocol.on('chunk:offer', onChunkOffer);
     this.protocol.on('chunk:downloaded', onChunkReceived);
+    this.protocol.on('subtree:downloaded', onSubtreeReceived);
   }
 
   detachProtocolHandlers() {
     if (!this._protocolHandlers) {
       return;
     }
-    const { onPeerConnected, onPeerDisconnected, onChunkOffer, onChunkReceived } = this._protocolHandlers;
+    const { onPeerConnected, onPeerDisconnected, onChunkOffer, onChunkReceived, onSubtreeReceived } = this._protocolHandlers;
     this.protocol.off('peer:connected', onPeerConnected);
     this.protocol.off('peer:disconnected', onPeerDisconnected);
     this.protocol.off('chunk:offer', onChunkOffer);
     this.protocol.off('chunk:downloaded', onChunkReceived);
+    this.protocol.off('subtree:downloaded', onSubtreeReceived);
     this._protocolHandlers = null;
   }
 
@@ -352,47 +367,152 @@ export class DownloadSession extends EventEmitter {
       }
     }
     
+    const subtreeStart = Math.floor(chunkIndex / this.subtreeChunkCount) * this.subtreeChunkCount;
+    const subtreeEnd = Math.min(this.totalChunks - 1, subtreeStart + this.subtreeChunkCount - 1);
+    const chunkIndices = [];
+    for (let i = subtreeStart; i <= subtreeEnd; i++) {
+      const ch = this.chunkStates.get(i);
+      if (!ch) {
+        continue;
+      }
+      if (ch.state === ChunkState.VERIFIED) {
+        continue;
+      }
+      if (ch.state === ChunkState.REQUESTED && !this.scheduler.inEndgame) {
+        continue;
+      }
+      chunkIndices.push(i);
+    }
+    if (chunkIndices.length === 0) {
+      return false;
+    }
+
     let requestId;
-    try {
-      requestId = this.protocol.requestChunkToPeer(this.topicKey, peer.peerId, chunk.hash);
-    } catch {
-      // Fallback to broadcast if we failed to unicast (peer may have disconnected).
-      requestId = this.protocol.requestChunk(this.topicKey, chunk.hash);
-    }
+    requestId = this.protocol.requestSubtreeToPeer(this.topicKey, peer.peerId, this.merkleRoot, subtreeStart, subtreeEnd - subtreeStart + 1);
     this._activeRequestIds.add(requestId);
-    this._requestToChunkIndex.set(requestId, chunkIndex);
-    console.log(`⬇️  Requested chunk ${chunkIndex} (${chunk.hash.substring(0, 16)}...) req=${requestId.substring(0, 8)} peer=${peer.peerId.substring(0, 8)}`);
-    
-    if (!this.scheduler.inEndgame) {
-      chunk.state = ChunkState.REQUESTED;
-      chunk.requestedFrom = peer.peerId;
-      chunk.requestedAt = Date.now();
-      chunk.requestId = requestId;
+    this._subtreeRequestMap.set(requestId, chunkIndices);
+
+    for (const i of chunkIndices) {
+      const ch = this.chunkStates.get(i);
+      if (!ch || ch.state === ChunkState.VERIFIED) {
+        continue;
+      }
+      ch.state = ChunkState.REQUESTED;
+      ch.requestedFrom = peer.peerId;
+      ch.requestedAt = Date.now();
       this.chunksInFlight++;
-    } else {
-      chunk.endgameRequests.set(peer.peerId, requestId);
-      if (chunk.state === ChunkState.MISSING) {
-        chunk.state = ChunkState.REQUESTED;
-        this.chunksInFlight++;
-      }
     }
-    
-    peer.activeRequests.add(requestId);
-    
+
     const timeout = setTimeout(() => {
-      this.onChunkTimeout(chunkIndex, requestId, peer.peerId);
+      this.onSubtreeTimeout(requestId, peer.peerId);
     }, this.requestTimeout);
-    
-    if (!this.scheduler.inEndgame) {
-      chunk.timeout = timeout;
-    } else {
-      if (!chunk.endgameTimeouts) {
-        chunk.endgameTimeouts = new Map();
-      }
-      chunk.endgameTimeouts.set(requestId, timeout);
-    }
+    this._subtreeTimeouts.set(requestId, timeout);
+
+    peer.activeRequests.add(requestId);
+    console.log(`⬇️  Requested subtree ${subtreeStart}-${subtreeEnd} req=${requestId.substring(0, 8)} peer=${peer.peerId.substring(0, 8)} chunks=${chunkIndices.length}`);
     
     return true;
+  }
+
+  onSubtreeTimeout(requestId, peerId) {
+    const t = this._subtreeTimeouts.get(requestId);
+    if (t) {
+      clearTimeout(t);
+    }
+    this._subtreeTimeouts.delete(requestId);
+
+    const indices = this._subtreeRequestMap.get(requestId) || [];
+    this._subtreeRequestMap.delete(requestId);
+    this._activeRequestIds.delete(requestId);
+
+    const peer = this.peerManager.getPeer(peerId);
+    if (peer) {
+      peer.activeRequests.delete(requestId);
+      peer.timeouts++;
+    }
+
+    for (const idx of indices) {
+      const ch = this.chunkStates.get(idx);
+      if (!ch || ch.state === ChunkState.VERIFIED) {
+        continue;
+      }
+      ch.state = ChunkState.FAILED;
+      ch.retryCount++;
+      this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
+    }
+  }
+
+  async onSubtreeReceived(info) {
+    const { requestId, startChunk, chunkCount, data, peerId } = info;
+    if (!this.running) {
+      return;
+    }
+
+    const t = this._subtreeTimeouts.get(requestId);
+    if (t) {
+      clearTimeout(t);
+    }
+    this._subtreeTimeouts.delete(requestId);
+
+    const indices = this._subtreeRequestMap.get(requestId);
+    if (!indices || indices.length === 0) {
+      this._activeRequestIds.delete(requestId);
+      return;
+    }
+    this._subtreeRequestMap.delete(requestId);
+    this._activeRequestIds.delete(requestId);
+
+    const peer = this.peerManager.getPeer(peerId);
+    if (peer) {
+      peer.activeRequests.delete(requestId);
+    }
+
+    let off = 0;
+    for (let i = startChunk; i < startChunk + chunkCount && i < this.totalChunks; i++) {
+      const ch = this.chunkStates.get(i);
+      if (!ch) {
+        break;
+      }
+      const len = ch.size;
+      if (off + len > data.length) {
+        break;
+      }
+      const slice = data.subarray(off, off + len);
+      off += len;
+
+      if (ch.state === ChunkState.VERIFIED) {
+        continue;
+      }
+
+      try {
+        const actualHash = await hashBuffer(slice);
+        if (actualHash !== ch.hash) {
+          throw new Error('Hash mismatch');
+        }
+        if (!this.outputFd) {
+          await this.openOutputFile();
+        }
+        await this.outputFd.write(slice, 0, slice.length, ch.offset);
+        ch.state = ChunkState.VERIFIED;
+        this.chunksVerified = Math.min(this.totalChunks, this.chunksVerified + 1);
+        this.bytesDownloaded = Math.min(this.fileSize, this.bytesDownloaded + slice.length);
+        this.ourBitfield.set(i);
+        this.peerManager.updatePeerStats(peerId, true, slice.length, Math.max(1, Date.now() - (ch.requestedAt || Date.now())));
+      } catch {
+        ch.state = ChunkState.FAILED;
+        ch.retryCount++;
+        this.peerManager.updatePeerStats(peerId, false);
+      } finally {
+        this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
+      }
+    }
+
+    this.emit('progress', {
+      verified: this.chunksVerified,
+      total: this.totalChunks,
+      bytes: this.bytesDownloaded,
+      percentage: (this.chunksVerified / this.totalChunks) * 100
+    });
   }
 
   onPeerConnected(info) {
