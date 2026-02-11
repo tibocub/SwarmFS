@@ -31,7 +31,7 @@ const swarmfs = new SwarmFS(DATA_DIR);
 if (!swarmfs.isInitialized()) {
   console.log('Initializing SwarmFS...');
   swarmfs.init();
-  console.log(`✓ Initialized at ${DATA_DIR}\n`);
+  console.log(`Initialized at ${DATA_DIR}\n`);
 }
 
 // Wrapper to handle errors and cleanup
@@ -41,12 +41,15 @@ function wrapCommand(commandFunc, keepAlive = false) {
       await commandFunc(swarmfs, ...args);
       
       if (!keepAlive) {
-        swarmfs.close();
+        await swarmfs.close();
       }
     } catch (error) {
-      console.error('✗ Error:', error.message);
+      console.error('Error:', error.message);
+      if (error && error.stack) {
+        console.error(error.stack)
+      }
       if (!keepAlive) {
-        swarmfs.close();
+        await swarmfs.close();
       }
       process.exit(1);
     }
@@ -55,9 +58,9 @@ function wrapCommand(commandFunc, keepAlive = false) {
 
 // Setup Ctrl+C handler for keep-alive commands
 function setupGracefulShutdown() {
-  process.on('SIGINT', () => {
+  process.on('SIGINT', async () => {
     console.log('\n\nShutting down...');
-    swarmfs.close();
+    await swarmfs.close();
     process.exit(0);
   });
 }
@@ -72,13 +75,42 @@ program
   .version('0.4.3');
 
 // ============================================================================
+// DEBUG COMMANDS
+// ============================================================================
+
+program
+  .command('tree <merkle-root>')
+  .description('(Debug) Print the tree of given root hash')
+  .action(wrapCommand(cmd.treeCommand));
+
+// ============================================================================
 // FILE COMMANDS
 // ============================================================================
 
 program
-  .command('add [path]')
+  .command('add [paths...]')
   .description('Add a file or directory (defaults to current directory)')
   .action(wrapCommand(cmd.addCommand));
+
+program
+  .command('rm <paths...>')
+  .description('Remove file or directory metadata from the database')
+  .action(wrapCommand(cmd.rmCommand));
+
+program
+  .command('share <topic> <paths...>')
+  .description('Share file(s) in a topic')
+  .action(async (topic, paths) => {
+    try {
+      await cmd.shareCommand(swarmfs, topic, paths);
+      await swarmfs.close();
+      process.exit(0);
+    } catch (error) {
+      console.error('✗ Error:', error.message);
+      await swarmfs.close();
+      process.exit(1);
+    }
+  });
 
 program
   .command('status')
@@ -109,10 +141,16 @@ const topicCmd = program
   .description('Manage P2P topics/groups');
 
 topicCmd
-  .command('create <name>')
-  .description('Create a new topic')
+  .command('save <name>')
+  .description('Save a new topic')
   .option('--no-auto-join', 'Do not auto-join on startup')
-  .action(wrapCommand(cmd.topicCreateCommand));
+  .action(wrapCommand(cmd.topicSaveCommand));
+
+topicCmd
+  .command('create <name>')
+  .description('Alias for topic save')
+  .option('--no-auto-join', 'Do not auto-join on startup')
+  .action(wrapCommand(cmd.topicSaveCommand));
 
 topicCmd
   .command('list')
@@ -125,14 +163,16 @@ topicCmd
   .action(wrapCommand(cmd.topicInfoCommand));
 
 topicCmd
-  .command('share <topic> <path>')
-  .description('Share a file or directory in a topic')
-  .action(wrapCommand(cmd.topicShareCommand));
+  .command('rm <name>')
+  .description('Remove a topic from the database')
+  .action(wrapCommand(cmd.topicRmCommand));
 
 topicCmd
-  .command('unshare <topic> <path>')
-  .description('Stop sharing a file or directory in a topic')
-  .action(wrapCommand(cmd.topicUnshareCommand));
+  .command('autojoin [topics...]')
+  .description('Enable or disable auto-join for one or more topics')
+  .option('-y, --yes', 'Enable auto-join')
+  .option('-n, --disable', 'Disable auto-join')
+  .action(wrapCommand(cmd.topicAutojoinCommand));
 
 topicCmd
   .command('join <name>')
@@ -150,7 +190,7 @@ topicCmd
 
     } catch (error) {
       console.error('✗ Error:', error.message);
-      swarmfs.close();
+      await swarmfs.close();
       process.exit(1);
     }
   });
@@ -181,20 +221,26 @@ program
         swarmfs.protocol.once('chunk:downloaded', () => {
           downloadComplete = true;
           console.log('\n✓ Download complete!');
-          swarmfs.close();
-          process.exit(0);
+          void (async () => {
+            await swarmfs.close();
+            process.exit(0);
+          })();
         });
         
         swarmfs.protocol.once('chunk:timeout', () => {
           console.log('\n⏱️  Request timed out - no peers responded');
-          swarmfs.close();
-          process.exit(1);
+          void (async () => {
+            await swarmfs.close();
+            process.exit(1);
+          })();
         });
         
         swarmfs.protocol.once('chunk:error', (info) => {
           console.error(`\n❌ Error: ${info.error}`);
-          swarmfs.close();
-          process.exit(1);
+          void (async () => {
+            await swarmfs.close();
+            process.exit(1);
+          })();
         });
       }
       
@@ -204,7 +250,7 @@ program
 
     } catch (error) {
       console.error('✗ Error:', error.message);
-      swarmfs.close();
+      await swarmfs.close();
       process.exit(1);
     }
   });
@@ -220,11 +266,11 @@ program
   .action(async (topic, merkleRoot, outputPath) => {
     try {
       await cmd.downloadCommand(swarmfs, topic, merkleRoot, outputPath);
-      swarmfs.close();
+      await swarmfs.close();
       process.exit(0);
     } catch (error) {
       console.error('✗ Error:', error.message);
-      swarmfs.close();
+      await swarmfs.close();
       process.exit(1);
     }
   });
@@ -236,11 +282,11 @@ program
   .action(async (topic, options) => {
     try {
       await cmd.resumeCommand(swarmfs, topic, options);
-      swarmfs.close();
+      await swarmfs.close();
       process.exit(0);
     } catch (error) {
       console.error('✗ Error:', error.message);
-      swarmfs.close();
+      await swarmfs.close();
       process.exit(1);
     }
   });
@@ -269,7 +315,7 @@ program
       await startTui(swarmfs);
     } catch (error) {
       console.error('✗ Error:', error.message);
-      swarmfs.close();
+      await swarmfs.close();
       process.exit(1);
     }
   });
@@ -289,7 +335,7 @@ program
     if (options?.verbose) {
       process.env.SWARMFS_VERBOSE = '1';
     }
-    swarmfs.close();
+    void swarmfs.close();
     
     // Import and run REPL
     import('./repl.js');
