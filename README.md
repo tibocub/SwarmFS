@@ -8,7 +8,7 @@ than IPFS and easier than BitTorrent to setup and use.
 It's heavily inspired from BitTorrent and IPFS but here is what's different:
 
 SwarmFS vs BitTorrent
-- BitTorrent uses a centralized tracker to find peers, SwarmFS is 100% decentralized
+- BitTorrent uses centralized trackers to find peers, SwarmFS is 100% decentralized
 - SwarmFS uses content-addressing regardless of the file's name, owner, path, or any other metadata. That means data is more resilient in SwarmFS than in a torrent.
 
 SwarmFS vs IPFS
