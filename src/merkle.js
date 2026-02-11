@@ -123,6 +123,106 @@ export async function verifyMerkleProof(leafHash, proof, expectedRoot) {
 }
 
 /**
+ * Cover a contiguous leaf range [startIndex, endIndex] with a minimal set of
+ * aligned power-of-two subtrees.
+ *
+ * Each returned block corresponds to a complete subtree spanning `size` leaves
+ * starting at `start` (leaf-level index).
+ */
+export function coverRangeWithSubtrees(leafCount, startIndex, endIndex) {
+  if (!Number.isInteger(leafCount) || leafCount <= 0) {
+    throw new RangeError('leafCount must be a positive integer')
+  }
+  if (!Number.isInteger(startIndex) || !Number.isInteger(endIndex)) {
+    throw new RangeError('startIndex/endIndex must be integers')
+  }
+  if (startIndex < 0 || endIndex < 0 || startIndex >= leafCount || endIndex >= leafCount || startIndex > endIndex) {
+    throw new RangeError('Invalid range')
+  }
+
+  const blocks = []
+  let i = startIndex
+  while (i <= endIndex) {
+    let size = 1
+
+    // Largest power-of-two aligned at i.
+    while ((i % (size * 2)) === 0 && (size * 2) <= leafCount) {
+      size *= 2
+    }
+
+    // Shrink to fit within [i..endIndex].
+    while (i + size - 1 > endIndex) {
+      size = Math.floor(size / 2)
+    }
+
+    blocks.push({ start: i, size })
+    i += size
+  }
+
+  return blocks
+}
+
+/**
+ * Generate a Merkle proof for an internal node (subtree root) given a prebuilt tree.
+ *
+ * The internal node is identified by:
+ * - `level`: 0 for leaves, 1 for parents of leaves, ...
+ * - `index`: node index at that level
+ */
+export function generateSubtreeProofFromTree(tree, level, index) {
+  if (!tree || !Array.isArray(tree.levels) || tree.levels.length === 0) {
+    throw new TypeError('Invalid tree')
+  }
+  if (!Number.isInteger(level) || level < 0 || level >= tree.levels.length) {
+    throw new RangeError('level out of bounds')
+  }
+  const currentLevel = tree.levels[level]
+  if (!Number.isInteger(index) || index < 0 || index >= currentLevel.length) {
+    throw new RangeError('index out of bounds')
+  }
+
+  const proof = []
+  let idx = index
+  for (let l = level; l < tree.levels.length - 1; l++) {
+    const nodes = tree.levels[l]
+    const isRightNode = idx % 2 === 1
+    const siblingIndex = isRightNode ? idx - 1 : idx + 1
+
+    if (siblingIndex < nodes.length) {
+      proof.push({ hash: nodes[siblingIndex], isLeft: isRightNode })
+    } else {
+      // Odd node duplication rule.
+      proof.push({ hash: nodes[idx], isLeft: false })
+    }
+
+    idx = Math.floor(idx / 2)
+  }
+
+  return {
+    node: currentLevel[index],
+    level,
+    index,
+    proof,
+    root: tree.root
+  }
+}
+
+/**
+ * Verify a proof for an internal node (subtree root) to the Merkle root.
+ */
+export async function verifySubtreeProof(nodeHash, proof, expectedRoot) {
+  let currentHash = nodeHash
+  for (const step of proof) {
+    if (step.isLeft) {
+      currentHash = await combineHashes(step.hash, currentHash)
+    } else {
+      currentHash = await combineHashes(currentHash, step.hash)
+    }
+  }
+  return currentHash === expectedRoot
+}
+
+/**
  * Print a Merkle tree (for debugging)
  * @param {Object} tree - Merkle tree from buildMerkleTree
  * @returns {string} String representation
