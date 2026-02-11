@@ -44,20 +44,30 @@ export class SwarmFS {
       return DEFAULT_CHUNK_SIZE;
     }
 
+    // Prefer larger chunks for large files (fewer hashes/proofs, fewer DB rows).
+    // Keep within [1MiB, 64MiB] by default.
+    if (fileSize >= 256 * 1024 * 1024 * 1024) {
+      return 64 * 1024 * 1024;
+    }
+
+    if (fileSize >= 64 * 1024 * 1024 * 1024) {
+      return 32 * 1024 * 1024;
+    }
+
     if (fileSize >= 16 * 1024 * 1024 * 1024) {
-      return 4 * 1024 * 1024;
+      return 16 * 1024 * 1024;
     }
 
     if (fileSize >= 4 * 1024 * 1024 * 1024) {
-      return 2 * 1024 * 1024;
+      return 8 * 1024 * 1024;
     }
 
     if (fileSize >= 1024 * 1024 * 1024) {
-      return 1024 * 1024;
+      return 4 * 1024 * 1024;
     }
 
     if (fileSize >= 256 * 1024 * 1024) {
-      return 512 * 1024;
+      return 2 * 1024 * 1024;
     }
 
     return DEFAULT_CHUNK_SIZE;

@@ -143,6 +143,9 @@ export class SwarmNetwork extends EventEmitter {
       }
 
       const peerConn = this.peerConnections.get(peerId);
+      // Hyperswarm can establish multiple connections to the same peer.
+      // Always treat the latest conn as authoritative for this peer to avoid stale conn references.
+      peerConn.conn = conn;
 
       for (const t of inferredTopicKeys) {
         const topicKeyHex = t.toString('hex');
@@ -199,7 +202,11 @@ export class SwarmNetwork extends EventEmitter {
         this.emit('peer:disconnect', { peerId, topicKey });
       }
 
-      this.peerConnections.delete(peerId);
+      // Only delete if this is the currently tracked connection for the peer.
+      // Otherwise another active conn exists and should keep topic attribution.
+      if (peerConn && peerConn.conn === conn) {
+        this.peerConnections.delete(peerId);
+      }
     });
   }
 

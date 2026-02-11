@@ -89,14 +89,19 @@ export class DownloadSession extends EventEmitter {
 
     this._requestToChunkIndex = new Map();
 
-    // SUBTREE_DATA is sent as a single binary frame.
-    // Hyperswarm/secret-stream has an atomic write limit of 16,777,215 bytes.
-    // Keep our subtree requests below that so we don't trigger disconnect loops.
+    // Prefer large subtree batches for throughput on good links.
+    // When Protomux streaming is enabled, the subtree payload can exceed the 16MiB atomic write limit.
+    // Keep a safe fallback for legacy peers by not exceeding what a single SUBTREE_DATA frame can carry.
+    const TARGET_SUBTREE_BYTES = 64 * 1024 * 1024;
+
+    const maxChunksByTarget = Math.max(1, Math.floor(TARGET_SUBTREE_BYTES / Math.max(1, this.chunkSize)));
+
     const MAX_ATOMIC_WRITE = 16777215;
     const SUBTREE_DATA_OVERHEAD = 6 + (1 + 16 + 32 + 4 + 2 + 4);
-    const maxData = Math.max(0, MAX_ATOMIC_WRITE - SUBTREE_DATA_OVERHEAD);
-    const maxChunksPerSubtree = Math.max(1, Math.floor(maxData / Math.max(1, this.chunkSize)));
-    const cap = Math.max(1, Math.min(16, maxChunksPerSubtree));
+    const maxDataLegacy = Math.max(0, MAX_ATOMIC_WRITE - SUBTREE_DATA_OVERHEAD);
+    const maxChunksLegacy = Math.max(1, Math.floor(maxDataLegacy / Math.max(1, this.chunkSize)));
+
+    const cap = Math.max(1, Math.min(maxChunksByTarget, maxChunksLegacy));
     this.subtreeChunkCount = Math.max(1, 1 << Math.floor(Math.log2(cap)));
     this._subtreeRequestMap = new Map(); // requestId -> number[] chunkIndices
     this._subtreeTimeouts = new Map(); // requestId -> Timeout
