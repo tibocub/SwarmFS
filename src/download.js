@@ -2,14 +2,15 @@
  * DownloadSession - Manages parallel download of a single file
  */
 
-import { EventEmitter } from 'events';
-import fs from 'fs';
-import crypto from 'crypto';
-import { BitField } from './bitfield.js';
-import { PeerManager } from './peer-manager.js';
-import { ChunkScheduler, ChunkState } from './chunk-scheduler.js';
-import { getMerkleRoot } from './merkle.js';
-import { hashBuffer } from './hash.js';
+import { EventEmitter } from 'events'
+import fs from 'fs'
+// import crypto from 'crypto'
+import blake3 from 'blake3-bao/blake3'
+import { BitField } from './bitfield.js'
+import { PeerManager } from './peer-manager.js'
+import { ChunkScheduler, ChunkState } from './chunk-scheduler.js'
+import { getMerkleRoot } from './merkle.js'
+import { hashBuffer } from './hash.js'
 
 export class ChunkMeta {
   constructor(index, hash, offset, size) {
@@ -220,13 +221,15 @@ export class DownloadSession extends EventEmitter {
     console.log(`   🔍 Verifying existing chunks...`);
     
     const fd = await fs.promises.open(this.outputPath, 'r');
+
     try {
       for (const [index, chunk] of this.chunkStates) {
         try {
           const buffer = Buffer.allocUnsafe(chunk.size);
           await fd.read(buffer, 0, chunk.size, chunk.offset);
           
-          const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+          // const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+          const hash = await hashBuffer(buffer)
           
           if (hash === chunk.hash) {
             chunk.state = ChunkState.VERIFIED;
@@ -235,7 +238,7 @@ export class DownloadSession extends EventEmitter {
             this.ourBitfield.set(index);
           }
         } catch (err) {
-          // Chunk verification failed
+          console.error('Chunk verification failed: ', err)
         }
       }
     } finally {
@@ -243,7 +246,7 @@ export class DownloadSession extends EventEmitter {
     }
     
     if (this.chunksVerified > 0) {
-      console.log(`   ✓ Resumed: ${this.chunksVerified}/${this.totalChunks} chunks already verified`);
+      console.log(`Resumed: ${this.chunksVerified}/${this.totalChunks} chunks already verified`);
     }
   }
 
@@ -495,7 +498,8 @@ export class DownloadSession extends EventEmitter {
 
   async verifyAndWriteChunk(chunkIndex, chunk, peerId, startTime) {
     try {
-      const actualHash = crypto.createHash('sha256').update(chunk.data).digest('hex');
+      // const actualHash = crypto.createHash('sha256').update(chunk.data).digest('hex');
+      const actualHash = await hashBuffer(chunk.data)
       
       if (actualHash !== chunk.hash) {
         throw new Error('Hash mismatch');
@@ -652,18 +656,19 @@ export class DownloadSession extends EventEmitter {
   }
 
   async verifyFileMerkleRoot() {
-    const fd = await fs.promises.open(this.outputPath, 'r');
+    const fd = await fs.promises.open(this.outputPath, 'r')
     try {
-      const leafHashes = [];
+      const leafHashes = []
       for (let i = 0; i < this.totalChunks; i++) {
-        const offset = i * this.chunkSize;
-        const len = Math.min(this.chunkSize, Math.max(0, this.fileSize - offset));
-        const buf = Buffer.allocUnsafe(len);
-        const { bytesRead } = await fd.read(buf, 0, len, offset);
-        const actualBuf = bytesRead < len ? buf.subarray(0, bytesRead) : buf;
-        leafHashes.push(hashBuffer(actualBuf));
+        const offset = i * this.chunkSize
+        const len = Math.min(this.chunkSize, Math.max(0, this.fileSize - offset))
+        const buf = Buffer.allocUnsafe(len)
+        const { bytesRead } = await fd.read(buf, 0, len, offset)
+        const actualBuf = bytesRead < len ? buf.subarray(0, bytesRead) : buf
+        const leafHash = await hashBuffer(actualBuf)
+        leafHashes.push(leafHash)
       }
-      return getMerkleRoot(leafHashes);
+      return await getMerkleRoot(leafHashes);
     } finally {
       await fd.close();
     }
@@ -683,7 +688,7 @@ export class DownloadSession extends EventEmitter {
         const buf = Buffer.allocUnsafe(len);
         const { bytesRead } = await fd.read(buf, 0, len, offset);
         const actualBuf = bytesRead < len ? buf.subarray(0, bytesRead) : buf;
-        const actual = hashBuffer(actualBuf);
+        const actual = await hashBuffer(actualBuf);
         if (actual !== expected) {
           return { index: i, expected, actual, offset, len: actualBuf.length };
         }

@@ -7,6 +7,7 @@ import { Database } from './sqlite.js';
 
 const SCHEMA = `
 -- Files: Tracked files on filesystem
+
 CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   path TEXT UNIQUE NOT NULL,
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 -- File chunks: Maps files to their chunks in order
+
 CREATE TABLE IF NOT EXISTS file_chunks (
   file_id INTEGER NOT NULL,
   chunk_index INTEGER NOT NULL,
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS file_chunks (
 );
 
 -- Directories: For directory tracking
+
 CREATE TABLE IF NOT EXISTS directories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   path TEXT UNIQUE NOT NULL,
@@ -38,6 +41,7 @@ CREATE TABLE IF NOT EXISTS directories (
 );
 
 -- Topics: P2P topics/groups
+
 CREATE TABLE IF NOT EXISTS topics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT UNIQUE NOT NULL,
@@ -48,6 +52,7 @@ CREATE TABLE IF NOT EXISTS topics (
 );
 
 -- Topic shares: Files/directories shared in topics
+
 CREATE TABLE IF NOT EXISTS topic_shares (
   topic_id INTEGER NOT NULL,
   share_type TEXT NOT NULL,
@@ -59,6 +64,7 @@ CREATE TABLE IF NOT EXISTS topic_shares (
 );
 
 -- Indexes for performance
+
 CREATE INDEX IF NOT EXISTS idx_file_chunks_hash ON file_chunks(chunk_hash);
 CREATE INDEX IF NOT EXISTS idx_files_merkle_root ON files(merkle_root);
 CREATE INDEX IF NOT EXISTS idx_topic_shares_topic ON topic_shares(topic_id);
@@ -188,7 +194,7 @@ export class SwarmDB {
    */
   getChunkLocation(chunkHash) {
     const stmt = this.db.prepare(`
-      SELECT f.id AS file_id, f.path, f.merkle_root, fc.chunk_index, fc.chunk_offset, fc.chunk_size
+      SELECT f.id AS file_id, f.path, f.merkle_root, f.file_modified_at, fc.chunk_index, fc.chunk_offset, fc.chunk_size
       FROM file_chunks fc
       JOIN files f ON f.id = fc.file_id
       WHERE fc.chunk_hash = ? AND f.file_modified_at > 0
@@ -200,7 +206,7 @@ export class SwarmDB {
 
   getChunkLocations(chunkHash, limit = 10) {
     const stmt = this.db.prepare(`
-      SELECT f.id AS file_id, f.path, f.merkle_root, fc.chunk_index, fc.chunk_offset, fc.chunk_size
+      SELECT f.id AS file_id, f.path, f.merkle_root, f.file_modified_at, fc.chunk_index, fc.chunk_offset, fc.chunk_size
       FROM file_chunks fc
       JOIN files f ON f.id = fc.file_id
       WHERE fc.chunk_hash = ? AND f.file_modified_at > 0
@@ -215,7 +221,7 @@ export class SwarmDB {
    */
   getChunkWriteLocation(chunkHash) {
     const stmt = this.db.prepare(`
-      SELECT f.id AS file_id, f.path, f.merkle_root, fc.chunk_index, fc.chunk_offset, fc.chunk_size
+      SELECT f.id AS file_id, f.path, f.merkle_root, f.file_modified_at, fc.chunk_index, fc.chunk_offset, fc.chunk_size
       FROM file_chunks fc
       JOIN files f ON f.id = fc.file_id
       WHERE fc.chunk_hash = ?

@@ -3,11 +3,32 @@
  * These can be called from CLI or REPL
  */
 
-import fs from 'fs';
-import path from 'path';
-import terminalKit from 'terminal-kit';
+import fs from 'fs'
+import path from 'path'
+import terminalKit from 'terminal-kit'
 
 const term = terminalKit.terminal;
+
+function nowNs() {
+  return process.hrtime.bigint()
+}
+
+function elapsedMs(startNs) {
+  return Number(nowNs() - startNs) / 1e6
+}
+
+function formatSeconds(ms) {
+  return (ms / 1000).toFixed(3)
+}
+
+function formatMbps(bytes, ms) {
+  if (!Number.isFinite(bytes) || !Number.isFinite(ms) || ms <= 0) {
+    return null
+  }
+  const mb = bytes / (1024 * 1024)
+  const sec = ms / 1000
+  return (mb / sec).toFixed(2)
+}
 
 
 // Utility functions
@@ -72,7 +93,9 @@ export async function addCommand(swarmfs, targetPath) {
 
   if (stats.isDirectory()) {
     console.log(`Adding directory: ${absolutePath}\n`);
+    const start = nowNs()
     const result = await swarmfs.addDirectory(absolutePath);
+    const ms = elapsedMs(start)
     
     console.log('\n✓ Directory added successfully');
     console.log(`  Path: ${result.path}`);
@@ -80,17 +103,25 @@ export async function addCommand(swarmfs, targetPath) {
     console.log(`  Directories: ${result.directories}`);
     console.log(`  Total Size: ${formatBytes(result.totalSize)}`);
     console.log(`  Merkle Root: ${result.merkleRoot}`);
+
+    const mbps = formatMbps(result.totalSize, ms)
+    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`)
     
     return result;
   } else if (stats.isFile()) {
     console.log(`Adding file: ${absolutePath}`);
+    const start = nowNs()
     const result = await swarmfs.addFile(absolutePath);
+    const ms = elapsedMs(start)
     
     console.log('✓ File added successfully');
     console.log(`  Path: ${result.path}`);
     console.log(`  Size: ${formatBytes(result.size)}`);
     console.log(`  Chunks: ${result.chunks}`);
     console.log(`  Merkle Root: ${result.merkleRoot}`);
+
+    const mbps = formatMbps(result.size, ms)
+    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`)
     
     return result;
   } else {
@@ -310,6 +341,7 @@ export async function topicLeaveCommand(swarmfs, name) {
   console.log(`✓ Left topic: ${name}`);
 }
 
+// ============================================================================
 // NETWORK COMMANDS
 // ============================================================================
 
@@ -462,6 +494,7 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
   }
 
   try {
+    const start = nowNs()
     const result = await swarmfs.downloadFile(topicName, merkleRoot, outputPath, {
       onProgress: (info) => {
         if (!progressBar) {
@@ -505,6 +538,8 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
       }
     });
 
+    const ms = elapsedMs(start)
+
     if (progressBar) {
       progressBar.update(1);
       if (typeof progressBar.stop === 'function') {
@@ -519,6 +554,9 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
     console.log(`  Chunks: ${result.totalChunks}`);
     console.log(`  Downloaded: ${result.chunksDownloaded}`);
     console.log(`  Already had: ${result.chunksAlreadyHad}`);
+
+    const mbps = formatMbps(result.size, ms)
+    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`)
 
     return result;
   } catch (error) {

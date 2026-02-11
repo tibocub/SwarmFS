@@ -6,7 +6,7 @@
 import { parentPort } from 'worker_threads';
 import { hashBuffer } from './hash.js';
 
-parentPort.on('message', (message) => {
+parentPort.on('message', async (message) => {
   const { chunks } = message;
   
   try {
@@ -16,7 +16,7 @@ parentPort.on('message', (message) => {
     }
     
     // Hash each chunk buffer
-    const results = chunks.map(chunk => {
+    const results = await Promise.all(chunks.map(async (chunk) => {
       if (!chunk.data) {
         throw new Error(`Chunk ${chunk.index} missing data`);
       }
@@ -30,7 +30,7 @@ parentPort.on('message', (message) => {
         throw new Error(`Chunk ${chunk.index} has invalid or empty buffer`);
       }
       
-      const hash = hashBuffer(buffer);
+      const hash = await hashBuffer(buffer);
       
       if (!hash || typeof hash !== 'string') {
         throw new Error(`Invalid hash generated for chunk ${chunk.index}`);
@@ -40,7 +40,7 @@ parentPort.on('message', (message) => {
         index: chunk.index,
         hash: hash
       };
-    });
+    }));
     
     parentPort.postMessage({ success: true, results });
     
