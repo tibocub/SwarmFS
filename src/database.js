@@ -169,6 +169,11 @@ export class SwarmDB {
     return stmt.run(filePath);
   }
 
+  removeDirectory(dirPath) {
+    const stmt = this.db.prepare('DELETE FROM directories WHERE path = ?');
+    return stmt.run(dirPath);
+  }
+
   /**
    * Add file chunks mapping
    */
@@ -363,6 +368,24 @@ export class SwarmDB {
   }
 
   /**
+   * Update topic auto_join flag
+   */
+  setTopicAutoJoin(name, autoJoin) {
+    const stmt = this.db.prepare('UPDATE topics SET auto_join = ? WHERE name = ?');
+    return stmt.run(autoJoin ? 1 : 0, name);
+  }
+
+  setTopicsAutoJoin(names, autoJoin) {
+    const stmt = this.db.prepare('UPDATE topics SET auto_join = ? WHERE name = ?');
+    const tx = this.db.transaction((topicNames) => {
+      for (const n of topicNames) {
+        stmt.run(autoJoin ? 1 : 0, n);
+      }
+    });
+    tx(names);
+  }
+
+  /**
    * Update file modified time (used to mark downloads complete)
    */
   updateFileModifiedAt(fileId, fileModifiedAt) {
@@ -434,6 +457,11 @@ export class SwarmDB {
   removeTopicShare(topicId, sharePath) {
     const stmt = this.db.prepare('DELETE FROM topic_shares WHERE topic_id = ? AND share_path = ?');
     return stmt.run(topicId, sharePath);
+  }
+
+  removeTopicSharesByPath(sharePath) {
+    const stmt = this.db.prepare('DELETE FROM topic_shares WHERE share_path = ?');
+    return stmt.run(sharePath);
   }
 
   /**

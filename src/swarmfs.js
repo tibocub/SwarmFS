@@ -513,6 +513,11 @@ export class SwarmFS {
     return this.db.removeFile(absolutePath);
   }
 
+  removeDirectory(dirPath) {
+    const absolutePath = path.resolve(dirPath);
+    return this.db.removeDirectory(absolutePath);
+  }
+
   /**
    * Get statistics
    */
@@ -536,11 +541,15 @@ export class SwarmFS {
       this.protocol.close();
     }
     if (this.network) {
-      this.network.close();
+      await this.network.close();
     }
     if (this.db) {
       this.db.close();
     }
+
+    this.protocol = null;
+    this.network = null;
+    this.db = null;
   }
 
   // ============================================================================
@@ -602,6 +611,10 @@ export class SwarmFS {
     return this.db.deleteTopic(name);
   }
 
+  async setTopicsAutoJoin(names, autoJoin) {
+    this.db.setTopicsAutoJoin(names, autoJoin);
+  }
+
   /**
    * Share a path in a topic
    */
@@ -657,7 +670,7 @@ export class SwarmFS {
   async joinTopic(name) {
     const topic = this.db.getTopic(name);
     if (!topic) {
-      throw new Error(`Topic "${name}" not found. Create it first with: swarmfs topic create ${name}`);
+      throw new Error(`Topic "${name}" not found. Save it first with: swarmfs topic save ${name}`);
     }
 
     // Initialize network if not already done

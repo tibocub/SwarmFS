@@ -105,35 +105,35 @@ async function executeCommand(line) {
   if (cmdName === 'help') {
     console.log('\nAvailable Commands:');
     console.log('\nFile Management:');
-    console.log('  add [path]              Add file or directory (default: current dir)');
-    console.log('  status                  List tracked files');
-    console.log('  verify <path>           Verify file integrity');
-    console.log('  info <path>             Show file details');
-    console.log('  stats                   Show storage statistics');
+    console.log('  add [path]               Add file or directory (default: current dir)');
+    console.log('  status                   List tracked files');
+    console.log('  verify <path>            Verify file integrity');
+    console.log('  info <path>              Show file details');
+    console.log('  stats                    Show storage statistics');
     console.log('\nTopic Management:');
-    console.log('  topic create <n> [--no-auto-join]');
-    console.log('  topic list              List all topics');
-    console.log('  topic info <n>        Show topic details');
+    console.log('  topic save <name> [-n --no-auto-join]');
+    console.log('  topic list               List all topics');
+    console.log('  topic info <topic>       Show topic details');
     console.log('  topic share <topic> <path>');
     console.log('  topic unshare <topic> <path>');
-    console.log('  topic join <n>        Join topic (stays connected)');
-    console.log('  topic leave <n>       Leave topic');
+    console.log('  topic join <topic>       Join topic (stays connected)');
+    console.log('  topic leave <topic>      Leave topic');
     console.log('\nNetwork:');
     console.log('  request <topic> <chunkHash>');
     console.log('  browse <topic>');
     console.log('  download <topic> <merkleRoot> <outputPath>');
-    console.log('  network                 Show network status');
+    console.log('  network                  Show network status');
     console.log('\nREPL:');
-    console.log('  help                    Show this help');
-    console.log('  clear                   Clear screen');
-    console.log('  exit                    Exit REPL');
+    console.log('  help                     Show this help');
+    console.log('  clear                    Clear screen');
+    console.log('  exit                     Exit REPL');
     console.log('');
     return;
   }
   
   if (cmdName === 'exit' || cmdName === 'quit') {
     console.log('\nGoodbye!');
-    swarmfs.close();
+    await swarmfs.close();
     process.exit(0);
   }
   
@@ -226,8 +226,10 @@ rl.on('SIGINT', () => {
   rl.question('\nAre you sure you want to exit? (y/n) ', (answer) => {
     if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
       console.log('\nShutting down...');
-      swarmfs.close();
-      process.exit(0);
+      void (async () => {
+        await swarmfs.close();
+        process.exit(0);
+      })();
     } else {
       rl.prompt();
     }
@@ -237,8 +239,10 @@ rl.on('SIGINT', () => {
 // Handle close
 rl.on('close', () => {
   console.log('\nGoodbye!');
-  swarmfs.close();
-  process.exit(0);
+  void (async () => {
+    await swarmfs.close();
+    process.exit(0);
+  })();
 });
 
 // Start the REPL
