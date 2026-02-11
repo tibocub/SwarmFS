@@ -63,11 +63,22 @@ CREATE TABLE IF NOT EXISTS topic_shares (
   FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS downloads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic_name TEXT NOT NULL,
+  merkle_root TEXT NOT NULL,
+  output_path TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  UNIQUE (topic_name, merkle_root, output_path)
+);
+
 -- Indexes for performance
 
 CREATE INDEX IF NOT EXISTS idx_file_chunks_hash ON file_chunks(chunk_hash);
 CREATE INDEX IF NOT EXISTS idx_files_merkle_root ON files(merkle_root);
 CREATE INDEX IF NOT EXISTS idx_topic_shares_topic ON topic_shares(topic_id);
+CREATE INDEX IF NOT EXISTS idx_downloads_completed ON downloads(completed_at);
 `;
 
 export class SwarmDB {
@@ -357,6 +368,44 @@ export class SwarmDB {
   updateFileModifiedAt(fileId, fileModifiedAt) {
     const stmt = this.db.prepare('UPDATE files SET file_modified_at = ? WHERE id = ?');
     stmt.run(fileModifiedAt, fileId);
+  }
+
+  addDownload(topicName, merkleRoot, outputPath) {
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO downloads (topic_name, merkle_root, output_path, created_at)
+      VALUES (?, ?, ?, ?)
+    `);
+    const result = stmt.run(topicName, merkleRoot, outputPath, Date.now());
+    return result.lastInsertRowid;
+  }
+
+  markDownloadComplete(topicName, merkleRoot, outputPath) {
+    const stmt = this.db.prepare(`
+      UPDATE downloads
+      SET completed_at = ?
+      WHERE topic_name = ? AND merkle_root = ? AND output_path = ?
+    `);
+    stmt.run(Date.now(), topicName, merkleRoot, outputPath);
+  }
+
+  getIncompleteDownloads(topicName = null) {
+    if (typeof topicName === 'string' && topicName.length > 0) {
+      const stmt = this.db.prepare(`
+        SELECT *
+        FROM downloads
+        WHERE completed_at IS NULL AND topic_name = ?
+        ORDER BY created_at ASC
+      `);
+      return stmt.all(topicName);
+    }
+
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM downloads
+      WHERE completed_at IS NULL
+      ORDER BY created_at ASC
+    `);
+    return stmt.all();
   }
 
   /**
