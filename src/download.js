@@ -9,7 +9,7 @@ import blake3 from 'blake3-bao/blake3'
 import { BitField } from './bitfield.js'
 import { PeerManager } from './peer-manager.js'
 import { ChunkScheduler, ChunkState } from './chunk-scheduler.js'
-import { getMerkleRoot } from './merkle.js'
+import { getMerkleRoot, verifySubtreeProof } from './merkle.js'
 import { hashBuffer } from './hash.js'
 
 export class ChunkMeta {
@@ -96,9 +96,14 @@ export class DownloadSession extends EventEmitter {
     const SUBTREE_DATA_OVERHEAD = 6 + (1 + 16 + 32 + 4 + 2 + 4);
     const maxData = Math.max(0, MAX_ATOMIC_WRITE - SUBTREE_DATA_OVERHEAD);
     const maxChunksPerSubtree = Math.max(1, Math.floor(maxData / Math.max(1, this.chunkSize)));
-    this.subtreeChunkCount = Math.min(16, maxChunksPerSubtree);
+    const cap = Math.max(1, Math.min(16, maxChunksPerSubtree));
+    this.subtreeChunkCount = Math.max(1, 1 << Math.floor(Math.log2(cap)));
     this._subtreeRequestMap = new Map(); // requestId -> number[] chunkIndices
     this._subtreeTimeouts = new Map(); // requestId -> Timeout
+
+    // Subtree proof/data pairing (may arrive in either order)
+    this._pendingSubtreeProofs = new Map(); // requestId -> proofInfo
+    this._pendingSubtreeData = new Map(); // requestId -> dataInfo
   }
 
   _clearAllChunkTimeouts() {
@@ -267,13 +272,15 @@ export class DownloadSession extends EventEmitter {
     const onChunkOffer = (info) => this.onChunkOffer(info);
     const onChunkReceived = (info) => this.onChunkReceived(info);
     const onSubtreeReceived = (info) => this.onSubtreeReceived(info);
+    const onSubtreeProof = (info) => this.onSubtreeProof(info);
 
     this._protocolHandlers = {
       onPeerConnected,
       onPeerDisconnected,
       onChunkOffer,
       onChunkReceived,
-      onSubtreeReceived
+      onSubtreeReceived,
+      onSubtreeProof
     };
 
     this.protocol.on('peer:connected', onPeerConnected);
@@ -281,18 +288,20 @@ export class DownloadSession extends EventEmitter {
     this.protocol.on('chunk:offer', onChunkOffer);
     this.protocol.on('chunk:downloaded', onChunkReceived);
     this.protocol.on('subtree:downloaded', onSubtreeReceived);
+    this.protocol.on('subtree:proof', onSubtreeProof);
   }
 
   detachProtocolHandlers() {
     if (!this._protocolHandlers) {
       return;
     }
-    const { onPeerConnected, onPeerDisconnected, onChunkOffer, onChunkReceived, onSubtreeReceived } = this._protocolHandlers;
+    const { onPeerConnected, onPeerDisconnected, onChunkOffer, onChunkReceived, onSubtreeReceived, onSubtreeProof } = this._protocolHandlers;
     this.protocol.off('peer:connected', onPeerConnected);
     this.protocol.off('peer:disconnected', onPeerDisconnected);
     this.protocol.off('chunk:offer', onChunkOffer);
     this.protocol.off('chunk:downloaded', onChunkReceived);
     this.protocol.off('subtree:downloaded', onSubtreeReceived);
+    this.protocol.off('subtree:proof', onSubtreeProof);
     this._protocolHandlers = null;
   }
 
@@ -370,8 +379,20 @@ export class DownloadSession extends EventEmitter {
       }
     }
     
-    const subtreeStart = Math.floor(chunkIndex / this.subtreeChunkCount) * this.subtreeChunkCount;
-    const subtreeEnd = Math.min(this.totalChunks - 1, subtreeStart + this.subtreeChunkCount - 1);
+    // Subtree proofs require power-of-two chunkCount and alignment (startChunk % chunkCount === 0).
+    // The simple power-of-two shrinking logic can accidentally skip the very last chunk(s).
+    // For the tail of the file, request single-chunk subtrees to guarantee coverage.
+    const remainingFromIndex = this.totalChunks - chunkIndex;
+    let subtreeStart;
+    let subtreeEnd;
+
+    if (remainingFromIndex > 0 && remainingFromIndex < this.subtreeChunkCount) {
+      subtreeStart = chunkIndex;
+      subtreeEnd = chunkIndex;
+    } else {
+      subtreeStart = Math.floor(chunkIndex / this.subtreeChunkCount) * this.subtreeChunkCount;
+      subtreeEnd = Math.min(this.totalChunks - 1, subtreeStart + this.subtreeChunkCount - 1);
+    }
     const chunkIndices = [];
     for (let i = subtreeStart; i <= subtreeEnd; i++) {
       const ch = this.chunkStates.get(i);
@@ -424,6 +445,9 @@ export class DownloadSession extends EventEmitter {
     }
     this._subtreeTimeouts.delete(requestId);
 
+    this._pendingSubtreeProofs.delete(requestId);
+    this._pendingSubtreeData.delete(requestId);
+
     const indices = this._subtreeRequestMap.get(requestId) || [];
     this._subtreeRequestMap.delete(requestId);
     this._activeRequestIds.delete(requestId);
@@ -449,6 +473,91 @@ export class DownloadSession extends EventEmitter {
     const { requestId, startChunk, chunkCount, data, peerId } = info;
     if (!this.running) {
       return;
+    }
+
+    // Proof may arrive after data; pair them by requestId.
+    const proofInfo = this._pendingSubtreeProofs.get(requestId);
+    if (!proofInfo) {
+      this._pendingSubtreeData.set(requestId, info);
+      return;
+    }
+    this._pendingSubtreeProofs.delete(requestId);
+    await this._processSubtreeWithProof(proofInfo, info);
+  }
+
+  async onSubtreeProof(info) {
+    const { requestId } = info;
+    if (!this.running) {
+      return;
+    }
+
+    const dataInfo = this._pendingSubtreeData.get(requestId);
+    if (!dataInfo) {
+      this._pendingSubtreeProofs.set(requestId, info);
+      return;
+    }
+    this._pendingSubtreeData.delete(requestId);
+    await this._processSubtreeWithProof(info, dataInfo);
+  }
+
+  async _processSubtreeWithProof(proofInfo, dataInfo) {
+    const { requestId, merkleRoot, startChunk: proofStart, chunkCount: proofCount, node, proof, peerId: proofPeerId } = proofInfo;
+    const { startChunk, chunkCount, data, peerId } = dataInfo;
+
+    if (peerId !== proofPeerId) {
+      return;
+    }
+    if (merkleRoot !== this.merkleRoot) {
+      return;
+    }
+    if (startChunk !== proofStart || chunkCount !== proofCount) {
+      return;
+    }
+
+    const failSubtree = () => {
+      const indices = this._subtreeRequestMap.get(requestId) || [];
+      this._subtreeRequestMap.delete(requestId);
+      this._activeRequestIds.delete(requestId);
+
+      const t = this._subtreeTimeouts.get(requestId);
+      if (t) {
+        clearTimeout(t);
+      }
+      this._subtreeTimeouts.delete(requestId);
+
+      for (const idx of indices) {
+        const ch = this.chunkStates.get(idx);
+        if (!ch || ch.state === ChunkState.VERIFIED) {
+          continue;
+        }
+        ch.state = ChunkState.FAILED;
+        ch.retryCount++;
+        this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
+      }
+    }
+
+    // Compute subtree root from expected chunk hashes (data integrity is ensured by per-chunk hashing below).
+    const leafHashes = [];
+    for (let i = startChunk; i < startChunk + chunkCount && i < this.totalChunks; i++) {
+      const ch = this.chunkStates.get(i);
+      if (!ch) {
+        break;
+      }
+      leafHashes.push(ch.hash);
+    }
+
+    // Only validate if we have a full subtree worth of leaves.
+    if (leafHashes.length === chunkCount) {
+      const computedNode = await getMerkleRoot(leafHashes);
+      if (computedNode !== node) {
+        failSubtree();
+        return;
+      }
+      const ok = await verifySubtreeProof(node, proof, this.merkleRoot);
+      if (!ok) {
+        failSubtree();
+        return;
+      }
     }
 
     const t = this._subtreeTimeouts.get(requestId);
