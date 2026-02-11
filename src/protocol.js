@@ -9,6 +9,7 @@ import blake3 from 'blake3-bao/blake3'
 import fs from 'fs'
 import path from 'path'
 import { hashBuffer } from './hash.js'
+import { buildMerkleTree, generateSubtreeProofFromTree } from './merkle.js'
 
 const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true'
 const debug = (...args) => {
@@ -36,7 +37,8 @@ export const MSG_TYPE = {
   BITFIELD: 0x0c,           // Send complete bitfield
   BITFIELD_REQUEST: 0x0d,   // Request peer's bitfield
   SUBTREE_REQUEST: 0x0e,
-  SUBTREE_DATA: 0x0f
+  SUBTREE_DATA: 0x0f,
+  SUBTREE_PROOF: 0x10
 }
 
 export class Protocol extends EventEmitter {
@@ -63,6 +65,10 @@ export class Protocol extends EventEmitter {
     // Per-connection send queues for backpressure-safe writes without stalling message handling.
     // conn -> Promise chain
     this._sendQueues = new Map();
+
+    // Cache merkle trees for serving subtree proofs.
+    // merkleRoot(hex) -> { root, levels, leafCount }
+    this._merkleTreeCache = new Map();
     
     // Setup network event handlers
     debug('[PROTOCOL] Setting up peer handler...');
@@ -523,6 +529,9 @@ export class Protocol extends EventEmitter {
         case MSG_TYPE.SUBTREE_DATA:
           await this.handleSubtreeData(conn, peerId, payload);
           break;
+        case MSG_TYPE.SUBTREE_PROOF:
+          this.handleSubtreeProof(conn, peerId, payload);
+          break;
         default:
           console.warn(`Unknown message type: ${type}`);
       }
@@ -749,6 +758,14 @@ export class Protocol extends EventEmitter {
     const chunks = this.db.getFileChunks(file.id)
     const slice = chunks.slice(startChunk, endChunk + 1)
 
+    // Subtree proofs require aligned power-of-two subtrees.
+    // (Downloader uses power-of-two subtreeChunkCount, but guard here too.)
+    const isPowerOfTwo = (n) => n > 0 && (n & (n - 1)) === 0
+    if (!isPowerOfTwo(chunkCount) || (startChunk % chunkCount) !== 0) {
+      this.sendError(conn, requestId, 'Subtree request must be aligned power-of-two')
+      return
+    }
+
     // Guard against Hyperswarm/secret-stream atomic write limit.
     // If we try to write a single frame larger than this, the connection is reset.
     const MAX_ATOMIC_WRITE = 16777215
@@ -763,13 +780,53 @@ export class Protocol extends EventEmitter {
       return
     }
 
+    // Send a subtree proof first (JSON frame), then stream SUBTREE_DATA (binary frame).
+    // Proof is for the internal node that exactly covers [startChunk, startChunk+chunkCount).
+    try {
+      let tree = this._merkleTreeCache.get(merkleRoot)
+      if (!tree) {
+        const leafHashes = chunks.map((ch) => ch.chunk_hash)
+        tree = await buildMerkleTree(leafHashes)
+        this._merkleTreeCache.set(merkleRoot, tree)
+      }
+
+      const level = Math.round(Math.log2(chunkCount))
+      const index = Math.floor(startChunk / chunkCount)
+      const proofObj = generateSubtreeProofFromTree(tree, level, index)
+
+      const proofMsg = this.encodeMessage(MSG_TYPE.SUBTREE_PROOF, {
+        requestId,
+        merkleRoot,
+        startChunk,
+        chunkCount,
+        level: proofObj.level,
+        index: proofObj.index,
+        node: proofObj.node,
+        proof: proofObj.proof
+      })
+
+      void this._enqueueWrite(conn, proofMsg)
+    } catch (err) {
+      this.sendError(conn, requestId, `Failed to generate subtree proof: ${err?.message || String(err)}`)
+      return
+    }
+
     const fd = fs.openSync(file.path, 'r')
     try {
       const out = Buffer.allocUnsafe(total)
       let off = 0
       for (const ch of slice) {
-        const bytesRead = fs.readSync(fd, out, off, ch.chunk_size, ch.chunk_offset)
-        off += bytesRead
+        let remaining = ch.chunk_size
+        let localOff = 0
+        while (remaining > 0) {
+          const bytesRead = fs.readSync(fd, out, off + localOff, remaining, ch.chunk_offset + localOff)
+          if (bytesRead <= 0) {
+            throw new Error(`Short read: expected=${ch.chunk_size} got=${localOff} chunk_index=${ch.chunk_index}`)
+          }
+          localOff += bytesRead
+          remaining -= bytesRead
+        }
+        off += ch.chunk_size
       }
       const dataBuf = off === out.length ? out : out.subarray(0, off)
       const msg = this.encodeMessage(MSG_TYPE.SUBTREE_DATA, {
@@ -780,6 +837,8 @@ export class Protocol extends EventEmitter {
         data: dataBuf
       })
       void this._enqueueWrite(conn, msg)
+    } catch (err) {
+      this.sendError(conn, requestId, `Failed to read subtree data: ${err?.message || String(err)}`)
     } finally {
       fs.closeSync(fd)
     }
@@ -796,6 +855,21 @@ export class Protocol extends EventEmitter {
       chunkCount,
       peerId,
       data
+    })
+  }
+
+  handleSubtreeProof(conn, peerId, payload) {
+    const { requestId, merkleRoot, startChunk, chunkCount, level, index, node, proof } = payload || {}
+    this.emit('subtree:proof', {
+      requestId,
+      merkleRoot,
+      startChunk,
+      chunkCount,
+      level,
+      index,
+      node,
+      proof,
+      peerId
     })
   }
 
