@@ -3,11 +3,152 @@
  * These can be called from CLI or REPL
  */
 
-import fs from 'fs';
-import path from 'path';
-import terminalKit from 'terminal-kit';
+import fs from 'fs'
+import path from 'path'
+import terminalKit from 'terminal-kit'
 
 const term = terminalKit.terminal;
+
+function nowNs() {
+  return process.hrtime.bigint()
+}
+
+export async function resumeCommand(swarmfs, topicName, options = {}) {
+  swarmfs.open();
+
+  const all = !!options.all;
+  const downloads = all
+    ? swarmfs.db.getIncompleteDownloads()
+    : swarmfs.db.getIncompleteDownloads(topicName);
+
+  if (!downloads || downloads.length === 0) {
+    console.log('No incomplete downloads found.');
+    return [];
+  }
+
+  const enableProgressBar = process.stdout.isTTY && process.env.SWARMFS_REPL !== '1';
+
+  const results = [];
+  for (const d of downloads) {
+    const t = d.topic_name;
+    const root = d.merkle_root;
+    const out = d.output_path;
+
+    console.log(`\nResuming download from topic "${t}"...`);
+    console.log(`Merkle Root: ${root}`);
+    console.log(`Output: ${out}\n`);
+
+    if (!swarmfs.network || !swarmfs.protocol) {
+      console.log(`Joining topic "${t}"...`);
+      await swarmfs.joinTopic(t);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    let progressBar = null;
+    let totalChunks = 0;
+    let downloadedChunks = 0;
+    let initializedItems = false;
+    let lastDownloadedChunks = 0;
+
+    if (enableProgressBar) {
+      progressBar = term.progressBar({
+        title: 'File download',
+        width: Math.min(60, (term.width || 80) - 20),
+        percent: true,
+        eta: true
+      });
+      progressBar.update(0);
+    }
+
+    const start = nowNs();
+    try {
+      const result = await swarmfs.downloadFile(t, root, out, {
+        onProgress: (info) => {
+          if (!progressBar) {
+            return;
+          }
+
+          if (typeof info.totalChunks === 'number') {
+            totalChunks = info.totalChunks;
+          }
+          if (typeof info.downloadedChunks === 'number') {
+            downloadedChunks = info.downloadedChunks;
+          }
+
+          if (!initializedItems && totalChunks > 0) {
+            initializedItems = true;
+            progressBar.update({ items: totalChunks, progress: 0 });
+          }
+
+          if (initializedItems) {
+            progressBar.update({
+              progress: totalChunks > 0 ? Math.min(1, downloadedChunks / totalChunks) : 0,
+              items: totalChunks
+            });
+
+            const delta = downloadedChunks - lastDownloadedChunks;
+            if (delta > 0) {
+              for (let i = 0; i < delta; i++) {
+                progressBar.itemDone();
+              }
+              lastDownloadedChunks = downloadedChunks;
+            }
+          } else {
+            const pct = totalChunks > 0 ? Math.min(1, downloadedChunks / totalChunks) : 0;
+            progressBar.update(pct);
+          }
+        }
+      });
+
+      const ms = elapsedMs(start);
+
+      if (progressBar) {
+        progressBar.update(1);
+        if (typeof progressBar.stop === 'function') {
+          progressBar.stop();
+        }
+        term('\n');
+      }
+
+      const mbps = formatMbps(result.size, ms);
+      console.log(`\n✅ File downloaded successfully!`);
+      console.log(`  Path: ${result.path}`);
+      console.log(`  Size: ${formatBytes(result.size)}`);
+      console.log(`  Chunks: ${result.totalChunks}`);
+      console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`);
+
+      results.push(result);
+    } catch (err) {
+      if (progressBar) {
+        if (typeof progressBar.stop === 'function') {
+          progressBar.stop();
+        }
+        term('\n');
+      }
+      console.error(`\n❌ Resume failed: ${err.message}`);
+      throw err;
+    }
+  }
+
+  return results;
+}
+
+function elapsedMs(startNs) {
+  return Number(nowNs() - startNs) / 1e6
+}
+
+function formatSeconds(ms) {
+  return (ms / 1000).toFixed(3)
+}
+
+function formatMbps(bytes, ms) {
+  if (!Number.isFinite(bytes) || !Number.isFinite(ms) || ms <= 0) {
+    return null
+  }
+  const mb = bytes / (1024 * 1024)
+  const sec = ms / 1000
+  return (mb / sec).toFixed(2)
+}
 
 
 // Utility functions
@@ -72,7 +213,9 @@ export async function addCommand(swarmfs, targetPath) {
 
   if (stats.isDirectory()) {
     console.log(`Adding directory: ${absolutePath}\n`);
+    const start = nowNs()
     const result = await swarmfs.addDirectory(absolutePath);
+    const ms = elapsedMs(start)
     
     console.log('\n✓ Directory added successfully');
     console.log(`  Path: ${result.path}`);
@@ -80,17 +223,25 @@ export async function addCommand(swarmfs, targetPath) {
     console.log(`  Directories: ${result.directories}`);
     console.log(`  Total Size: ${formatBytes(result.totalSize)}`);
     console.log(`  Merkle Root: ${result.merkleRoot}`);
+
+    const mbps = formatMbps(result.totalSize, ms)
+    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`)
     
     return result;
   } else if (stats.isFile()) {
     console.log(`Adding file: ${absolutePath}`);
+    const start = nowNs()
     const result = await swarmfs.addFile(absolutePath);
+    const ms = elapsedMs(start)
     
     console.log('✓ File added successfully');
     console.log(`  Path: ${result.path}`);
     console.log(`  Size: ${formatBytes(result.size)}`);
     console.log(`  Chunks: ${result.chunks}`);
     console.log(`  Merkle Root: ${result.merkleRoot}`);
+
+    const mbps = formatMbps(result.size, ms)
+    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`)
     
     return result;
   } else {
@@ -310,6 +461,7 @@ export async function topicLeaveCommand(swarmfs, name) {
   console.log(`✓ Left topic: ${name}`);
 }
 
+// ============================================================================
 // NETWORK COMMANDS
 // ============================================================================
 
@@ -462,6 +614,7 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
   }
 
   try {
+    const start = nowNs()
     const result = await swarmfs.downloadFile(topicName, merkleRoot, outputPath, {
       onProgress: (info) => {
         if (!progressBar) {
@@ -505,6 +658,8 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
       }
     });
 
+    const ms = elapsedMs(start)
+
     if (progressBar) {
       progressBar.update(1);
       if (typeof progressBar.stop === 'function') {
@@ -519,6 +674,9 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
     console.log(`  Chunks: ${result.totalChunks}`);
     console.log(`  Downloaded: ${result.chunksDownloaded}`);
     console.log(`  Already had: ${result.chunksAlreadyHad}`);
+
+    const mbps = formatMbps(result.size, ms)
+    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`)
 
     return result;
   } catch (error) {
@@ -583,6 +741,7 @@ export const commands = {
   // Network commands
   request: requestCommand,
   download: downloadCommand,
+  resume: resumeCommand,
   browse: browseCommand,
   network: networkCommand
 };

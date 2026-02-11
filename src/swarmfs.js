@@ -919,6 +919,8 @@ export class SwarmFS {
 
   const absoluteOutputPath = path.resolve(outputPath);
 
+  this.db.addDownload(topicName, merkleRoot, absoluteOutputPath);
+
   // Add file to database
   const outputFileId = this.db.addFile(
     absoluteOutputPath,
@@ -968,6 +970,7 @@ export class SwarmFS {
   // Wait for completion
   return new Promise((resolve, reject) => {
     session.on('complete', (info) => {
+      this.db.markDownloadComplete(topicName, merkleRoot, absoluteOutputPath);
       resolve({
         path: info.path,
         size: info.size,

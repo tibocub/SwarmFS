@@ -230,6 +230,22 @@ program
   });
 
 program
+  .command('resume [topic]')
+  .description('Resume incomplete downloads')
+  .option('-a, --all', 'Resume all incomplete downloads')
+  .action(async (topic, options) => {
+    try {
+      await cmd.resumeCommand(swarmfs, topic, options);
+      swarmfs.close();
+      process.exit(0);
+    } catch (error) {
+      console.error('✗ Error:', error.message);
+      swarmfs.close();
+      process.exit(1);
+    }
+  });
+
+program
   .command('network')
   .description('Show network status')
   .action(wrapCommand(cmd.networkCommand));
