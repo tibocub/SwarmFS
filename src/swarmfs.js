@@ -3,14 +3,15 @@
  * Coordinates database, storage, and file operations
  */
 
-import fs from 'fs';
-import path from 'path';
-import { EventEmitter } from 'events';
-import { SwarmDB } from './database.js';
-import { DEFAULT_CHUNK_SIZE } from './chunk.js';
-import { hashBuffer } from './hash.js';
-import { getMerkleRoot, buildMerkleTree } from './merkle.js';
-import { buildFileMerkleTreeParallel, buildMultipleFileMerkleTrees } from './merkle-tree-parallel.js';
+import fs from 'fs'
+import path from 'path'
+import { EventEmitter } from 'events'
+import blake3 from 'blake3-bao/blake3'
+import { SwarmDB } from './database.js'
+import { DEFAULT_CHUNK_SIZE } from './chunk.js'
+import { hashBuffer } from './hash.js'
+import { getMerkleRoot, buildMerkleTree, printMerkleTree } from './merkle.js'
+import { buildFileMerkleTreeParallel, buildMultipleFileMerkleTrees } from './merkle-tree-parallel.js'
 
 export class SwarmFS {
   constructor(dataDir) {
@@ -19,6 +20,23 @@ export class SwarmFS {
     this.db = null;
     this.network = null;
     this.protocol = null;
+  }
+
+  async *_readFileChunksStream(filePath, chunkSize) {
+    const stream = fs.createReadStream(filePath, { highWaterMark: Math.max(64 * 1024, chunkSize) })
+    let carry = Buffer.alloc(0)
+
+    for await (const chunk of stream) {
+      carry = carry.length === 0 ? chunk : Buffer.concat([carry, chunk])
+      while (carry.length >= chunkSize) {
+        yield carry.subarray(0, chunkSize)
+        carry = carry.subarray(chunkSize)
+      }
+    }
+
+    if (carry.length > 0) {
+      yield carry
+    }
   }
 
   _chooseChunkSizeForFile(fileSize) {
@@ -99,7 +117,7 @@ export class SwarmFS {
    */
   async addFile(filePath, chunkSize = null, options = {}) {
     const {
-      useParallel = false, //    <-- Not efficent enought (same or worst than single-threaded)
+      useParallel = false, //    <-- Not efficent enought (worst than single-threaded)
       workerCount = null,
       onProgress = null
     } = options;
@@ -188,7 +206,7 @@ export class SwarmFS {
               buffer = buffer.subarray(0, bytesRead);
             }
 
-            const hash = hashBuffer(buffer);
+            const hash = await hashBuffer(buffer);
             chunkHashes.push(hash);
             chunkEntries.push({ hash, offset, size: buffer.length });
             offset += buffer.length;
@@ -202,42 +220,29 @@ export class SwarmFS {
           fs.closeSync(fd);
         }
 
-        merkleRoot = getMerkleRoot(chunkHashes);
+        merkleRoot = await getMerkleRoot(chunkHashes);
       }
 
     } else {
       // Use single-threaded approach (original implementation)
       chunkHashes = [];
       chunkEntries = [];
-      let offset = 0;
-      const fd = fs.openSync(absolutePath, 'r');
+      let offset = 0
 
-      try {
-        while (offset < fileSize) {
-          const length = Math.min(chunkSize, fileSize - offset);
-          let buffer = Buffer.allocUnsafe(length);
-          const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
+      for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
+        const hash = await hashBuffer(buffer)
+        chunkHashes.push(hash)
+        chunkEntries.push({ hash, offset, size: buffer.length })
+        offset += buffer.length
 
-          if (bytesRead !== length) {
-            buffer = buffer.subarray(0, bytesRead);
-          }
-
-          const hash = hashBuffer(buffer);
-          chunkHashes.push(hash);
-          chunkEntries.push({ hash, offset, size: buffer.length });
-          offset += buffer.length;
-
-          if (onProgress && chunkEntries.length % 100 === 0) {
-            const percent = (offset / fileSize * 100).toFixed(1);
-            onProgress(`Hashing chunks: ${percent}%`);
-          }
+        if (onProgress && chunkEntries.length % 100 === 0) {
+          const percent = (offset / fileSize * 100).toFixed(1)
+          onProgress(`Hashing chunks: ${percent}%`)
         }
-      } finally {
-        fs.closeSync(fd);
       }
 
       // Build Merkle tree
-      merkleRoot = getMerkleRoot(chunkHashes);
+      merkleRoot = await getMerkleRoot(chunkHashes);
     }
 
     // Add file to database
@@ -468,8 +473,8 @@ export class SwarmFS {
       const currentData = fs.readFileSync(absolutePath);
       const { chunkBuffer } = await import('./chunk.js');
       const chunks = chunkBuffer(currentData, fileInfo.chunk_size);
-      currentHashes = chunks.map(chunk => hashBuffer(chunk));
-      currentRoot = getMerkleRoot(currentHashes);
+      currentHashes = chunks.map( async chunk => await hashBuffer(chunk));
+      currentRoot = await getMerkleRoot(currentHashes);
     }
 
     // Compare Merkle roots
@@ -548,15 +553,13 @@ export class SwarmFS {
   }
 
   // ============================================================================
-  // TOPIC MANAGEMENT (Phase 4)
+  // TOPIC MANAGEMENT
   // ============================================================================
 
   /**
    * Create a new topic
    */
   async createTopic(name, autoJoin = true) {
-    const crypto = await import('crypto');
-    
     // Check if topic already exists
     const existing = this.db.getTopic(name);
     if (existing) {
@@ -564,9 +567,7 @@ export class SwarmFS {
     }
 
     // Generate topic key from name (deterministic)
-    const topicKey = crypto.createHash('sha256')
-      .update(name)
-      .digest('hex');
+    const topicKey = blake3.hashHex(name)
 
     // Add to database
     const topicId = this.db.addTopic(name, topicKey, autoJoin);

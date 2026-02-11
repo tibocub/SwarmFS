@@ -19,7 +19,7 @@ SwarmFS vs IPFS
 
 At its core:
 
-- **Content addressing** (SHA-256) and **Merkle trees** for integrity
+- **Content addressing** (BLAKE3) and **Merkle trees** for integrity
 - **Chunked transfers** (BitTorrent-style)
 - **Topic-scoped peer discovery** via Hyperswarm
 - A small protocol for **browsing**, **metadata exchange**, and **chunk transfer**
@@ -143,7 +143,7 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 
 ### Done
 
-- Adaptative-size chunking and SHA-256 hashing
+- Adaptative-size chunking and SHA-256 hashing // Replaced with BLAKE3 hashing
 - Merkle tree construction + per-chunk verification
 - File metadata + chunk metadata persisted (SQLite via `better-sqlite3` on Node and Bun's built-in SQLite on Bun)
 - Topic-based peer discovery (Hyperswarm)
@@ -152,6 +152,7 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 - Final file verification and corruption diagnostics
 - Directory tracking and deterministic directory hashing
 - Basic CLI, REPL and TUI
+- Replace SHA256 with BLAKE3 (with WASM and SIMD)
 
 ### Next (high priority)
 
@@ -176,7 +177,7 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 - Availability depends on peers (there is no central always-on pinning by default)
 - NAT traversal isn’t perfect; some networks may reduce connectivity
 - Content discovery is still evolving (topic-scoped index is young)
-- Performance tuning is ongoing (disk IO scheduling, backpressure, congestion control)
+- Performance is bad but right now we're focussing developing on the protocol itself
 
 ### Performance TODOs (ideas to evaluate)
 
@@ -198,8 +199,6 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
   - One peer: sequential streaming (torrent-style).
 - **Proof caching / reuse**
   - Cache proof fragments per file to avoid recomputing siblings repeatedly.
-- **Replace SHA256 with BLAKE3**
-  - Bao streaming
 - **Compression of protocol metadata**
   - Compact encodings (varints), hash dedup in proofs, optional compression for proof blocks.
 
