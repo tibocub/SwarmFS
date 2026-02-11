@@ -44,20 +44,30 @@ export class SwarmFS {
       return DEFAULT_CHUNK_SIZE;
     }
 
+    // Prefer larger chunks for large files (fewer hashes/proofs, fewer DB rows).
+    // Keep within [1MiB, 64MiB] by default.
+    if (fileSize >= 256 * 1024 * 1024 * 1024) {
+      return 64 * 1024 * 1024;
+    }
+
+    if (fileSize >= 64 * 1024 * 1024 * 1024) {
+      return 32 * 1024 * 1024;
+    }
+
     if (fileSize >= 16 * 1024 * 1024 * 1024) {
-      return 4 * 1024 * 1024;
+      return 16 * 1024 * 1024;
     }
 
     if (fileSize >= 4 * 1024 * 1024 * 1024) {
-      return 2 * 1024 * 1024;
+      return 8 * 1024 * 1024;
     }
 
     if (fileSize >= 1024 * 1024 * 1024) {
-      return 1024 * 1024;
+      return 4 * 1024 * 1024;
     }
 
     if (fileSize >= 256 * 1024 * 1024) {
-      return 512 * 1024;
+      return 2 * 1024 * 1024;
     }
 
     return DEFAULT_CHUNK_SIZE;
@@ -503,6 +513,11 @@ export class SwarmFS {
     return this.db.removeFile(absolutePath);
   }
 
+  removeDirectory(dirPath) {
+    const absolutePath = path.resolve(dirPath);
+    return this.db.removeDirectory(absolutePath);
+  }
+
   /**
    * Get statistics
    */
@@ -526,11 +541,15 @@ export class SwarmFS {
       this.protocol.close();
     }
     if (this.network) {
-      this.network.close();
+      await this.network.close();
     }
     if (this.db) {
       this.db.close();
     }
+
+    this.protocol = null;
+    this.network = null;
+    this.db = null;
   }
 
   // ============================================================================
@@ -592,6 +611,10 @@ export class SwarmFS {
     return this.db.deleteTopic(name);
   }
 
+  async setTopicsAutoJoin(names, autoJoin) {
+    this.db.setTopicsAutoJoin(names, autoJoin);
+  }
+
   /**
    * Share a path in a topic
    */
@@ -647,7 +670,7 @@ export class SwarmFS {
   async joinTopic(name) {
     const topic = this.db.getTopic(name);
     if (!topic) {
-      throw new Error(`Topic "${name}" not found. Create it first with: swarmfs topic create ${name}`);
+      throw new Error(`Topic "${name}" not found. Save it first with: swarmfs topic save ${name}`);
     }
 
     // Initialize network if not already done
@@ -910,6 +933,8 @@ export class SwarmFS {
 
   const absoluteOutputPath = path.resolve(outputPath);
 
+  this.db.addDownload(topicName, merkleRoot, absoluteOutputPath);
+
   // Add file to database
   const outputFileId = this.db.addFile(
     absoluteOutputPath,
@@ -959,6 +984,7 @@ export class SwarmFS {
   // Wait for completion
   return new Promise((resolve, reject) => {
     session.on('complete', (info) => {
+      this.db.markDownloadComplete(topicName, merkleRoot, absoluteOutputPath);
       resolve({
         path: info.path,
         size: info.size,

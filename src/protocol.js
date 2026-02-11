@@ -9,6 +9,9 @@ import blake3 from 'blake3-bao/blake3'
 import fs from 'fs'
 import path from 'path'
 import { hashBuffer } from './hash.js'
+import { buildMerkleTree, generateSubtreeProofFromTree } from './merkle.js'
+import Protomux from 'protomux'
+import c from 'compact-encoding'
 
 const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true'
 const debug = (...args) => {
@@ -34,7 +37,11 @@ export const MSG_TYPE = {
   METADATA_RESPONSE: 0x0a,  // Response with file metadata
   HAVE: 0x0b,               // Announce single chunk
   BITFIELD: 0x0c,           // Send complete bitfield
-  BITFIELD_REQUEST: 0x0d    // Request peer's bitfield
+  BITFIELD_REQUEST: 0x0d,   // Request peer's bitfield
+  SUBTREE_REQUEST: 0x0e,
+  SUBTREE_DATA: 0x0f,
+  SUBTREE_PROOF: 0x10,
+  MUX_HELLO: 0x11
 }
 
 export class Protocol extends EventEmitter {
@@ -57,6 +64,26 @@ export class Protocol extends EventEmitter {
 
     // Stream reassembly buffers per peer (Hyperswarm delivers arbitrary-sized data chunks)
     this._peerBuffers = new Map(); // peerId -> Buffer
+
+    // Per-connection send queues for backpressure-safe writes without stalling message handling.
+    // conn -> Promise chain
+    this._sendQueues = new Map();
+
+    // Cache merkle trees for serving subtree proofs.
+    // merkleRoot(hex) -> { root, levels, leafCount }
+    this._merkleTreeCache = new Map();
+
+    // Protomux integration
+    this._muxByConn = new WeakMap(); // conn -> mux
+    this._controlMsgByConn = new WeakMap(); // conn -> protomux message (binary) that carries our framed protocol buffers
+    this._subtreeBeginByConn = new WeakMap();
+    this._subtreePartByConn = new WeakMap();
+    this._subtreeRx = new Map(); // requestId(hex) -> { merkleRoot, startChunk, chunkCount, totalBytes, receivedBytes, parts: Buffer[], peerId }
+    this._muxOpenByConn = new WeakMap(); // conn -> boolean
+    this._muxHelloByPeer = new Map(); // peerId -> boolean (peer advertised mux support)
+    this._muxReadyByConn = new WeakMap(); // conn -> boolean (safe to send via mux)
+    this._enableMuxControl = false
+    this._enableMux = false
     
     // Setup network event handlers
     debug('[PROTOCOL] Setting up peer handler...');
@@ -70,7 +97,6 @@ export class Protocol extends EventEmitter {
         this.onPeerConnected(c, p, t);
         return;
       }
-
       debug('[PROTOCOL] peer:connected (positional payload)', peerId?.substring?.(0, 8));
       this.onPeerConnected(conn, peerId, topicKey);
     });
@@ -105,6 +131,34 @@ export class Protocol extends EventEmitter {
     
     // Cleanup old requests periodically
     this.cleanupInterval = setInterval(() => this.cleanup(), 30000);
+  }
+
+  _enqueueWrite(conn, data) {
+    const control = this._controlMsgByConn.get(conn)
+    const muxOpen = this._muxOpenByConn.get(conn)
+    const muxReady = this._muxReadyByConn.get(conn)
+    if (this._enableMuxControl && control && muxOpen && muxReady) {
+      try {
+        control.send(data)
+        return Promise.resolve()
+      } catch {
+        // Fall back to legacy write path.
+      }
+    }
+
+    const prev = this._sendQueues.get(conn) || Promise.resolve();
+    const next = prev
+      .catch(() => {})
+      .then(() => {
+        const ok = conn.write(data);
+        if (ok) {
+          return;
+        }
+        return new Promise((resolve) => conn.once('drain', resolve));
+      });
+
+    this._sendQueues.set(conn, next);
+    return next;
   }
 
   async _findValidChunkSource(chunkHash, limit = 10) {
@@ -172,14 +226,130 @@ export class Protocol extends EventEmitter {
   
   onPeerConnected(conn, peerId, topicKey) {
     console.log(`Peer connected: ${peerId.substring(0, 8)}`);
-    
-    // Notify download sessions about new peer
+
+    // Protomux disabled for now: it requires a framed stream, and attaching it to the raw
+    // Hyperswarm socket breaks legacy message reassembly.
+
+    // Emit event
     this.emit('peer:connected', { conn, peerId, topicKey });
-    
-    // Request bitfield from peer (to learn what chunks they have)
-    // this.requestBitfield(conn, peerId);
   }
-  
+
+  _setupMux(conn, peerId) {
+    if (!this._enableMux) {
+      return
+    }
+
+    if (this._controlMsgByConn.get(conn)) {
+      return
+    }
+
+    try {
+      const mux = Protomux.from(conn)
+      this._muxByConn.set(conn, mux)
+
+      const channel = mux.createChannel({
+        protocol: 'swarmfs',
+        id: Buffer.from([1]),
+        onopen: () => {
+          this._muxOpenByConn.set(conn, true)
+          // Only enable mux writes if the peer also said it supports mux.
+          if (this._muxHelloByPeer.get(peerId)) {
+            this._muxReadyByConn.set(conn, true)
+          }
+        },
+        onclose: () => {
+          this._muxOpenByConn.delete(conn)
+          this._controlMsgByConn.delete(conn)
+          this._subtreeBeginByConn.delete(conn)
+          this._subtreePartByConn.delete(conn)
+          this._muxReadyByConn.delete(conn)
+        }
+      })
+
+      if (!channel) {
+        return
+      }
+
+      // Mark as not open yet. We only switch send/receive routing once onopen fires.
+      this._muxOpenByConn.set(conn, false)
+      this._muxReadyByConn.set(conn, false)
+
+    const control = channel.addMessage({
+      encoding: c.binary,
+      onmessage: async (buf) => {
+        try {
+          await this.handleMessage(conn, peerId, buf)
+        } catch {
+          // ignore
+        }
+      }
+    })
+
+    const subtreeBegin = channel.addMessage({
+      encoding: c.string,
+      onmessage: async (json) => {
+        try {
+          const msg = JSON.parse(json)
+          const { requestId, merkleRoot, startChunk, chunkCount, totalBytes } = msg || {}
+          if (typeof requestId !== 'string' || typeof merkleRoot !== 'string' || !Number.isInteger(startChunk) || !Number.isInteger(chunkCount) || !Number.isInteger(totalBytes)) {
+            return
+          }
+          this._subtreeRx.set(requestId, {
+            merkleRoot,
+            startChunk,
+            chunkCount,
+            totalBytes,
+            receivedBytes: 0,
+            parts: [],
+            peerId
+          })
+        } catch {
+          // ignore
+        }
+      }
+    })
+
+    const subtreePart = channel.addMessage({
+      encoding: c.binary,
+      onmessage: async (buf) => {
+        // part format: [16 bytes requestId][payload]
+        if (!Buffer.isBuffer(buf) || buf.length < 16) {
+          return
+        }
+        const requestId = buf.subarray(0, 16).toString('hex')
+        const payload = buf.subarray(16)
+        const rx = this._subtreeRx.get(requestId)
+        if (!rx) {
+          return
+        }
+        rx.parts.push(payload)
+        rx.receivedBytes += payload.length
+        if (rx.receivedBytes >= rx.totalBytes) {
+          this._subtreeRx.delete(requestId)
+          const data = rx.parts.length === 1 ? rx.parts[0] : Buffer.concat(rx.parts, rx.receivedBytes)
+          this.emit('subtree:downloaded', {
+            requestId,
+            merkleRoot: rx.merkleRoot,
+            startChunk: rx.startChunk,
+            chunkCount: rx.chunkCount,
+            peerId: rx.peerId,
+            data
+          })
+        }
+      }
+    })
+
+      this._controlMsgByConn.set(conn, control)
+      this._subtreeBeginByConn.set(conn, subtreeBegin)
+      this._subtreePartByConn.set(conn, subtreePart)
+
+      channel.open()
+    } catch {
+      // If mux setup fails, keep using the legacy framing on this connection.
+      return
+    }
+  }
+
   onPeerDisconnected(peerId, topicKey) {
     console.log(`Peer disconnected: ${peerId.substring(0, 8)}`);
     
@@ -194,8 +364,8 @@ export class Protocol extends EventEmitter {
     const message = this.encodeMessage(MSG_TYPE.BITFIELD_REQUEST, {
       requestId: crypto.randomBytes(16).toString('hex')
     });
-    
-    conn.write(message);
+
+    void this._enqueueWrite(conn, message);
   }
   
   /**
@@ -209,14 +379,86 @@ export class Protocol extends EventEmitter {
       bitfield: bitfield.buffer.toString('base64'),
       chunkCount: session.totalChunks
     });
-    
-    conn.write(message);
+
+    void this._enqueueWrite(conn, message);
   }
 
   /**
    * Encode a message to binary
    */
   encodeMessage(type, payload) {
+    if (type === MSG_TYPE.CHUNK_DATA) {
+      const { requestId, chunkHash, chunkData } = payload || {}
+      if (typeof requestId !== 'string' || typeof chunkHash !== 'string' || !Buffer.isBuffer(chunkData)) {
+        throw new TypeError('CHUNK_DATA payload must be { requestId: string, chunkHash: string, chunkData: Buffer }')
+      }
+
+      const requestIdBytes = Buffer.from(requestId, 'hex')
+      const chunkHashBytes = Buffer.from(chunkHash, 'hex')
+      if (requestIdBytes.length !== 16) {
+        throw new Error(`Invalid requestId hex length: expected 16 bytes, got ${requestIdBytes.length}`)
+      }
+      if (chunkHashBytes.length !== 32) {
+        throw new Error(`Invalid chunkHash hex length: expected 32 bytes, got ${chunkHashBytes.length}`)
+      }
+
+      const payloadLen = 1 + 16 + 32 + 4 + chunkData.length
+      const message = Buffer.allocUnsafe(6 + payloadLen)
+      message.writeUInt8(PROTOCOL_VERSION, 0)
+      message.writeUInt8(type, 1)
+      message.writeUInt32BE(payloadLen, 2)
+
+      let off = 6
+      message.writeUInt8(0x01, off)
+      off += 1
+      requestIdBytes.copy(message, off)
+      off += 16
+      chunkHashBytes.copy(message, off)
+      off += 32
+      message.writeUInt32BE(chunkData.length, off)
+      off += 4
+      chunkData.copy(message, off)
+      return message
+    }
+
+    if (type === MSG_TYPE.SUBTREE_DATA) {
+      const { requestId, merkleRoot, startChunk, chunkCount, data } = payload || {}
+      if (typeof requestId !== 'string' || typeof merkleRoot !== 'string' || !Number.isInteger(startChunk) || !Number.isInteger(chunkCount) || !Buffer.isBuffer(data)) {
+        throw new TypeError('SUBTREE_DATA payload must be { requestId: string, merkleRoot: string, startChunk: number, chunkCount: number, data: Buffer }')
+      }
+
+      const requestIdBytes = Buffer.from(requestId, 'hex')
+      const merkleRootBytes = Buffer.from(merkleRoot, 'hex')
+      if (requestIdBytes.length !== 16) {
+        throw new Error(`Invalid requestId hex length: expected 16 bytes, got ${requestIdBytes.length}`)
+      }
+      if (merkleRootBytes.length !== 32) {
+        throw new Error(`Invalid merkleRoot hex length: expected 32 bytes, got ${merkleRootBytes.length}`)
+      }
+
+      const payloadLen = 1 + 16 + 32 + 4 + 2 + 4 + data.length
+      const message = Buffer.allocUnsafe(6 + payloadLen)
+      message.writeUInt8(PROTOCOL_VERSION, 0)
+      message.writeUInt8(type, 1)
+      message.writeUInt32BE(payloadLen, 2)
+
+      let off = 6
+      message.writeUInt8(0x01, off)
+      off += 1
+      requestIdBytes.copy(message, off)
+      off += 16
+      merkleRootBytes.copy(message, off)
+      off += 32
+      message.writeUInt32BE(startChunk >>> 0, off)
+      off += 4
+      message.writeUInt16BE(chunkCount & 0xffff, off)
+      off += 2
+      message.writeUInt32BE(data.length >>> 0, off)
+      off += 4
+      data.copy(message, off)
+      return message
+    }
+
     const payloadJson = JSON.stringify(payload);
     const payloadBuffer = Buffer.from(payloadJson, 'utf8');
     
@@ -247,6 +489,68 @@ export class Protocol extends EventEmitter {
     }
     
     const payloadBuffer = buffer.subarray(6, 6 + length);
+
+    if (type === MSG_TYPE.CHUNK_DATA) {
+      // Alpha: CHUNK_DATA is always binary with a magic byte 0x01.
+      if (payloadBuffer.length < 1 + 16 + 32 + 4) {
+        throw new Error('Invalid CHUNK_DATA payload (too short)')
+      }
+      if (payloadBuffer[0] !== 0x01) {
+        throw new Error('Invalid CHUNK_DATA payload (missing magic byte)')
+      }
+
+      const requestId = payloadBuffer.subarray(1, 17).toString('hex')
+      const chunkHash = payloadBuffer.subarray(17, 49).toString('hex')
+      const dataLen = payloadBuffer.readUInt32BE(49)
+      const expected = 1 + 16 + 32 + 4 + dataLen
+      if (payloadBuffer.length !== expected) {
+        throw new Error(`Invalid CHUNK_DATA payload length: expected ${expected}, got ${payloadBuffer.length}`)
+      }
+      const chunkData = payloadBuffer.subarray(53, 53 + dataLen)
+
+      return {
+        version,
+        type,
+        payload: {
+          requestId,
+          chunkHash,
+          chunkData
+        }
+      }
+    }
+
+    if (type === MSG_TYPE.SUBTREE_DATA) {
+      if (payloadBuffer.length < 1 + 16 + 32 + 4 + 2 + 4) {
+        throw new Error('Invalid SUBTREE_DATA payload (too short)')
+      }
+      if (payloadBuffer[0] !== 0x01) {
+        throw new Error('Invalid SUBTREE_DATA payload (missing magic byte)')
+      }
+
+      const requestId = payloadBuffer.subarray(1, 17).toString('hex')
+      const merkleRoot = payloadBuffer.subarray(17, 49).toString('hex')
+      const startChunk = payloadBuffer.readUInt32BE(49)
+      const chunkCount = payloadBuffer.readUInt16BE(53)
+      const dataLen = payloadBuffer.readUInt32BE(55)
+      const expected = 1 + 16 + 32 + 4 + 2 + 4 + dataLen
+      if (payloadBuffer.length !== expected) {
+        throw new Error(`Invalid SUBTREE_DATA payload length: expected ${expected}, got ${payloadBuffer.length}`)
+      }
+      const data = payloadBuffer.subarray(59, 59 + dataLen)
+
+      return {
+        version,
+        type,
+        payload: {
+          requestId,
+          merkleRoot,
+          startChunk,
+          chunkCount,
+          data
+        }
+      }
+    }
+
     const payload = JSON.parse(payloadBuffer.toString('utf8'));
     
     return { version, type, payload };
@@ -300,8 +604,10 @@ export class Protocol extends EventEmitter {
       debug(`[DEBUG] handleMessage called, data length: ${data.length}`);
       
       const { version, type, payload } = this.decodeMessage(data);
-      
-      console.log(`[DEBUG] Decoded message - version: ${version}, type: ${type}`);
+
+      if (VERBOSE) {
+        console.log(`[DEBUG] Decoded message - version: ${version}, type: ${type}`);
+      }
       
       if (version !== PROTOCOL_VERSION) {
         console.warn(`Protocol version mismatch: ${version} != ${PROTOCOL_VERSION}`);
@@ -309,20 +615,31 @@ export class Protocol extends EventEmitter {
       }
       
       switch (type) {
+        case MSG_TYPE.MUX_HELLO:
+          this.handleMuxHello(conn, peerId, payload)
+          break;
         case MSG_TYPE.REQUEST:
-          console.log(`[DEBUG] Calling handleRequest`);
+          if (VERBOSE) {
+            console.log(`[DEBUG] Calling handleRequest`);
+          }
           await this.handleRequest(conn, peerId, payload);
           break;
         case MSG_TYPE.OFFER:
-          console.log(`[DEBUG] Calling handleOffer`);
+          if (VERBOSE) {
+            console.log(`[DEBUG] Calling handleOffer`);
+          }
           await this.handleOffer(conn, peerId, payload);
           break;
         case MSG_TYPE.DOWNLOAD:
-          console.log(`[DEBUG] Calling handleDownload`);
+          if (VERBOSE) {
+            console.log(`[DEBUG] Calling handleDownload`);
+          }
           await this.handleDownload(conn, peerId, payload);
           break;
         case MSG_TYPE.CHUNK_DATA:
-          console.log(`[DEBUG] Calling handleChunkData`);
+          if (VERBOSE) {
+            console.log(`[DEBUG] Calling handleChunkData`);
+          }
           await this.handleChunkData(conn, peerId, payload);
           break;
         case MSG_TYPE.CANCEL:
@@ -352,6 +669,15 @@ export class Protocol extends EventEmitter {
         case MSG_TYPE.BITFIELD_REQUEST:
           this.handleBitfieldRequest(conn, peerId, payload);
           break;
+        case MSG_TYPE.SUBTREE_REQUEST:
+          await this.handleSubtreeRequest(conn, peerId, payload);
+          break;
+        case MSG_TYPE.SUBTREE_DATA:
+          await this.handleSubtreeData(conn, peerId, payload);
+          break;
+        case MSG_TYPE.SUBTREE_PROOF:
+          this.handleSubtreeProof(conn, peerId, payload);
+          break;
         default:
           console.warn(`Unknown message type: ${type}`);
       }
@@ -361,13 +687,33 @@ export class Protocol extends EventEmitter {
     }
   }
 
+  handleMuxHello(conn, peerId, payload) {
+    try {
+      if (!payload || payload.mux !== true) {
+        return
+      }
+
+      this._muxHelloByPeer.set(peerId, true)
+
+      // If our mux channel is already open, we can start using it now.
+      const muxOpen = this._muxOpenByConn.get(conn)
+      if (muxOpen) {
+        this._muxReadyByConn.set(conn, true)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   /**
    * REQUEST: Peer needs a chunk
    */
   async handleRequest(conn, peerId, payload) {
     const { requestId, chunkHash } = payload;
 
-    console.log(`REQUEST from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
+    if (VERBOSE) {
+      console.log(`REQUEST from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
+    }
 
     const found = await this._findValidChunkSource(chunkHash, 20);
     if (!found) {
@@ -376,11 +722,19 @@ export class Protocol extends EventEmitter {
       return;
     }
 
-    const { location: chunkLocation } = found;
-    console.log(`Have chunk (${chunkLocation.chunk_size} bytes)`);
+    const { location: chunkLocation, chunkData } = found;
+    if (VERBOSE) {
+      console.log(`Have chunk (${chunkLocation.chunk_size} bytes)`);
+    }
 
-    const merkleProof = await this.generateMerkleProof(chunkHash, chunkLocation.file_id);
-    this.sendOffer(conn, requestId, chunkHash, chunkLocation.chunk_size, merkleProof);
+    // Alpha optimization: do not send per-chunk Merkle proofs.
+    // Chunk integrity is verified by chunkHash; file integrity is verified by final Merkle root.
+    this.sendOffer(conn, requestId, chunkHash, chunkLocation.chunk_size);
+
+    // Alpha optimization: skip the extra DOWNLOAD round-trip.
+    // Once the requester sees the OFFER, we immediately stream the chunk.
+    // Do not await backpressure here; enqueue to avoid stalling the request handler.
+    void this.sendChunkData(conn, requestId, chunkHash, chunkData);
   }
 
 
@@ -388,9 +742,11 @@ export class Protocol extends EventEmitter {
    * OFFER: Peer can provide chunk
    */
   async handleOffer(conn, peerId, payload) {
-    const { requestId, chunkHash, chunkSize, merkleProof } = payload;
+    const { requestId, chunkHash, chunkSize } = payload;
     
-    console.log(`OFFER from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
+    if (VERBOSE) {
+      console.log(`OFFER from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
+    }
     
     // Check if we're still waiting for this
     const request = this.activeRequests.get(requestId);
@@ -398,29 +754,35 @@ export class Protocol extends EventEmitter {
       console.log(`Request expired or completed`);
       return;
     }
-    
+
     if (request.chunkHash !== chunkHash) {
       console.log(`Chunk hash mismatch`);
       return;
     }
-    
-    // Validate Merkle proof
-    const isValidProof = await this.validateMerkleProof(chunkHash, merkleProof);
-    if (!isValidProof) {
-      console.log(`Invalid Merkle proof - rejecting offer`);
-      return;
+
+    if (VERBOSE) {
+      console.log(`Valid offer (${chunkSize} bytes)`);
     }
-    
-    console.log(`Valid offer (${chunkSize} bytes)${merkleProof && merkleProof.fileRoot ? ' [proof verified]' : ''}`);
     
     // Store offer
     request.offers.push({
       peerId,
       conn,
       chunkSize,
-      merkleProof,
       timestamp: Date.now()
     });
+
+    // Alpha optimization: we may receive CHUNK_DATA immediately after OFFER.
+    // Create the active download entry now so progress accounting has expectedSize.
+    if (!this.activeDownloads.has(requestId)) {
+      this.activeDownloads.set(requestId, {
+        chunkHash: request.chunkHash,
+        peerId,
+        expectedSize: chunkSize,
+        receivedSize: 0,
+        startedAt: Date.now()
+      });
+    }
     
     // Emit event so caller can decide which offer to accept
     this.emit('chunk:offer', {
@@ -438,7 +800,9 @@ export class Protocol extends EventEmitter {
   async handleDownload(conn, peerId, payload) {
     const { requestId, chunkHash } = payload;
     
-    console.log(`DOWNLOAD request from ${peerId.substring(0, 8)}: ${chunkHash.substring(0, 16)}...`);
+    if (VERBOSE) {
+      console.log(`DOWNLOAD request from ${peerId.substring(0, 8)}: ${chunkHash.substring(0, 16)}...`);
+    }
     
     const found = await this._findValidChunkSource(chunkHash, 20);
     if (!found) {
@@ -447,19 +811,23 @@ export class Protocol extends EventEmitter {
     }
 
     const { location: chunkLocation, chunkData } = found;
-    console.log(`Sending chunk (${chunkData.length} bytes)`);
+    if (VERBOSE) {
+      console.log(`Sending chunk (${chunkData.length} bytes)`);
+    }
 
-    this.sendChunkData(conn, requestId, chunkHash, chunkData);
+    void this.sendChunkData(conn, requestId, chunkHash, chunkData);
   }
 
   /**
    * CHUNK_DATA: Received chunk data
    */
   async handleChunkData(conn, peerId, payload) {
-    const { requestId, chunkHash, data } = payload;
-    const chunkData = Buffer.from(data, 'base64');
+    const { requestId, chunkHash } = payload;
+    const chunkData = Buffer.from(payload.chunkData)
 
-    console.log(`CHUNK_DATA from ${peerId.substring(0, 8)}: ${chunkData.length} bytes`);
+    if (VERBOSE) {
+      console.log(`CHUNK_DATA from ${peerId.substring(0, 8)}: ${chunkData.length} bytes`);
+    }
 
     const download = this.activeDownloads.get(requestId);
     if (download) {
@@ -489,7 +857,9 @@ export class Protocol extends EventEmitter {
       return;
     }
 
-    console.log(`Hash verified`);
+    if (VERBOSE) {
+      console.log(`Hash verified`);
+    }
 
     const request = this.activeRequests.get(requestId);
     if (request && request.timeout) {
@@ -506,8 +876,199 @@ export class Protocol extends EventEmitter {
       chunkHash,
       size: chunkData.length,
       peerId,
-      data
+      data: chunkData
     });
+  }
+
+  async handleSubtreeRequest(conn, peerId, payload) {
+    const { requestId, merkleRoot, startChunk, chunkCount, topicKey } = payload || {}
+    if (typeof requestId !== 'string' || typeof merkleRoot !== 'string' || !Number.isInteger(startChunk) || !Number.isInteger(chunkCount)) {
+      this.sendError(conn, requestId || '00000000000000000000000000000000', 'Invalid subtree request')
+      return
+    }
+
+    let file = null
+    if (typeof topicKey === 'string' && topicKey.length > 0) {
+      const topic = this.db.getTopicByKey(topicKey)
+      if (topic) {
+        const share = this.db.getTopicShareByMerkleRoot(topic.id, merkleRoot)
+        if (share && share.share_type === 'file' && typeof share.share_path === 'string') {
+          const byPath = this.db.getFile(share.share_path)
+          if (byPath && byPath.file_modified_at > 0) {
+            file = byPath
+          }
+        }
+      }
+    }
+
+    if (!file) {
+      const byRoot = this.db.getFileByMerkleRoot(merkleRoot)
+      if (byRoot && byRoot.file_modified_at > 0) {
+        file = byRoot
+      }
+    }
+
+    if (!file) {
+      this.sendError(conn, requestId, 'File not found')
+      return
+    }
+
+    const endChunk = Math.min(file.chunk_count - 1, startChunk + chunkCount - 1)
+    if (startChunk < 0 || startChunk >= file.chunk_count || endChunk < startChunk) {
+      this.sendError(conn, requestId, 'Invalid subtree range')
+      return
+    }
+
+    const chunks = this.db.getFileChunks(file.id)
+    const slice = chunks.slice(startChunk, endChunk + 1)
+
+    // Subtree proofs require aligned power-of-two subtrees.
+    // (Downloader uses power-of-two subtreeChunkCount, but guard here too.)
+    const isPowerOfTwo = (n) => n > 0 && (n & (n - 1)) === 0
+    if (!isPowerOfTwo(chunkCount) || (startChunk % chunkCount) !== 0) {
+      this.sendError(conn, requestId, 'Subtree request must be aligned power-of-two')
+      return
+    }
+
+    const hasMux = !!this._controlMsgByConn.get(conn)
+    // Guard against Hyperswarm/secret-stream atomic write limit when using the legacy single-frame SUBTREE_DATA.
+    // Protomux can stream multiple parts, so only enforce this limit in legacy mode.
+    const MAX_ATOMIC_WRITE = 16777215
+    const SUBTREE_DATA_OVERHEAD = 6 + (1 + 16 + 32 + 4 + 2 + 4)
+    let total = 0
+    for (const ch of slice) {
+      total += ch.chunk_size
+    }
+    const projected = SUBTREE_DATA_OVERHEAD + total
+    if (!hasMux && projected > MAX_ATOMIC_WRITE) {
+      this.sendError(conn, requestId, `Subtree too large (${projected} bytes); reduce chunkCount`)
+      return
+    }
+
+    // Send a subtree proof first (JSON frame), then stream SUBTREE_DATA (binary frame).
+    // Proof is for the internal node that exactly covers [startChunk, startChunk+chunkCount).
+    try {
+      let tree = this._merkleTreeCache.get(merkleRoot)
+      if (!tree) {
+        const leafHashes = chunks.map((ch) => ch.chunk_hash)
+        tree = await buildMerkleTree(leafHashes)
+        this._merkleTreeCache.set(merkleRoot, tree)
+      }
+
+      const level = Math.round(Math.log2(chunkCount))
+      const index = Math.floor(startChunk / chunkCount)
+      const proofObj = generateSubtreeProofFromTree(tree, level, index)
+
+      const proofMsg = this.encodeMessage(MSG_TYPE.SUBTREE_PROOF, {
+        requestId,
+        merkleRoot,
+        startChunk,
+        chunkCount,
+        level: proofObj.level,
+        index: proofObj.index,
+        node: proofObj.node,
+        proof: proofObj.proof
+      })
+
+      void this._enqueueWrite(conn, proofMsg)
+    } catch (err) {
+      this.sendError(conn, requestId, `Failed to generate subtree proof: ${err?.message || String(err)}`)
+      return
+    }
+
+    const fd = fs.openSync(file.path, 'r')
+    try {
+      if (!hasMux) {
+        const out = Buffer.allocUnsafe(total)
+        let off = 0
+        for (const ch of slice) {
+          let remaining = ch.chunk_size
+          let localOff = 0
+          while (remaining > 0) {
+            const bytesRead = fs.readSync(fd, out, off + localOff, remaining, ch.chunk_offset + localOff)
+            if (bytesRead <= 0) {
+              throw new Error(`Short read: expected=${ch.chunk_size} got=${localOff} chunk_index=${ch.chunk_index}`)
+            }
+            localOff += bytesRead
+            remaining -= bytesRead
+          }
+          off += ch.chunk_size
+        }
+        const dataBuf = off === out.length ? out : out.subarray(0, off)
+        const msg = this.encodeMessage(MSG_TYPE.SUBTREE_DATA, {
+          requestId,
+          merkleRoot,
+          startChunk,
+          chunkCount: slice.length,
+          data: dataBuf
+        })
+        void this._enqueueWrite(conn, msg)
+        return
+      }
+
+      // Protomux streaming mode: send a begin control message then stream parts.
+      const begin = this._subtreeBeginByConn.get(conn)
+      const part = this._subtreePartByConn.get(conn)
+      if (!begin || !part) {
+        this.sendError(conn, requestId, 'Mux subtree stream not available')
+        return
+      }
+
+      begin.send(JSON.stringify({ requestId, merkleRoot, startChunk, chunkCount: slice.length, totalBytes: total }))
+
+      const requestIdBytes = Buffer.from(requestId, 'hex')
+      const MAX_PART = 8 * 1024 * 1024
+      const partBuf = Buffer.allocUnsafe(16 + MAX_PART)
+      requestIdBytes.copy(partBuf, 0)
+
+      for (const ch of slice) {
+        let remaining = ch.chunk_size
+        let localOff = 0
+        while (remaining > 0) {
+          const toRead = Math.min(remaining, MAX_PART)
+          const bytesRead = fs.readSync(fd, partBuf, 16, toRead, ch.chunk_offset + localOff)
+          if (bytesRead <= 0) {
+            throw new Error(`Short read: expected=${ch.chunk_size} got=${localOff} chunk_index=${ch.chunk_index}`)
+          }
+          localOff += bytesRead
+          remaining -= bytesRead
+          part.send(partBuf.subarray(0, 16 + bytesRead))
+        }
+      }
+    } catch (err) {
+      this.sendError(conn, requestId, `Failed to read subtree data: ${err?.message || String(err)}`)
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+
+  async handleSubtreeData(conn, peerId, payload) {
+    const { requestId, merkleRoot, startChunk, chunkCount } = payload
+    const data = Buffer.from(payload.data)
+
+    this.emit('subtree:downloaded', {
+      requestId,
+      merkleRoot,
+      startChunk,
+      chunkCount,
+      peerId,
+      data
+    })
+  }
+
+  handleSubtreeProof(conn, peerId, payload) {
+    const { requestId, merkleRoot, startChunk, chunkCount, level, index, node, proof } = payload || {}
+    this.emit('subtree:proof', {
+      requestId,
+      merkleRoot,
+      startChunk,
+      chunkCount,
+      level,
+      index,
+      node,
+      proof,
+      peerId
+    })
   }
 
 
@@ -528,7 +1089,13 @@ export class Protocol extends EventEmitter {
   handleError(peerId, payload) {
     const { requestId, error } = payload;
     console.error(`ERROR from ${peerId.substring(0, 8)}: ${error}`);
-    
+
+    const req = requestId ? this.activeRequests.get(requestId) : null
+    if (req && req.chunkHash == null) {
+      this.emit('subtree:error', { requestId, error })
+      return
+    }
+
     this.emit('chunk:error', { requestId, error });
   }
 
@@ -701,8 +1268,10 @@ export class Protocol extends EventEmitter {
   requestChunk(topicKey, chunkHash, timeout = 30000) {
     const requestId = crypto.randomBytes(16).toString('hex');
     
-    console.log(`\nRequesting chunk: ${chunkHash.substring(0, 16)}...`);
-    console.log(`   Request ID: ${requestId.substring(0, 16)}...`);
+    if (VERBOSE) {
+      console.log(`\nRequesting chunk: ${chunkHash.substring(0, 16)}...`);
+      console.log(`   Request ID: ${requestId.substring(0, 16)}...`);
+    }
     
     // Track request
     this.activeRequests.set(requestId, {
@@ -724,8 +1293,91 @@ export class Protocol extends EventEmitter {
     });
     
     const sent = this.network.broadcast(topicKey, message);
-    console.log(`Broadcast to ${sent} peer(s)`);
+    if (VERBOSE) {
+      console.log(`Broadcast to ${sent} peer(s)`);
+    }
     
+    return requestId;
+  }
+
+  requestChunkToPeer(topicKey, peerId, chunkHash, timeout = 30000) {
+    const requestId = crypto.randomBytes(16).toString('hex');
+
+    if (VERBOSE) {
+      console.log(`\nRequesting chunk (unicast): ${chunkHash.substring(0, 16)}...`);
+      console.log(`   Request ID: ${requestId.substring(0, 16)}... peer=${peerId.substring(0, 8)}`);
+    }
+
+    this.activeRequests.set(requestId, {
+      chunkHash,
+      topicKey,
+      offers: [],
+      timestamp: Date.now(),
+      timeout: setTimeout(() => {
+        if (VERBOSE) {
+          console.log(`Request timeout for ${chunkHash.substring(0, 16)}...`);
+        }
+        this.activeRequests.delete(requestId);
+        this.emit('chunk:timeout', { requestId, chunkHash });
+      }, timeout)
+    });
+
+    const topicKeyHex = topicKey.toString('hex');
+    const topic = this.network?.topics?.get(topicKeyHex);
+    const conn = topic?.connections?.get(peerId);
+    if (!conn) {
+      const req = this.activeRequests.get(requestId);
+      if (req?.timeout) {
+        clearTimeout(req.timeout);
+      }
+      this.activeRequests.delete(requestId);
+      throw new Error(`Peer not connected in topic: ${peerId.substring(0, 8)}`);
+    }
+
+    const message = this.encodeMessage(MSG_TYPE.REQUEST, {
+      requestId,
+      chunkHash
+    });
+
+    void this._enqueueWrite(conn, message);
+    return requestId;
+  }
+
+  requestSubtreeToPeer(topicKey, peerId, merkleRoot, startChunk, chunkCount, timeout = 30000) {
+    const requestId = crypto.randomBytes(16).toString('hex');
+
+    this.activeRequests.set(requestId, {
+      chunkHash: null,
+      topicKey,
+      offers: [],
+      timestamp: Date.now(),
+      timeout: setTimeout(() => {
+        this.activeRequests.delete(requestId);
+        this.emit('subtree:timeout', { requestId, merkleRoot, startChunk, chunkCount });
+      }, timeout)
+    });
+
+    const topicKeyHex = topicKey.toString('hex');
+    const topic = this.network?.topics?.get(topicKeyHex);
+    const conn = topic?.connections?.get(peerId);
+    if (!conn) {
+      const req = this.activeRequests.get(requestId);
+      if (req?.timeout) {
+        clearTimeout(req.timeout);
+      }
+      this.activeRequests.delete(requestId);
+      throw new Error(`Peer not connected in topic: ${peerId.substring(0, 8)}`);
+    }
+
+    const message = this.encodeMessage(MSG_TYPE.SUBTREE_REQUEST, {
+      requestId,
+      merkleRoot,
+      startChunk,
+      chunkCount,
+      topicKey: topicKey.toString('hex')
+    });
+
+    void this._enqueueWrite(conn, message);
     return requestId;
   }
 
@@ -757,16 +1409,17 @@ export class Protocol extends EventEmitter {
   /**
    * Send OFFER
    */
-  sendOffer(conn, requestId, chunkHash, chunkSize, merkleProof) {
+  sendOffer(conn, requestId, chunkHash, chunkSize) {
     const message = this.encodeMessage(MSG_TYPE.OFFER, {
       requestId,
       chunkHash,
-      chunkSize,
-      merkleProof
+      chunkSize
     });
-    
-    conn.write(message);
-    console.log(`Sent OFFER`);
+
+    void this._enqueueWrite(conn, message);
+    if (VERBOSE) {
+      console.log(`Sent OFFER`);
+    }
   }
 
   sendFileListResponse(conn, requestId, topicKey, files) {
@@ -776,7 +1429,7 @@ export class Protocol extends EventEmitter {
       files
     });
 
-    conn.write(message);
+    void this._enqueueWrite(conn, message);
   }
 
   /**
@@ -820,7 +1473,9 @@ export class Protocol extends EventEmitter {
       throw new Error('Offer not found');
     }
     
-    console.log(`\nAccepting offer from ${peerId.substring(0, 8)}...`);
+    if (VERBOSE) {
+      console.log(`\nAccepting offer from ${peerId.substring(0, 8)}...`);
+    }
     
     // Send DOWNLOAD message
     const message = this.encodeMessage(MSG_TYPE.DOWNLOAD, {
@@ -828,7 +1483,7 @@ export class Protocol extends EventEmitter {
       chunkHash: request.chunkHash
     });
     
-    offer.conn.write(message);
+    void this._enqueueWrite(offer.conn, message);
     
     // Track download with progress info
     this.activeDownloads.set(requestId, {
@@ -851,14 +1506,14 @@ export class Protocol extends EventEmitter {
   /**
    * Send chunk data
    */
-  sendChunkData(conn, requestId, chunkHash, chunkData) {
+  async sendChunkData(conn, requestId, chunkHash, chunkData) {
     const message = this.encodeMessage(MSG_TYPE.CHUNK_DATA, {
       requestId,
       chunkHash,
-      data: chunkData.toString('base64') // JSON-safe encoding
+      chunkData
     });
-    
-    conn.write(message);
+
+    await this._enqueueWrite(conn, message);
   }
 
   sendMetadataResponse(conn, requestId, metadata) {
@@ -867,7 +1522,7 @@ export class Protocol extends EventEmitter {
       metadata
     });
 
-    conn.write(message);
+    void this._enqueueWrite(conn, message);
   }
 
   /**
@@ -878,8 +1533,8 @@ export class Protocol extends EventEmitter {
       requestId,
       error
     });
-    
-    conn.write(message);
+
+    void this._enqueueWrite(conn, message);
   }
 
   /**
@@ -980,7 +1635,9 @@ export class Protocol extends EventEmitter {
    * Generate Merkle proof for a chunk
    */
   async generateMerkleProof(chunkHash, preferredFileId = null) {
-    console.log(`[DEBUG] generateMerkleProof called for ${chunkHash.substring(0, 16)}...`);
+    if (VERBOSE) {
+      console.log(`[DEBUG] generateMerkleProof called for ${chunkHash.substring(0, 16)}...`);
+    }
 
     let file = null;
     if (preferredFileId) {
@@ -996,27 +1653,39 @@ export class Protocol extends EventEmitter {
 
     if (!file) {
       const files = this.db.getFilesWithChunk(chunkHash);
-      console.log(`[DEBUG] Found ${files.length} files with this chunk`);
+      if (VERBOSE) {
+        console.log(`[DEBUG] Found ${files.length} files with this chunk`);
+      }
       file = files[0] || null;
     }
 
     if (!file) {
-      console.log(`[DEBUG] No files found, returning empty proof`);
+      if (VERBOSE) {
+        console.log(`[DEBUG] No files found, returning empty proof`);
+      }
       return [];
     }
 
-    console.log(`[DEBUG] Using file: ${file.path}`);
+    if (VERBOSE) {
+      console.log(`[DEBUG] Using file: ${file.path}`);
+    }
     
     // Get all chunks for this file
     const fileChunks = this.db.getFileChunks(file.id);
-    console.log(`[DEBUG] File has ${fileChunks.length} chunks`);
+    if (VERBOSE) {
+      console.log(`[DEBUG] File has ${fileChunks.length} chunks`);
+    }
     
     // Find the index of our chunk
     const chunkIndex = fileChunks.findIndex(fc => fc.chunk_hash === chunkHash);
-    console.log(`[DEBUG] Chunk index: ${chunkIndex}`);
+    if (VERBOSE) {
+      console.log(`[DEBUG] Chunk index: ${chunkIndex}`);
+    }
     
     if (chunkIndex === -1) {
-      console.log(`[DEBUG] Chunk not found in file chunks, returning empty proof`);
+      if (VERBOSE) {
+        console.log(`[DEBUG] Chunk not found in file chunks, returning empty proof`);
+      }
       return [];
     }
     
@@ -1024,14 +1693,20 @@ export class Protocol extends EventEmitter {
     const chunkHashes = fileChunks.map(fc => fc.chunk_hash);
     
     // Import merkle module
-    console.log(`[DEBUG] Importing merkle module...`);
+    if (VERBOSE) {
+      console.log(`[DEBUG] Importing merkle module...`);
+    }
     const { generateMerkleProof } = await import('./merkle.js');
-    console.log(`[DEBUG] Merkle module imported`);
+    if (VERBOSE) {
+      console.log(`[DEBUG] Merkle module imported`);
+    }
     
     try {
       const proof = await generateMerkleProof(chunkHashes, chunkIndex)
       const siblings = Array.isArray(proof?.proof) ? proof.proof : []
-      console.log(`[DEBUG] Merkle proof generated, siblings: ${siblings.length}`);
+      if (VERBOSE) {
+        console.log(`[DEBUG] Merkle proof generated, siblings: ${siblings.length}`);
+      }
       
       // Return simplified proof for network transmission
       const simplifiedProof = {
@@ -1043,11 +1718,15 @@ export class Protocol extends EventEmitter {
         }))
       };
       
-      console.log(`[DEBUG] Returning simplified proof`);
+      if (VERBOSE) {
+        console.log(`[DEBUG] Returning simplified proof`);
+      }
       return simplifiedProof;
     } catch (error) {
-      console.error('[DEBUG] Error generating merkle proof:', error.message);
-      console.error('[DEBUG] Stack:', error.stack);
+      if (VERBOSE) {
+        console.error('[DEBUG] Error generating merkle proof:', error.message);
+        console.error('[DEBUG] Stack:', error.stack);
+      }
       return null;
     }
   }

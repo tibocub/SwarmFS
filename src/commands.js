@@ -13,6 +13,126 @@ function nowNs() {
   return process.hrtime.bigint()
 }
 
+export async function resumeCommand(swarmfs, topicName, options = {}) {
+  swarmfs.open();
+
+  const all = !!options.all;
+  const downloads = all
+    ? swarmfs.db.getIncompleteDownloads()
+    : swarmfs.db.getIncompleteDownloads(topicName);
+
+  if (!downloads || downloads.length === 0) {
+    console.log('No incomplete downloads found.');
+    return [];
+  }
+
+  const enableProgressBar = process.stdout.isTTY && process.env.SWARMFS_REPL !== '1';
+
+  const results = [];
+  for (const d of downloads) {
+    const t = d.topic_name;
+    const root = d.merkle_root;
+    const out = d.output_path;
+
+    console.log(`\nResuming download from topic "${t}"...`);
+    console.log(`Merkle Root: ${root}`);
+    console.log(`Output: ${out}\n`);
+
+    if (!swarmfs.network || !swarmfs.protocol) {
+      console.log(`Joining topic "${t}"...`);
+      await swarmfs.joinTopic(t);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    let progressBar = null;
+    let totalChunks = 0;
+    let downloadedChunks = 0;
+    let initializedItems = false;
+    let lastDownloadedChunks = 0;
+
+    if (enableProgressBar) {
+      progressBar = term.progressBar({
+        title: 'File download',
+        width: Math.min(60, (term.width || 80) - 20),
+        percent: true,
+        eta: true
+      });
+      progressBar.update(0);
+    }
+
+    const start = nowNs();
+    try {
+      const result = await swarmfs.downloadFile(t, root, out, {
+        onProgress: (info) => {
+          if (!progressBar) {
+            return;
+          }
+
+          if (typeof info.totalChunks === 'number') {
+            totalChunks = info.totalChunks;
+          }
+          if (typeof info.downloadedChunks === 'number') {
+            downloadedChunks = info.downloadedChunks;
+          }
+
+          if (!initializedItems && totalChunks > 0) {
+            initializedItems = true;
+            progressBar.update({ items: totalChunks, progress: 0 });
+          }
+
+          if (initializedItems) {
+            progressBar.update({
+              progress: totalChunks > 0 ? Math.min(1, downloadedChunks / totalChunks) : 0,
+              items: totalChunks
+            });
+
+            const delta = downloadedChunks - lastDownloadedChunks;
+            if (delta > 0) {
+              for (let i = 0; i < delta; i++) {
+                progressBar.itemDone();
+              }
+              lastDownloadedChunks = downloadedChunks;
+            }
+          } else {
+            const pct = totalChunks > 0 ? Math.min(1, downloadedChunks / totalChunks) : 0;
+            progressBar.update(pct);
+          }
+        }
+      });
+
+      const ms = elapsedMs(start);
+
+      if (progressBar) {
+        progressBar.update(1);
+        if (typeof progressBar.stop === 'function') {
+          progressBar.stop();
+        }
+        term('\n');
+      }
+
+      const mbps = formatMbps(result.size, ms);
+      console.log(`\n✅ File downloaded successfully!`);
+      console.log(`  Path: ${result.path}`);
+      console.log(`  Size: ${formatBytes(result.size)}`);
+      console.log(`  Chunks: ${result.totalChunks}`);
+      console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`);
+
+      results.push(result);
+    } catch (err) {
+      if (progressBar) {
+        if (typeof progressBar.stop === 'function') {
+          progressBar.stop();
+        }
+        term('\n');
+      }
+      console.error(`\n❌ Resume failed: ${err.message}`);
+      throw err;
+    }
+  }
+
+  return results;
+}
+
 function elapsedMs(startNs) {
   return Number(nowNs() - startNs) / 1e6
 }
@@ -79,24 +199,29 @@ export function formatDate(timestamp) {
 // FILE COMMANDS
 // ============================================================================
 
-export async function addCommand(swarmfs, targetPath) {
-  const filePath = targetPath || '.';
-  const absolutePath = path.resolve(filePath);
+function normalizeManyArgs(first, rest) {
+  if (Array.isArray(first)) {
+    return rest.length > 0 ? [...first, ...rest] : first;
+  }
+  if (typeof first === 'string' && first.length > 0) {
+    return [first, ...rest];
+  }
+  return rest;
+}
 
+async function addOnePath(swarmfs, absolutePath) {
   if (!fs.existsSync(absolutePath)) {
     throw new Error(`Path not found: ${absolutePath}`);
   }
-
-  swarmfs.open();
 
   const stats = fs.statSync(absolutePath);
 
   if (stats.isDirectory()) {
     console.log(`Adding directory: ${absolutePath}\n`);
-    const start = nowNs()
+    const start = nowNs();
     const result = await swarmfs.addDirectory(absolutePath);
-    const ms = elapsedMs(start)
-    
+    const ms = elapsedMs(start);
+
     console.log('\n✓ Directory added successfully');
     console.log(`  Path: ${result.path}`);
     console.log(`  Files: ${result.filesAdded}/${result.totalFiles}`);
@@ -104,29 +229,82 @@ export async function addCommand(swarmfs, targetPath) {
     console.log(`  Total Size: ${formatBytes(result.totalSize)}`);
     console.log(`  Merkle Root: ${result.merkleRoot}`);
 
-    const mbps = formatMbps(result.totalSize, ms)
-    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`)
-    
+    const mbps = formatMbps(result.totalSize, ms);
+    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`);
+
     return result;
-  } else if (stats.isFile()) {
+  }
+
+  if (stats.isFile()) {
     console.log(`Adding file: ${absolutePath}`);
-    const start = nowNs()
+    const start = nowNs();
     const result = await swarmfs.addFile(absolutePath);
-    const ms = elapsedMs(start)
-    
+    const ms = elapsedMs(start);
+
     console.log('✓ File added successfully');
     console.log(`  Path: ${result.path}`);
     console.log(`  Size: ${formatBytes(result.size)}`);
     console.log(`  Chunks: ${result.chunks}`);
     console.log(`  Merkle Root: ${result.merkleRoot}`);
 
-    const mbps = formatMbps(result.size, ms)
-    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`)
-    
+    const mbps = formatMbps(result.size, ms);
+    console.log(`  Time: ${formatSeconds(ms)}s${mbps ? ` (${mbps} MiB/s)` : ''}`);
+
     return result;
-  } else {
-    throw new Error('Not a file or directory');
   }
+
+  throw new Error('Not a file or directory');
+}
+
+export async function addCommand(swarmfs, targetPath, ...rest) {
+  const raw = normalizeManyArgs(targetPath, rest);
+  const paths = raw.filter((v) => typeof v === 'string' && v.length > 0);
+  const effectivePaths = paths.length > 0 ? paths : ['.'];
+
+  swarmfs.open();
+
+  const results = [];
+  for (const p of effectivePaths) {
+    const absolutePath = path.resolve(p);
+    results.push(await addOnePath(swarmfs, absolutePath));
+  }
+  return results.length === 1 ? results[0] : results;
+}
+
+export async function rmCommand(swarmfs, targetPath, ...rest) {
+  const raw = normalizeManyArgs(targetPath, rest);
+  const paths = raw.filter((v) => typeof v === 'string' && v.length > 0);
+  if (!paths || paths.length === 0) {
+    throw new Error('No paths provided');
+  }
+
+  swarmfs.open();
+
+  const results = [];
+  for (const p of paths) {
+    const absolutePath = path.resolve(p);
+    const file = swarmfs.db.getFile(absolutePath);
+    const directory = swarmfs.db.getDirectory(absolutePath);
+
+    if (!file && !directory) {
+      console.log(`Not tracked: ${absolutePath}`);
+      results.push({ path: absolutePath, removed: false, reason: 'not_tracked' });
+      continue;
+    }
+
+    swarmfs.db.removeTopicSharesByPath(absolutePath);
+    if (file) {
+      swarmfs.removeFile(absolutePath);
+      console.log(`✓ Removed file metadata: ${absolutePath}`);
+    } else {
+      swarmfs.removeDirectory(absolutePath);
+      console.log(`✓ Removed directory metadata: ${absolutePath}`);
+    }
+
+    results.push({ path: absolutePath, removed: true, type: file ? 'file' : 'directory' });
+  }
+
+  return results;
 }
 
 export async function statusCommand(swarmfs) {
@@ -174,6 +352,20 @@ export async function verifyCommand(swarmfs, filePath) {
     }
   }
   
+  return result;
+}
+
+export async function topicSaveCommand(swarmfs, name, options = {}) {
+  swarmfs.open();
+
+  const autoJoin = options.autoJoin !== false;
+  const result = await swarmfs.createTopic(name, autoJoin);
+
+  console.log('✓ Topic saved');
+  console.log(`  Name: ${result.name}`);
+  console.log(`  Topic Key: ${result.topicKey}`);
+  console.log(`  Auto-join: ${result.autoJoin ? 'yes' : 'no'}`);
+
   return result;
 }
 
@@ -252,7 +444,7 @@ export async function topicListCommand(swarmfs) {
   
   if (topics.length === 0) {
     console.log('No topics created yet.');
-    console.log('Use "topic create <name>" to create a topic.');
+    console.log('Use "topic save <name>" to save a topic.');
     return [];
   }
 
@@ -339,6 +531,122 @@ export async function topicLeaveCommand(swarmfs, name) {
 
   await swarmfs.leaveTopic(name);
   console.log(`✓ Left topic: ${name}`);
+}
+
+export async function topicRmCommand(swarmfs, name) {
+  swarmfs.open();
+
+  const topic = swarmfs.db.getTopic(name);
+  if (!topic) {
+    console.log(`Topic not found: ${name}`);
+    return { removed: false };
+  }
+
+  const result = await swarmfs.deleteTopic(name);
+  if (result && result.changes > 0) {
+    console.log(`✓ Removed topic: ${name}`);
+    return { removed: true };
+  }
+
+  console.log(`Topic not removed: ${name}`);
+  return { removed: false };
+}
+
+export async function topicAutojoinCommand(swarmfs, topicName, ...rest) {
+  const raw = normalizeManyArgs(topicName, rest);
+  const names = raw.filter((v) => typeof v === 'string' && v.length > 0);
+  const options = raw.find((v) => v && typeof v === 'object' && !Array.isArray(v) && (
+    v.y === true || v.yes === true || v.n === true || v.no === true || v.disable === true
+  )) || {};
+  if (!names || names.length === 0) {
+    throw new Error('No topics provided');
+  }
+
+  const enable = options.y === true || options.yes === true;
+  const disable = options.n === true || options.no === true || options.disable === true;
+
+  if ((enable && disable) || (!enable && !disable)) {
+    throw new Error('Specify exactly one of -y or -n');
+  }
+
+  swarmfs.open();
+
+  await swarmfs.setTopicsAutoJoin(names, enable);
+  console.log(`✓ Updated auto-join (${enable ? 'enabled' : 'disabled'}): ${names.join(', ')}`);
+  return { names, autoJoin: enable };
+}
+
+export async function shareCommand(swarmfs, topicName, paths, options = {}) {
+  const files = Array.isArray(paths) ? paths : normalizeManyArgs(paths, []);
+  const fileArgs = files.filter((v) => typeof v === 'string' && v.length > 0);
+
+  if (typeof topicName !== 'string' || topicName.length === 0) {
+    throw new Error('Usage: share <topic> <file1> [file2...]');
+  }
+  if (fileArgs.length === 0) {
+    throw new Error('Usage: share <topic> <file1> [file2...]');
+  }
+
+  swarmfs.open();
+
+  const missing = [];
+  for (const f of fileArgs) {
+    const absolutePath = path.resolve(f);
+    const trackedFile = swarmfs.db.getFile(absolutePath);
+    const trackedDir = swarmfs.db.getDirectory(absolutePath);
+    if (!trackedFile && !trackedDir) {
+      missing.push(f);
+    }
+  }
+
+  if (missing.length > 0) {
+    const promptText = `${missing.join(', ')} not added yet to SwarmFS. Add files and proceed sharing ${missing.join(', ')} ? [Y/n] `;
+
+    const shouldPrompt = process.stdin?.isTTY && process.stdout?.isTTY && typeof term.yesOrNo === 'function';
+    let proceed = false;
+
+    if (shouldPrompt) {
+      proceed = await new Promise((resolve) => {
+        term(promptText);
+        term.yesOrNo({ yes: ['y', 'ENTER'], no: ['n'] }, (err, result) => {
+          if (err) {
+            resolve(false);
+            return;
+          }
+          resolve(!!result);
+        });
+      });
+      term('\n');
+    }
+
+    if (!proceed) {
+      throw new Error(`${missing.join(', ')} not added yet to SwarmFS`);
+    }
+
+    for (const f of missing) {
+      const absolutePath = path.resolve(f);
+      await addOnePath(swarmfs, absolutePath);
+    }
+  }
+
+  const results = [];
+  for (const f of fileArgs) {
+    try {
+      const result = await swarmfs.sharePath(topicName, f);
+      console.log('✓ Shared successfully');
+      console.log(`  Topic: ${topicName}`);
+      console.log(`  Path: ${result.path}`);
+      results.push({ topic: topicName, path: result.path, merkleRoot: result.merkleRoot });
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      if (msg.includes('Path not tracked:')) {
+        throw new Error(msg);
+      }
+      throw e;
+    }
+  }
+
+  return results;
 }
 
 // ============================================================================
@@ -604,6 +912,7 @@ export async function networkCommand(swarmfs) {
 export const commands = {
   // File commands
   add: addCommand,
+  rm: rmCommand,
   status: statusCommand,
   verify: verifyCommand,
   info: infoCommand,
@@ -611,18 +920,25 @@ export const commands = {
   
   // Topic commands (with namespace)
   'topic.create': topicCreateCommand,
+  'topic.save': topicSaveCommand,
   'topic.list': topicListCommand,
   'topic.info': topicInfoCommand,
   'topic.share': topicShareCommand,
   'topic.unshare': topicUnshareCommand,
   'topic.join': topicJoinCommand,
   'topic.leave': topicLeaveCommand,
+  'topic.rm': topicRmCommand,
+  'topic.autojoin': topicAutojoinCommand,
   
   // Network commands
   request: requestCommand,
   download: downloadCommand,
+  resume: resumeCommand,
   browse: browseCommand,
-  network: networkCommand
+  network: networkCommand,
+
+  // Top-level share
+  share: shareCommand
 };
 
 // Helper to get command by name (handles aliases)

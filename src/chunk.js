@@ -3,7 +3,8 @@
  * Splits data into fixed-size chunks for content-addressed storage
  */
 
-export const DEFAULT_CHUNK_SIZE = 256 * 1024; // 256KB
+export const DEFAULT_CHUNK_SIZE = 1024 * 1024; // 1MiB
+
 
 /**
  * Split a buffer into fixed-size chunks

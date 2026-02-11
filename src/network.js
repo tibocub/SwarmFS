@@ -21,6 +21,7 @@ export class SwarmNetwork extends EventEmitter {
     
     this.config = {
       maxConnections: config.maxConnections || 50,
+      flushTimeoutMs: config.flushTimeoutMs || 30000,
       ...config
     };
     
@@ -66,6 +67,18 @@ export class SwarmNetwork extends EventEmitter {
 
     // Wait for topic to be fully announced
     await discovery.flushed();
+
+    // Accelerate peer convergence. flush() is heavyweight but ensures Hyperswarm
+    // processes pending DHT operations + queued peer connections.
+    const flushTimeoutMs = this.config.flushTimeoutMs;
+    if (Number.isFinite(flushTimeoutMs) && flushTimeoutMs > 0) {
+      await Promise.race([
+        this.swarm.flush(),
+        new Promise((resolve) => setTimeout(resolve, flushTimeoutMs))
+      ]);
+    } else {
+      await this.swarm.flush();
+    }
 
     // Store topic info
     this.topics.set(topicKeyHex, {
@@ -126,15 +139,19 @@ export class SwarmNetwork extends EventEmitter {
         console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
       });
 
-      // Hyperswarm can report multiple topics. Sometimes info.topics is empty.
-      // We only track connections under topics we joined.
+      // Hyperswarm v3: In client mode, peerInfo.topics is set.
+      // In server mode (incoming connections), peerInfo.topics can be empty.
+      // For our protocol, we still need to be able to broadcast per-topic requests
+      // to incoming peers, so we conservatively attribute server-mode connections
+      // to all currently joined topics.
       const joinedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
-      const inferredTopicKeys = joinedTopicKeys.length > 0
+      const attributedTopicKeys = joinedTopicKeys.length > 0
         ? joinedTopicKeys
         : Array.from(this.topics.keys()).map((hex) => Buffer.from(hex, 'hex'));
 
       debug(`\n[NETWORK] 🔗 Peer connected: ${peerId.substring(0, 16)}...`);
-      if (inferredTopicKeys.length === 0) {
+
+      if (attributedTopicKeys.length === 0) {
         debug('[NETWORK]    No joined topics yet; connection will not be attributed to a topic');
       }
 
@@ -143,8 +160,9 @@ export class SwarmNetwork extends EventEmitter {
       }
 
       const peerConn = this.peerConnections.get(peerId);
+      peerConn.conn = conn;
 
-      for (const t of inferredTopicKeys) {
+      for (const t of attributedTopicKeys) {
         const topicKeyHex = t.toString('hex');
         const topic = this.topics.get(topicKeyHex);
         if (!topic) {
@@ -161,6 +179,11 @@ export class SwarmNetwork extends EventEmitter {
         this.emit('peer:connect', { conn, peerId, topicKey: t });
       }
 
+      if (attributedTopicKeys.length === 0) {
+        this.emit('peer:connected', { conn, peerId, topicKey: null });
+        this.emit('peer:connect', { conn, peerId, topicKey: null });
+      }
+
       this.setupConnectionHandlers(conn, peerId);
     });
   }
@@ -170,15 +193,14 @@ export class SwarmNetwork extends EventEmitter {
       const peerConn = this.peerConnections.get(peerId);
       const topics = peerConn ? Array.from(peerConn.topics) : [];
 
-      // If we know the topic(s), emit one event per topic for deterministic routing.
+      // Emit only once per chunk. If topics are known, include them as metadata.
+      // Protocol currently ignores topicKey on peer:data anyway, and duplicating
+      // peer:data breaks message reassembly/decoding.
       if (topics.length > 0) {
-        for (const topicKeyHex of topics) {
-          this.emit('peer:data', { conn, peerId, topicKey: Buffer.from(topicKeyHex, 'hex'), data });
-        }
+        this.emit('peer:data', { conn, peerId, topicKeys: topics, data });
         return;
       }
 
-      // Fallback: positional payload (older callers)
       this.emit('peer:data', conn, peerId, data);
     });
 
@@ -199,7 +221,9 @@ export class SwarmNetwork extends EventEmitter {
         this.emit('peer:disconnect', { peerId, topicKey });
       }
 
-      this.peerConnections.delete(peerId);
+      if (peerConn && peerConn.conn === conn) {
+        this.peerConnections.delete(peerId);
+      }
     });
   }
 
