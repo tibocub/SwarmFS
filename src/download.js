@@ -355,7 +355,13 @@ export class DownloadSession extends EventEmitter {
       }
     }
     
-    const requestId = this.protocol.requestChunk(this.topicKey, chunk.hash);
+    let requestId;
+    try {
+      requestId = this.protocol.requestChunkToPeer(this.topicKey, peer.peerId, chunk.hash);
+    } catch {
+      // Fallback to broadcast if we failed to unicast (peer may have disconnected).
+      requestId = this.protocol.requestChunk(this.topicKey, chunk.hash);
+    }
     this._activeRequestIds.add(requestId);
     this._requestToChunkIndex.set(requestId, chunkIndex);
     console.log(`⬇️  Requested chunk ${chunkIndex} (${chunk.hash.substring(0, 16)}...) req=${requestId.substring(0, 8)} peer=${peer.peerId.substring(0, 8)}`);
@@ -408,9 +414,8 @@ export class DownloadSession extends EventEmitter {
   }
 
   onChunkOffer(info) {
-    if (info.offerCount === 1) {
-      this.protocol.acceptOffer(info.requestId, info.peerId);
-    }
+    // Alpha optimization: serving peers stream CHUNK_DATA immediately after OFFER.
+    // No need to respond with DOWNLOAD.
   }
 
   async onChunkReceived(info) {
@@ -480,7 +485,9 @@ export class DownloadSession extends EventEmitter {
     }
     
     chunk.state = ChunkState.RECEIVED;
-    chunk.data = Buffer.from(data, 'base64');
+    chunk.data = Buffer.isBuffer(data)
+      ? data
+      : (typeof data === 'string' ? Buffer.from(data, 'base64') : Buffer.from(data));
     if (matchedInFlight) {
       this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
     }
