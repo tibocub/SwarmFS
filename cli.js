@@ -31,7 +31,7 @@ const swarmfs = new SwarmFS(DATA_DIR);
 if (!swarmfs.isInitialized()) {
   console.log('Initializing SwarmFS...');
   swarmfs.init();
-  console.log(`✓ Initialized at ${DATA_DIR}\n`);
+  console.log(`Initialized at ${DATA_DIR}\n`);
 }
 
 // Wrapper to handle errors and cleanup
@@ -44,7 +44,10 @@ function wrapCommand(commandFunc, keepAlive = false) {
         swarmfs.close();
       }
     } catch (error) {
-      console.error('✗ Error:', error.message);
+      console.error('Error:', error.message);
+      if (error && error.stack) {
+        console.error(error.stack)
+      }
       if (!keepAlive) {
         swarmfs.close();
       }
@@ -72,11 +75,20 @@ program
   .version('0.4.3');
 
 // ============================================================================
+// DEBUG COMMANDS
+// ============================================================================
+
+program
+  .command('tree <merkle-root>')
+  .description('(Debug) Print the tree of given root hash')
+  .action(wrapCommand(cmd.treeCommand));
+
+// ============================================================================
 // FILE COMMANDS
 // ============================================================================
 
 program
-  .command('add [path]')
+  .command('add <path>')
   .description('Add a file or directory (defaults to current directory)')
   .action(wrapCommand(cmd.addCommand));
 

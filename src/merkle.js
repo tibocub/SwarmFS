@@ -3,40 +3,40 @@
  * Builds binary Merkle trees for file verification and content addressing
  */
 
-import { combineHashes, hashBuffers } from './hash.js';
+import { combineHashes, hashBuffers } from './hash.js'
 
 /**
  * Build a Merkle tree from an array of leaf hashes
  * @param {string[]} leafHashes - Array of hex-encoded hashes (chunk hashes)
  * @returns {Object} Merkle tree with root and all levels
  */
-export function buildMerkleTree(leafHashes) {
+export async function buildMerkleTree(leafHashes) {
   if (!Array.isArray(leafHashes) || leafHashes.length === 0) {
-    throw new Error('leafHashes must be a non-empty array');
+    throw new Error('leafHashes must be a non-empty array')
   }
 
   // Store all levels of the tree (bottom-up)
-  const levels = [leafHashes];
-  let currentLevel = leafHashes;
+  const levels = [leafHashes]
+  let currentLevel = leafHashes
 
   // Build tree bottom-up until we reach the root
   while (currentLevel.length > 1) {
-    const nextLevel = [];
+    const nextLevel = []
     
     for (let i = 0; i < currentLevel.length; i += 2) {
       if (i + 1 < currentLevel.length) {
         // Pair exists: hash(left + right)
-        const combined = combineHashes(currentLevel[i], currentLevel[i + 1]);
-        nextLevel.push(combined);
+        const combined = await combineHashes(currentLevel[i], currentLevel[i + 1])
+        nextLevel.push(combined)
       } else {
         // Odd node: duplicate it (standard Merkle tree approach)
-        const combined = combineHashes(currentLevel[i], currentLevel[i]);
-        nextLevel.push(combined);
+        const combined = await combineHashes(currentLevel[i], currentLevel[i])
+        nextLevel.push(combined)
       }
     }
     
-    levels.push(nextLevel);
-    currentLevel = nextLevel;
+    levels.push(nextLevel)
+    currentLevel = nextLevel
   }
 
   return {
@@ -51,8 +51,9 @@ export function buildMerkleTree(leafHashes) {
  * @param {string[]} leafHashes - Array of leaf hashes
  * @returns {string} Root hash
  */
-export function getMerkleRoot(leafHashes) {
-  return buildMerkleTree(leafHashes).root;
+export async function getMerkleRoot(leafHashes) {
+  const tree = await buildMerkleTree(leafHashes)
+  return tree.root
 }
 
 /**
@@ -61,12 +62,12 @@ export function getMerkleRoot(leafHashes) {
  * @param {number} leafIndex - Index of the leaf to prove
  * @returns {Object} Proof object with siblings and directions
  */
-export function generateMerkleProof(leafHashes, leafIndex) {
+export async function generateMerkleProof(leafHashes, leafIndex) {
   if (leafIndex < 0 || leafIndex >= leafHashes.length) {
-    throw new RangeError('leafIndex out of bounds');
+    throw new RangeError('leafIndex out of bounds')
   }
 
-  const tree = buildMerkleTree(leafHashes);
+  const tree = await buildMerkleTree(leafHashes)
   const proof = [];
   let index = leafIndex;
 
@@ -107,14 +108,14 @@ export function generateMerkleProof(leafHashes, leafIndex) {
  * @param {string} expectedRoot - Expected root hash
  * @returns {boolean} True if proof is valid
  */
-export function verifyMerkleProof(leafHash, proof, expectedRoot) {
+export async function verifyMerkleProof(leafHash, proof, expectedRoot) {
   let currentHash = leafHash;
 
   for (const step of proof) {
     if (step.isLeft) {
-      currentHash = combineHashes(step.hash, currentHash);
+      currentHash = await combineHashes(step.hash, currentHash);
     } else {
-      currentHash = combineHashes(currentHash, step.hash);
+      currentHash = await combineHashes(currentHash, step.hash);
     }
   }
 
@@ -122,7 +123,7 @@ export function verifyMerkleProof(leafHash, proof, expectedRoot) {
 }
 
 /**
- * Pretty print a Merkle tree (for debugging)
+ * Print a Merkle tree (for debugging)
  * @param {Object} tree - Merkle tree from buildMerkleTree
  * @returns {string} String representation
  */
@@ -150,25 +151,25 @@ export function printMerkleTree(tree) {
  * @param {object[]} items - Array of {name, hash, type} objects
  * @returns {string} Directory Merkle root
  */
-export function buildDirectoryMerkle(items) {
+export async function buildDirectoryMerkle(items) {
   if (!items || items.length === 0) {
     // Empty directory - hash empty string
-    return combineHashes('', '');
+    return await combineHashes('', '')
   }
 
   // Sort items by name for deterministic ordering
-  const sortedItems = [...items].sort((a, b) => a.name.localeCompare(b.name));
+  const sortedItems = [...items].sort((a, b) => a.name.localeCompare(b.name))
 
   // Create leaf hashes: hash(name + hash)
   // This ensures same content with different names = different hash
-  const leafHashes = sortedItems.map(item => {
-    const nameBuffer = Buffer.from(item.name, 'utf8');
-    const hashBuffer = Buffer.from(item.hash, 'hex');
-    return hashBuffers([nameBuffer, hashBuffer]);
-  });
+  const leafHashes = await Promise.all(sortedItems.map(async item => {
+    const nameBuffer = Buffer.from(item.name, 'utf8')
+    const hashBuffer = Buffer.from(item.hash, 'hex')
+    return await hashBuffers([nameBuffer, hashBuffer])
+  }))
 
   // Build standard Merkle tree from leaves
-  return getMerkleRoot(leafHashes);
+  return await getMerkleRoot(leafHashes)
 }
 
 /**
@@ -177,7 +178,7 @@ export function buildDirectoryMerkle(items) {
  * @param {function} getFileHash - Function to get hash for a file path
  * @returns {object} Enhanced tree with Merkle roots
  */
-export function buildDirectoryTreeMerkle(tree, getFileHash) {
+export async function buildDirectoryTreeMerkle(tree, getFileHash) {
   const items = [];
 
   // Add file hashes
@@ -195,7 +196,7 @@ export function buildDirectoryTreeMerkle(tree, getFileHash) {
   // Recursively process subdirectories
   const processedSubdirs = [];
   for (const subdir of tree.directories) {
-    const processedSubdir = buildDirectoryTreeMerkle(subdir, getFileHash);
+    const processedSubdir = await buildDirectoryTreeMerkle(subdir, getFileHash);
     processedSubdirs.push(processedSubdir);
     
     items.push({
@@ -206,7 +207,7 @@ export function buildDirectoryTreeMerkle(tree, getFileHash) {
   }
 
   // Build Merkle root for this directory
-  const merkleRoot = buildDirectoryMerkle(items);
+  const merkleRoot = await buildDirectoryMerkle(items);
 
   return {
     ...tree,

@@ -4,11 +4,13 @@
  */
 
 import { Worker } from 'worker_threads';
+import fs from 'fs';
 import { cpus } from 'os';
 import { stat } from 'fs/promises';
 import { buildMerkleTree, getMerkleRoot } from './merkle.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { hashBuffer } from './hash.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -148,7 +150,7 @@ export async function buildFileMerkleTreeParallel(filePath, chunkSize = 256 * 10
   // If file is small, use single-threaded approach
   if (totalChunks <= 4 || fileSize < 1024 * 1024) {
     if (debug) console.log(`[DEBUG] File too small, using single-threaded approach`);
-    return buildFileMerkleTreeSingleThreaded(filePath, chunkSize, onProgress);
+    return await buildFileMerkleTreeSingleThreaded(filePath, chunkSize, onProgress);
   }
 
   // Create worker pool
@@ -171,7 +173,6 @@ export async function buildFileMerkleTreeParallel(filePath, chunkSize = 256 * 10
     // Read file sequentially and distribute chunks to workers
     if (debug) console.log(`[DEBUG] Reading file and distributing to ${workerCount} workers...`);
     
-    const fs = await import('fs');
     const fd = fs.openSync(filePath, 'r');
     
     try {
@@ -259,7 +260,7 @@ export async function buildFileMerkleTreeParallel(filePath, chunkSize = 256 * 10
         onProgress({ phase: 'building', completed: 0, total: 1 });
       }
       
-      const tree = buildMerkleTree(allHashes);
+      const tree = await buildMerkleTree(allHashes);
       
       if (onProgress) {
         onProgress({ phase: 'building', completed: 1, total: 1 });
@@ -285,8 +286,6 @@ export async function buildFileMerkleTreeParallel(filePath, chunkSize = 256 * 10
  * Single-threaded fallback for small files
  */
 async function buildFileMerkleTreeSingleThreaded(filePath, chunkSize, onProgress) {
-  const fs = await import('fs');
-  const { hashBuffer } = await import('./hash.js');
   
   const stats = await fs.promises.stat(filePath);
   const fileSize = stats.size;
@@ -305,8 +304,8 @@ async function buildFileMerkleTreeSingleThreaded(filePath, chunkSize, onProgress
       
       const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
       const actualBuffer = bytesRead < length ? buffer.subarray(0, bytesRead) : buffer;
-      
-      leafHashes.push(hashBuffer(actualBuffer));
+      const leafHash = await hashBuffer(actualBuffer)
+      leafHashes.push(leafHash)
       
       if (onProgress && i % 100 === 0) {
         onProgress({ phase: 'hashing', completed: i + 1, total: totalChunks });
@@ -320,7 +319,7 @@ async function buildFileMerkleTreeSingleThreaded(filePath, chunkSize, onProgress
     onProgress({ phase: 'hashing', completed: totalChunks, total: totalChunks });
   }
   
-  const tree = buildMerkleTree(leafHashes);
+  const tree = await buildMerkleTree(leafHashes);
   
   return {
     ...tree,

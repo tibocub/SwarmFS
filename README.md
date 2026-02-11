@@ -2,7 +2,7 @@
 
 # SwarmFS
 
-SwarmFS is an P2P file-sharing protocol that aims to be faster
+SwarmFS is a P2P file-sharing protocol that aims to be faster
 than IPFS and easier than BitTorrent to setup and use.
 
 It's heavily inspired from BitTorrent and IPFS but here is what's different:
@@ -19,7 +19,7 @@ SwarmFS vs IPFS
 
 At its core:
 
-- **Content addressing** (SHA-256) and **Merkle trees** for integrity
+- **Content addressing** (BLAKE3) and **Merkle trees** for integrity
 - **Chunked transfers** (BitTorrent-style)
 - **Topic-scoped peer discovery** via Hyperswarm
 - A small protocol for **browsing**, **metadata exchange**, and **chunk transfer**
@@ -143,7 +143,7 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 
 ### Done
 
-- Adaptative-size chunking and SHA-256 hashing
+- Adaptative-size chunking and SHA-256 hashing // Replaced with BLAKE3 hashing
 - Merkle tree construction + per-chunk verification
 - File metadata + chunk metadata persisted (SQLite via `better-sqlite3` on Node and Bun's built-in SQLite on Bun)
 - Topic-based peer discovery (Hyperswarm)
@@ -152,6 +152,7 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 - Final file verification and corruption diagnostics
 - Directory tracking and deterministic directory hashing
 - Basic CLI, REPL and TUI
+- Replace SHA256 with BLAKE3 (with WASM and SIMD)
 
 ### Next (high priority)
 
@@ -167,13 +168,16 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
 - Multi-file bundles (directory download as a single request)
 - DHT-free “invite links” for private swarms
 - Optional encryption-at-rest for local metadata
+- Refactor current browsing system (request every user's shared files and aggregate localy) with autobase
+- IPNS-like topic-based domains (a permanent addresses with and editable endpoint) with autobase
+- Virtual directories (manage your tracked files, links and virtual directories in the SwarmFS virtual file-system)
 
 ### Known issues / drawbacks
 
 - Availability depends on peers (there is no central always-on pinning by default)
 - NAT traversal isn’t perfect; some networks may reduce connectivity
 - Content discovery is still evolving (topic-scoped index is young)
-- Performance tuning is ongoing (disk IO scheduling, backpressure, congestion control)
+- Performance is bad but right now we're focussing developing on the protocol itself
 
 ### Performance TODOs (ideas to evaluate)
 
@@ -195,8 +199,6 @@ This is the living roadmap: what’s done, what’s next, and what we know needs
   - One peer: sequential streaming (torrent-style).
 - **Proof caching / reuse**
   - Cache proof fragments per file to avoid recomputing siblings repeatedly.
-- **Replace SHA256 with BLAKE3**
-  - Bao streaming
 - **Compression of protocol metadata**
   - Compact encodings (varints), hash dedup in proofs, optional compression for proof blocks.
 

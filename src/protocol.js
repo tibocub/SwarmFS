@@ -3,20 +3,22 @@
  * Handles REQUEST/OFFER/DOWNLOAD/CHUNK_DATA messages over Hyperswarm connections
  */
 
-import { EventEmitter } from 'events';
-import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
+import { EventEmitter } from 'events'
+import crypto from 'crypto'
+import blake3 from 'blake3-bao/blake3'
+import fs from 'fs'
+import path from 'path'
+import { hashBuffer } from './hash.js'
 
-const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true';
+const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true'
 const debug = (...args) => {
   if (VERBOSE) {
-    console.log(...args);
+    console.log(...args)
   }
 };
 
 // Protocol version
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 1
 
 // Message types
 export const MSG_TYPE = {
@@ -33,7 +35,7 @@ export const MSG_TYPE = {
   HAVE: 0x0b,               // Announce single chunk
   BITFIELD: 0x0c,           // Send complete bitfield
   BITFIELD_REQUEST: 0x0d    // Request peer's bitfield
-};
+}
 
 export class Protocol extends EventEmitter {
   constructor(network, database) {
@@ -105,7 +107,7 @@ export class Protocol extends EventEmitter {
     this.cleanupInterval = setInterval(() => this.cleanup(), 30000);
   }
 
-  _findValidChunkSource(chunkHash, limit = 10) {
+  async _findValidChunkSource(chunkHash, limit = 10) {
     const locations = typeof this.db.getChunkLocations === 'function'
       ? this.db.getChunkLocations(chunkHash, limit)
       : (this.db.getChunkLocation(chunkHash) ? [this.db.getChunkLocation(chunkHash)] : []);
@@ -115,14 +117,31 @@ export class Protocol extends EventEmitter {
         continue;
       }
       try {
-        const chunkData = this._readChunkBytes(loc);
-        const actualHash = crypto.createHash('sha256').update(chunkData).digest('hex');
-        if (actualHash === chunkHash) {
-          return { location: loc, chunkData };
+        let requireRehash = true
+
+        try {
+          const st = fs.statSync(loc.path)
+          if (st && st.isFile() && typeof loc.file_modified_at === 'number') {
+            requireRehash = Math.floor(st.mtimeMs) !== loc.file_modified_at
+          }
+        } catch {
+          // If stat fails, fall back to rehashing (will also fail if unreadable)
+          requireRehash = true
         }
+
+        const chunkData = this._readChunkBytes(loc);
+        if (!requireRehash) {
+          return { location: loc, chunkData }
+        }
+
+        const actualHash = await hashBuffer(chunkData)
+        if (actualHash === chunkHash) {
+          return { location: loc, chunkData }
+        }
+
         console.warn(
           `   ⚠️  Stale chunk mapping candidate: ${actualHash.substring(0, 16)}... not ${chunkHash.substring(0, 16)}... (${loc.path})`
-        );
+        )
       } catch (err) {
         console.warn(`   ⚠️  Failed to read chunk candidate (${loc.path}): ${err.message}`);
       }
@@ -300,11 +319,11 @@ export class Protocol extends EventEmitter {
           break;
         case MSG_TYPE.DOWNLOAD:
           console.log(`[DEBUG] Calling handleDownload`);
-          this.handleDownload(conn, peerId, payload);
+          await this.handleDownload(conn, peerId, payload);
           break;
         case MSG_TYPE.CHUNK_DATA:
           console.log(`[DEBUG] Calling handleChunkData`);
-          this.handleChunkData(conn, peerId, payload);
+          await this.handleChunkData(conn, peerId, payload);
           break;
         case MSG_TYPE.CANCEL:
           this.handleCancel(peerId, payload);
@@ -350,9 +369,10 @@ export class Protocol extends EventEmitter {
 
     console.log(`REQUEST from ${peerId.substring(0, 8)}: chunk ${chunkHash.substring(0, 16)}...`);
 
-    const found = this._findValidChunkSource(chunkHash, 20);
+    const found = await this._findValidChunkSource(chunkHash, 20);
     if (!found) {
       console.log(`   ⚠️  Don't have chunk (or all local candidates invalid/unreadable)`);
+      this.sendError(conn, requestId, 'Chunk not found');
       return;
     }
 
@@ -415,14 +435,14 @@ export class Protocol extends EventEmitter {
   /**
    * DOWNLOAD: Accept an offer and start download
    */
-  handleDownload(conn, peerId, payload) {
+  async handleDownload(conn, peerId, payload) {
     const { requestId, chunkHash } = payload;
     
     console.log(`DOWNLOAD request from ${peerId.substring(0, 8)}: ${chunkHash.substring(0, 16)}...`);
     
-    const found = this._findValidChunkSource(chunkHash, 20);
+    const found = await this._findValidChunkSource(chunkHash, 20);
     if (!found) {
-      this.sendError(conn, requestId, 'Chunk not found (or all local candidates invalid/unreadable)');
+      this.sendError(conn, requestId, 'Chunk not found');
       return;
     }
 
@@ -435,7 +455,7 @@ export class Protocol extends EventEmitter {
   /**
    * CHUNK_DATA: Received chunk data
    */
-  handleChunkData(conn, peerId, payload) {
+  async handleChunkData(conn, peerId, payload) {
     const { requestId, chunkHash, data } = payload;
     const chunkData = Buffer.from(data, 'base64');
 
@@ -453,7 +473,7 @@ export class Protocol extends EventEmitter {
       });
     }
 
-    const actualHash = crypto.createHash('sha256').update(chunkData).digest('hex');
+    const actualHash = await hashBuffer(chunkData)
     if (actualHash !== chunkHash) {
       console.error(`Hash mismatch! Expected ${chunkHash.substring(0, 16)}... got ${actualHash.substring(0, 16)}...`);
 
@@ -1009,14 +1029,15 @@ export class Protocol extends EventEmitter {
     console.log(`[DEBUG] Merkle module imported`);
     
     try {
-      const proof = generateMerkleProof(chunkHashes, chunkIndex);
-      console.log(`[DEBUG] Merkle proof generated, siblings: ${proof.proof.length}`);
+      const proof = await generateMerkleProof(chunkHashes, chunkIndex)
+      const siblings = Array.isArray(proof?.proof) ? proof.proof : []
+      console.log(`[DEBUG] Merkle proof generated, siblings: ${siblings.length}`);
       
       // Return simplified proof for network transmission
       const simplifiedProof = {
         fileRoot: file.merkle_root,
         chunkIndex: chunkIndex,
-        siblings: proof.proof.map(p => ({
+        siblings: siblings.map(p => ({
           hash: p.hash,
           isLeft: p.isLeft
         }))
@@ -1027,7 +1048,7 @@ export class Protocol extends EventEmitter {
     } catch (error) {
       console.error('[DEBUG] Error generating merkle proof:', error.message);
       console.error('[DEBUG] Stack:', error.stack);
-      return [];
+      return null;
     }
   }
 
@@ -1044,7 +1065,7 @@ export class Protocol extends EventEmitter {
     const { verifyMerkleProof } = await import('./merkle.js');
     
     try {
-      const isValid = verifyMerkleProof(
+      const isValid = await verifyMerkleProof(
         chunkHash,
         merkleProof.siblings,
         merkleProof.fileRoot
