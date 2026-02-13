@@ -141,15 +141,17 @@ const topicCmd = program
   .description('Manage P2P topics/groups');
 
 topicCmd
-  .command('save <name>')
+  .command('save <name> [password]')
   .description('Save a new topic')
   .option('--no-auto-join', 'Do not auto-join on startup')
+  .option('-p, --password [password]', 'Derive topic key from password (prompted if omitted)')
   .action(wrapCommand(cmd.topicSaveCommand));
 
 topicCmd
-  .command('create <name>')
+  .command('create <name> [password]')
   .description('Alias for topic save')
   .option('--no-auto-join', 'Do not auto-join on startup')
+  .option('-p, --password [password]', 'Derive topic key from password (prompted if omitted)')
   .action(wrapCommand(cmd.topicSaveCommand));
 
 topicCmd

@@ -556,18 +556,25 @@ export class SwarmFS {
   // TOPIC MANAGEMENT
   // ============================================================================
 
+  static DEFAULT_TOPIC_SALT = 'SwarmFS:topic:v1'
+
   /**
    * Create a new topic
    */
-  async createTopic(name, autoJoin = true) {
+  async createTopic(name, autoJoin = true, password = null) {
     // Check if topic already exists
     const existing = this.db.getTopic(name);
     if (existing) {
       throw new Error(`Topic "${name}" already exists`);
     }
 
-    // Generate topic key from name (deterministic)
-    const topicKey = blake3.hashHex(name)
+    const secret = (typeof password === 'string' && password.length > 0)
+      ? password
+      : SwarmFS.DEFAULT_TOPIC_SALT
+
+    // Generate topic key from (name + secret) (deterministic)
+    // Using a SwarmFS-specific salt prevents collisions with other Hyperswarm apps.
+    const topicKey = blake3.hashHex(`${secret}\n${name}`)
 
     // Add to database
     const topicId = this.db.addTopic(name, topicKey, autoJoin);

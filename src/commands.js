@@ -9,6 +9,40 @@ import terminalKit from 'terminal-kit'
 
 const term = terminalKit.terminal;
 
+function restoreTerminal() {
+  try {
+    if (typeof term.grabInput === 'function') {
+      term.grabInput(false);
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (typeof term.styleReset === 'function') {
+      term.styleReset();
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (process.stdin?.isTTY && typeof process.stdin.setRawMode === 'function') {
+      process.stdin.setRawMode(false);
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (process.stdin && typeof process.stdin.pause === 'function') {
+      process.stdin.pause();
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function nowNs() {
   return process.hrtime.bigint()
 }
@@ -355,11 +389,58 @@ export async function verifyCommand(swarmfs, filePath) {
   return result;
 }
 
-export async function topicSaveCommand(swarmfs, name, options = {}) {
+export async function topicSaveCommand(swarmfs, name, passwordArg, optionsArg) {
   swarmfs.open();
 
-  const autoJoin = options.autoJoin !== false;
-  const result = await swarmfs.createTopic(name, autoJoin);
+  // Commander action signature for: command('save <name> [password]')
+  // is typically: (name, password, options, command)
+  const positionalPassword = typeof passwordArg === 'string' && passwordArg.length > 0
+    ? passwordArg
+    : null;
+
+  const opts = (typeof optionsArg === 'object' && optionsArg !== null)
+    ? optionsArg
+    : (typeof passwordArg === 'object' && passwordArg !== null ? passwordArg : {});
+
+  const autoJoin = opts.autoJoin !== false;
+  const flagPassword = opts.password;
+
+  let password = null;
+  if (typeof positionalPassword === 'string' && positionalPassword.length > 0) {
+    if (typeof flagPassword !== 'undefined') {
+      throw new Error('Provide either a positional password or --password, not both')
+    }
+    password = positionalPassword;
+  } else if (typeof flagPassword === 'string' && flagPassword.length > 0) {
+    password = flagPassword;
+  } else if (flagPassword === true) {
+    const canPrompt = process.stdin?.isTTY && process.stdout?.isTTY && typeof term.inputField === 'function';
+    if (!canPrompt) {
+      throw new Error('Cannot prompt for password in non-interactive mode. Provide it as --password <password>.')
+    }
+
+    try {
+      password = await new Promise((resolve, reject) => {
+        term('Password: ');
+        term.inputField({ echo: false }, (err, input) => {
+          term('\n');
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(String(input || ''));
+        });
+      });
+    } finally {
+      restoreTerminal();
+    }
+
+    if (!password) {
+      throw new Error('Password cannot be empty')
+    }
+  }
+
+  const result = await swarmfs.createTopic(name, autoJoin, password);
 
   console.log('✓ Topic saved');
   console.log(`  Name: ${result.name}`);
