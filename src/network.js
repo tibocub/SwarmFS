@@ -231,10 +231,17 @@ export class SwarmNetwork extends EventEmitter {
    * Get connection statistics
    */
   getStats() {
+    const topicsDetails = Array.from(this.topics.values()).map((t) => ({
+      name: t.name,
+      peers: t.connections?.size || 0
+    }));
+
     return {
       topics: this.topics.size,
+      peerCount: this.peerConnections.size,
       connections: Array.from(this.topics.values()).reduce((acc, t) => acc + (t.connections?.size || 0), 0),
-      activeTopics: Array.from(this.topics.values()).map(t => t.name)
+      activeTopics: topicsDetails.map((t) => t.name),
+      topicsDetails
     };
   }
 

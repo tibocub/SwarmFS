@@ -970,19 +970,31 @@ export async function networkCommand(swarmfs) {
   }
 
   const stats = swarmfs.network.getStats();
-  console.log(`\nNetwork Status:`);
-  if (typeof stats.peerCount === 'number') {
-    console.log(`  Peers: ${stats.peerCount}`);
-  }
-  if (typeof stats.topics === 'number') {
-    console.log(`  Topics: ${stats.topics}`);
-  }
-  if (stats.topicsDetails) {
-    console.log(`  Topic Details:`);
-    for (const topic of stats.topicsDetails) {
-      console.log(`    ${topic.name}: ${topic.peers} peer(s)`);
+
+  const topicsDetails = Array.isArray(stats?.topicsDetails)
+    ? stats.topicsDetails
+    : (Array.isArray(stats?.activeTopics) ? stats.activeTopics.map((name) => ({ name, peers: 0 })) : []);
+
+  const totalConnections = typeof stats?.connections === 'number'
+    ? stats.connections
+    : topicsDetails.reduce((acc, t) => acc + (t?.peers || 0), 0);
+
+  console.log('');
+  console.log('Topics joined:');
+  if (topicsDetails.length === 0) {
+    console.log('None');
+  } else {
+    for (const topic of topicsDetails) {
+      const name = topic?.name ?? '';
+      const peers = typeof topic?.peers === 'number' ? topic.peers : 0;
+      console.log(`${name}: ${peers}`);
     }
   }
+
+  console.log('');
+  console.log(`Total: ${totalConnections} connections.`);
+  console.log('');
+
   return stats;
 }
 
