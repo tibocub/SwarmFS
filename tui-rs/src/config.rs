@@ -46,10 +46,22 @@ pub fn stable_hash16(s: &str) -> String {
     hex::encode(out)[0..16].to_string()
 }
 
+fn windows_hash_path_string(p: &Path) -> String {
+    let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let s = p.to_string_lossy().to_string();
+    // Windows canonicalize() often returns a verbatim path (\\?\C:\...).
+    // Node's path.resolve returns a non-verbatim path (C:\...).
+    // Strip the verbatim prefix so both sides hash the same string.
+    s.strip_prefix("\\\\?\\")
+        .unwrap_or(&s)
+        .to_string()
+}
+
 pub fn ipc_endpoint(data_dir: &Path) -> String {
     // Match Node logic: win32 => \\.\pipe\swarmfs-<hash>, else <dataDir>/swarmfs.sock
     if cfg!(windows) {
-        format!("\\\\.\\pipe\\swarmfs-{}", stable_hash16(&data_dir.to_string_lossy()))
+        let dir = windows_hash_path_string(data_dir);
+        format!("\\\\.\\pipe\\swarmfs-{}", stable_hash16(&dir))
     } else {
         data_dir.join("swarmfs.sock").to_string_lossy().to_string()
     }

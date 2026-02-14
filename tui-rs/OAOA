@@ -1,0 +1,441 @@
+[32mamazon-ecr-credential-helper[0m/kali-rolling 0.7.1-2.1+b7 amd64
+  Amazon ECR Credential Helper for Docker
+
+[32mauto-apt-proxy[0m/kali-rolling 17 all
+  automatic detector of common APT proxy settings
+
+[32mbuildah[0m/kali-rolling 1.42.1+ds1-2 amd64
+  CLI tool to facilitate building OCI images
+
+[32mcatatonit[0m/kali-rolling 0.2.1-2+b8 amd64
+  init process for containers
+
+[32mcentreon-plugins[0m/kali-rolling 0.0~20250303+dfsg-1 all
+  Collection of Nagios plugins to monitor OS, services and network devices
+
+[32mcrowdsec[0m/kali-rolling 1.4.6-10.1+b1 amd64
+  lightweight and collaborative security engine
+
+[32mcrun[0m/kali-rolling 1.26-1 amd64
+  lightweight OCI runtime for running containers
+
+[32mcwl-utils[0m/kali-rolling 0.40-1 all
+  Utilities for using CWL documents
+
+[32mdebcraft[0m/kali-rolling 0.8.1 all
+  Easy, fast and secure way to build Debian packages
+
+[32mdebocker[0m/kali-rolling 0.2.6 all
+  docker-powered package builder for Debian
+
+[32mdebootstick[0m/kali-rolling 2.8 all
+  Turn a chroot environment into a bootable image
+
+[32mdebuerreotype[0m/kali-rolling 0.16-1 all
+  reproducible, snapshot-based Debian rootfs builder
+
+[32mdevscripts[0m/kali-rolling 2.26.5 all
+  scripts to make the life of a Debian Package maintainer easier
+
+[32mdistrobox[0m/kali-rolling 1.8.2.2-1 all
+  Another tool for containerized command line environments on Linux
+
+[32mdocker-buildx[0m/kali-rolling 0.19.3+ds1-4 amd64
+  Docker CLI plugin for extended build capabilities with BuildKit (program)
+
+[32mdocker-buildx-plugin[0m/now 0.15.1-1~debian.12~bookworm amd64 [installed,local]
+  Docker Buildx cli plugin.
+
+[32mdocker-ce[0m/now 5:27.0.1-1~debian.12~bookworm amd64 [residual-config]
+  (none)
+
+[32mdocker-clean[0m/kali-rolling 2.0.4-5 all
+  simple Shell script to clean up the Docker Daemon
+
+[32mdocker-cli[0m/kali-rolling,now 27.5.1+dfsg4-1 amd64 [installed,automatic]
+  Linux container runtime -- client
+
+[32mdocker-compose[0m/kali-rolling 2.32.4-3 amd64
+  Define and run multi-container applications with Docker (program)
+
+[32mdocker-compose-plugin[0m/now 2.28.1-1~debian.12~bookworm amd64 [installed,local]
+  Docker Compose (V2) plugin for the Docker CLI.
+
+[32mdocker-doc[0m/kali-rolling 27.5.1+dfsg4-1 all
+  Linux container runtime -- documentation
+
+[32mdocker-registry[0m/kali-rolling 2.8.3+ds1-2+b9 amd64
+  Docker toolset to pack, ship, store, and deliver content
+
+[32mdocker.io[0m/kali-rolling,now 27.5.1+dfsg4-1 amd64 [installed]
+  Linux container runtime
+
+[32mdue[0m/kali-rolling 3.0.0-1 all
+  Dedicated User Environment: manage build environments in Docker containers
+
+[32mdumb-init[0m/kali-rolling 1.2.5-3 amd64
+  wrapper script which proxies signals to a child
+
+[32melpa-dockerfile-mode[0m/kali-rolling 1.9-3 all
+  Major mode for editing Docker's Dockerfiles
+
+[32melpa-format-all[0m/kali-rolling 0.6.0-2 all
+  Auto-format C, C++, JS, Python, Ruby and 50 other languages
+
+[32melpa-lsp-docker[0m/kali-rolling 1.0.0+git20250423.ff41f4a-1 all
+  LSP Docker integration for lsp-mode
+
+[32menv-dot[0m/kali-rolling 0.019-1 all
+  tool to read .env file and turn its content into environment variables
+
+[32mfence-agents-docker[0m/kali-rolling 4.17.0-1 all
+  Fence Agents for Red Hat Cluster - Docker agent
+
+[32mgolang-docker-credential-helpers[0m/kali-rolling 0.6.4+ds1-1+b19 amd64
+  native stores to safeguard Docker credentials
+
+[32mgolang-github-adxgun-registry-auth-dev[0m/kali-rolling 0.0~git20200730.8cde180-4 all
+  private docker registry token authentication server (library)
+
+[32mgolang-github-awslabs-amazon-ecr-credential-helper-dev[0m/kali-rolling 0.7.1-2.1 all
+  Amazon ECR Credential Helper for Docker (library)
+
+[32mgolang-github-containerd-stargz-snapshotter-dev[0m/kali-rolling 0.14.3-4 all
+  Fast container image distribution plugin with lazy pulling (library)
+
+[32mgolang-github-containers-buildah-dev[0m/kali-rolling 1.42.1+ds1-2 all
+  tool to facilitate building OCI images
+
+[32mgolang-github-containers-image-dev[0m/kali-rolling 5.38.0+ds2-2 all
+  golang library to work with containers' images
+
+[32mgolang-github-containers-libtrust-dev[0m/kali-rolling 0.0~git20230121.c1716e8-2 all
+  Primitives for identity and authorization (library)
+
+[32mgolang-github-crossdock-crossdock-go-dev[0m/kali-rolling 0.0~git20160816.049aabb-3 all
+  Go client for Crossdock
+
+[32mgolang-github-crowdsecurity-dlog-dev[0m/kali-rolling 0.0.1-2 all
+  Go library to parse the Docker Logs stream (library)
+
+[32mgolang-github-docker-buildx-dev[0m/kali-rolling 0.19.3+ds1-4 all
+  Docker CLI plugin for extended build capabilities with BuildKit (library)
+
+[32mgolang-github-docker-cli-docs-tool-dev[0m/kali-rolling 0.10.0-1 all
+  Utilities to generate (reference) documentation for the docker CLI (library)
+
+[32mgolang-github-docker-distribution-dev[0m/kali-rolling 2.8.3+ds1-2 all
+  Docker toolset to pack, ship, store, and deliver content (source)
+
+[32mgolang-github-docker-docker-credential-helpers-dev[0m/kali-rolling 0.6.4+ds1-1 all
+  native stores to safeguard Docker credentials - library
+
+[32mgolang-github-docker-docker-dev[0m/kali-rolling 27.5.1+dfsg4-1 all
+  reusable Go packages included with Docker
+
+[32mgolang-github-docker-go-connections-dev[0m/kali-rolling 0.4.0-4 all
+  Golang utility package to work with network connections
+
+[32mgolang-github-docker-go-dev[0m/kali-rolling 1.5.2~git20160303.d30aec9-1 all
+  Go packages with small patches autogenerated (used for canonical/json)
+
+[32mgolang-github-docker-go-events-dev[0m/kali-rolling 0.0~git20190806.e31b211-4 all
+  Composable event distribution for Go
+
+[32mgolang-github-docker-go-metrics-dev[0m/kali-rolling 0.0.1-2 all
+  Package for metrics collection in Docker projects
+
+[32mgolang-github-docker-go-plugins-helpers-dev[0m/kali-rolling 0.20211224-3 all
+  Helper packages to extend Docker Engine in Golang
+
+[32mgolang-github-docker-go-units-dev[0m/kali-rolling 0.4.0-4 all
+  parse and print size and time units in human-readable format
+
+[32mgolang-github-docker-leadership-dev[0m/kali-rolling 0.1.0-2 all
+  distributed leader election using docker/libkv
+
+[32mgolang-github-docker-libkv-dev[0m/kali-rolling 0.2.1-4 all
+  Key/Value store abstraction library
+
+[32mgolang-github-docker-libtrust-dev[0m/kali-rolling 0.0~git20160708.aabc10e-1 all
+  Primitives for identity and authorization
+
+[32mgolang-github-docker-spdystream-dev[0m/kali-rolling 0.5.0-1 all
+  multiplexed stream library using spdy
+
+[32mgolang-github-fsouza-go-dockerclient-dev[0m/kali-rolling 1.12.3-1 all
+  Docker client library in Go
+
+[32mgolang-github-hashicorp-go-reap-dev[0m/kali-rolling 0.0~git20230117.bf69c61-1 all
+  child process reaping utilities for Go
+
+[32mgolang-github-heroku-docker-registry-client-dev[0m/kali-rolling 0.0~git20211012.9463674-2 all
+  Client for the v2 Docker Registry API
+
+[32mgolang-github-jesseduffield-lazycore-dev[0m/kali-rolling 0.0~git20221023.718a4ca-2 all
+  Shared functionality for lazygit and lazydocker
+
+[32mgolang-github-moby-docker-image-spec-dev[0m/kali-rolling 1.3.1-2 all
+  Docker Image Specification v1 (library)
+
+[32mgolang-github-mrunalp-fileutils-dev[0m/kali-rolling 0.5.1-1 all
+  collection of utilities for file manipulation in golang
+
+[32mgolang-github-mudler-docker-companion-dev[0m/kali-rolling 0.4.5+git20250528.7d707b9+ds-1 all
+  squash and unpack Docker images (library)
+
+[32mgolang-github-opencontainers-runc-dev[0m/kali-rolling 1.3.3+ds1-2 all
+  Open Container Project - development files
+
+[32mgolang-github-openshift-imagebuilder-dev[0m/kali-rolling 1.2.19+ds1-3 all
+  Builds container images using Dockerfile as input (golang sources)
+
+[32mgolang-github-peterbourgon-ff-dev[0m/kali-rolling 3.4.0-2 all
+  Flags-first package for configuration (library)
+
+[32mgolang-github-rootless-containers-rootlesskit-dev[0m/kali-rolling 2.0.2-2 all
+  Linux-native "fake root" for rootless containers (library)
+
+[32mgolang-github-samalba-dockerclient-dev[0m/kali-rolling 0.0~git20160531.0.a303626-3 all
+  Docker client library in Go
+
+[32mgolang-github-vishvananda-netlink-dev[0m/kali-rolling 1.3.1-1 all
+  netlink library for go
+
+[32mgosu[0m/kali-rolling 1.19-1+b1 amd64
+  Simple Go-based setuid+setgid+setgroups+exec
+
+[32mitamae[0m/kali-rolling 1.14.2-1 all
+  Simple Configuration Management Tool
+
+[32mj2cli[0m/kali-rolling 0.3.12b-6 all
+  Command line tool for templating in shell-scripts
+
+[32mkali-defaults[0m/kali-rolling 2026.1.1 all [upgradable from: 2025.4.3]
+  Kali default settings
+
+[32mkameleon[0m/kali-rolling 2.11.1-1 all
+  Mindful appliance builder
+
+[32mkarbon[0m/kali-rolling 1:25.11.90-1+b1 amd64
+  vector graphics application for the Calligra Suite
+
+[32mkdocker[0m/kali-rolling 5.4-2 amd64
+  lets you dock any application into the system tray
+
+[32mkind[0m/kali-rolling 0.30.0-1 amd64
+  Kubernetes IN Docker - local clusters for testing Kubernetes (program)
+
+[32mkiwi-systemdeps-containers[0m/kali-rolling 10.2.38-1 amd64
+  KIWI - host requirements for container images
+
+[32mlibcib54[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager CIB library
+
+[32mlibcrmcluster53[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager cluster library
+
+[32mlibcrmcommon68[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager common library
+
+[32mlibcrmservice53[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager service library
+
+[32mlibghc-pid1-dev[0m/kali-rolling 0.1.3.1-2+b1 amd64
+  signal handling and orphan reaping for Unix PID1 init processes
+
+[32mlibghc-pid1-doc[0m/kali-rolling 0.1.3.1-2 all
+  signal handling and orphan reaping for Unix PID1 init processes; documentation
+
+[32mlibghc-pid1-prof[0m/kali-rolling 0.1.3.1-2+b1 amd64
+  signal handling and orphan reaping for Unix PID1 init processes; profiling libraries
+
+[32mliblrmd52[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager LRMD library
+
+[32mlibpacemaker30[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager utility library
+
+[32mlibpe-rules51[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager Policy Engine rules library
+
+[32mlibpe-status56[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager Policy Engine status library
+
+[32mlibrust-dockerfile-dev[0m/kali-rolling 0.2.1-2+b2 amd64
+  Dynamically generating Dockerfiles - Rust source code
+
+[32mlibrust-dockworker-dev[0m/kali-rolling 0.7.0-3 amd64
+  Docker daemon API client - Rust source code
+
+[32mlibrust-is-docker-dev[0m/kali-rolling 0.2.0-1+b2 amd64
+  Checks if the process is running inside a Docker container - Rust source code
+
+[32mlibstonithd56[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager STONITH daemon library
+
+[32mmagnum-api[0m/kali-rolling 21.0.1-1 all
+  OpenStack containers as a service
+
+[32mmagnum-common[0m/kali-rolling 21.0.1-1 all
+  OpenStack containers as a service - API server
+
+[32mmagnum-conductor[0m/kali-rolling 21.0.1-1 all
+  OpenStack containers as a service - conductor
+
+[32mneedrestart[0m/kali-rolling,now 3.11-1 all [installed,automatic]
+  check which daemons need to be restarted after library upgrades
+
+[32mnode-is-docker[0m/kali-rolling 3.0.0-6 all
+  Check if the process is running inside a Docker container
+
+[32mopenshift-imagebuilder[0m/kali-rolling 1.2.19+ds1-3 amd64
+  Builds container images using Dockerfile as input (CLI)
+
+[32moras[0m/kali-rolling 1.3.0-1 amd64
+  OCI registry cli tool managing content like artifacts, images, packages
+
+[32movn-docker[0m/kali-rolling 25.09.0-3 amd64
+  OVN Docker drivers
+
+[32mpacemaker[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager
+
+[32mpacemaker-cli-utils[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager command line utilities
+
+[32mpacemaker-common[0m/kali-rolling 3.0.1-1.1 all
+  cluster resource manager common files
+
+[32mpacemaker-cts[0m/kali-rolling 3.0.1-1.1 all
+  test framework for cluster-related technologies like Pacemaker
+
+[32mpacemaker-dev[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager development
+
+[32mpacemaker-doc[0m/kali-rolling 3.0.1-1.1 all
+  cluster resource manager HTML documentation
+
+[32mpacemaker-remote[0m/kali-rolling 3.0.1-1.1 amd64
+  cluster resource manager proxy daemon for remote nodes
+
+[32mpacemaker-resource-agents[0m/kali-rolling 3.0.1-1.1 all
+  cluster resource manager general resource agents
+
+[32mpid1[0m/kali-rolling 0.1.3.1-2+b1 amd64
+  signal handling and orphan reaping for Unix PID1 init processes
+
+[32mpodman[0m/kali-rolling 5.7.0+ds2-3 amd64
+  tool to manage containers and pods
+
+[32mpodman-compose[0m/kali-rolling 1.5.0-2 all
+  Run docker-compose.yml using podman
+
+[32mpodman-docker[0m/kali-rolling 5.7.0+ds2-3 amd64
+  tool to manage containers and pods (Docker CLI)
+
+[32mpodman-remote[0m/kali-rolling 5.7.0+ds2-3 amd64
+  tool to manage containers and pods (remote CLI)
+
+[32mposhc2[0m/kali-rolling 9.0-0kali1 all
+  proxy aware C2 framework
+
+[32mprocs[0m/kali-rolling 0.14.10-5 amd64
+  modern replacement for ps
+
+[32mpuppet-module-magnum[0m/kali-rolling 27.0.0-1 all
+  Puppet module for OpenStack Magnum
+
+[32mpython-magnumclient-doc[0m/kali-rolling 4.9.0-2 all
+  client library for Magnum API - doc
+
+[32mpython-pydata-sphinx-theme-doc[0m/kali-rolling 0.16.1+dfsg-5 all
+  documentation for the pydata-sphinx-theme Python library
+
+[32mpython3-docker[0m/kali-rolling 7.1.0-2 all
+  Python 3 wrapper to access docker.io's control socket
+
+[32mpython3-dockerpty[0m/kali-rolling 0.4.1-5 all
+  Pseudo-tty handler for docker Python client (Python 3.x)
+
+[32mpython3-dockerpycreds[0m/kali-rolling 0.4.0-1.1 all
+  Python3 bindings for the docker credentials store API
+
+[32mpython3-ephemeral-port-reserve[0m/kali-rolling 1.1.4-4 all
+  binds to an ephemeral port, force it into the TIME_WAIT state, and unbind it
+
+[32mpython3-glances-api[0m/kali-rolling 0.9.0-1 all
+  Client for interacting with Glances API
+
+[32mpython3-magnum[0m/kali-rolling 21.0.1-1 all
+  OpenStack containers as a service - Python library
+
+[32mpython3-magnum-ui[0m/kali-rolling 17.0.0-1 all
+  OpenStack Magnum - dashboard plugin
+
+[32mpython3-magnumclient[0m/kali-rolling 4.9.0-2 all
+  client library for Magnum API - Python 3.x
+
+[32mpython3-pacemaker[0m/kali-rolling 3.0.1-1.1 all
+  Pacemaker API for Python3
+
+[32mpython3-pydata-sphinx-theme[0m/kali-rolling 0.16.1+dfsg-5 all
+  bootstrap-based Sphinx theme from the PyData community
+
+[32mr-cran-batchtools[0m/kali-rolling 0.9.17+dfsg-1 amd64
+  GNU R tools for computation on batch systems
+
+[32mrawdns[0m/kali-rolling 1.6~ds1-2+b1 amd64
+  raw DNS interface to the Docker API
+
+[32mresource-agents[0m/kali-rolling 1:4.17.0-1 amd64
+  Cluster Resource Agents
+
+[32mrootlesskit[0m/kali-rolling 2.0.2-2+b10 amd64
+  Linux-native "fake root" for rootless containers
+
+[32mrsyslog-docker[0m/kali-rolling 8.2512.0-3 amd64
+  Docker input plugin for rsyslog
+
+[32mruby-docker-api[0m/kali-rolling 2.4.0-1 all
+  Ruby gem to interact with docker.io remote API
+
+[32mrunsc[0m/kali-rolling 0.0~20240729.0-7 amd64
+  gVisor container sandbox runtime
+
+[32ms3scanner[0m/kali-rolling 3.0.0-0kali2 amd64
+  tool to find open S3 buckets and dump their contents
+
+[32msen[0m/kali-rolling 0.8.1-1 all
+  Terminal user interface for docker engine
+
+[32msherlock[0m/kali-rolling,now 0.15.0-1 all [installed]
+  Find usernames across social networks
+
+[32mskopeo[0m/kali-rolling 1.21.0~pre1-2 amd64
+  Tooling to work with remote images registries
+
+[32mslimtoolkit[0m/kali-rolling 1.40.11-0kali1 amd64
+  optimization of your containers
+
+[32mstargz-snapshotter[0m/kali-rolling 0.14.3-4+b7 amd64
+  Fast container image distribution plugin with lazy pulling (program)
+
+[32msubuser[0m/kali-rolling 0.6.2-3.1 all
+  Run programs on Linux with selectively restricted permissions
+
+[32msyft[0m/kali-rolling 1.40.1+ds-0kali1 amd64
+  CLI tool for generating a SBOM from container images and filesystems
+
+[32mvim-syntastic[0m/kali-rolling 3.10.0-3 all
+  Syntax checking hacks for vim
+
+[32mwait-for-it[0m/kali-rolling 0.0~git20180723-1 all
+  script that will wait on the availability of a host and TCP port
+
+[32mwhalebuilder[0m/kali-rolling 0.11+nmu1 all
+  Debian package builder using Docker
+
+[32mwmdocker[0m/kali-rolling 1.5-6 amd64
+  System tray for KDE3/GNOME2 docklet applications
+
