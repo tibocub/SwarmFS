@@ -159,22 +159,14 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
 ### Ideas
 
 - [ ] Maybe we can start implementing some features without proper user ID and just persist a random keypair on each device used as a hyperswarm peer ID.
-
 - [ ] Multi-writer virtual directories with Autobase (needs ID system)
-
 - [ ] Refactor current browsing system (request every user's shared files and aggregate localy) with Autobase
-
 - [ ] IPNS-like topic-based domains (permanent addresses with editable endpoints) with Autobase
-
 - [ ] Make a separate P2P user ID and friends system I could use for all my other P2P projects (would keep ID and registered friends across different P2P apps)
-
 - [ ] Implement a SwarmFS daemon and IPC for 24/7 swarming and to easily make apps for SwarmFS in any language
-
 - [ ] Treat public topics as public gateways
-  
     Disable file sharing in public topics and only use public topics as a common interrest with untrusted peers to share content-addressed requests
     
-
 
 ### Known issues / drawbacks
 
