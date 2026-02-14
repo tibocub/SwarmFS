@@ -79,6 +79,47 @@ CREATE INDEX IF NOT EXISTS idx_file_chunks_hash ON file_chunks(chunk_hash);
 CREATE INDEX IF NOT EXISTS idx_files_merkle_root ON files(merkle_root);
 CREATE INDEX IF NOT EXISTS idx_topic_shares_topic ON topic_shares(topic_id);
 CREATE INDEX IF NOT EXISTS idx_downloads_completed ON downloads(completed_at);
+
+-- Virtual filesystem (VFS)
+
+CREATE TABLE IF NOT EXISTS virtual_directories (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  parent_id TEXT NULL,
+  merkle_root TEXT NULL,
+  is_root INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (parent_id) REFERENCES virtual_directories(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_virtual_directories_root
+  ON virtual_directories(is_root)
+  WHERE is_root = 1;
+
+CREATE INDEX IF NOT EXISTS idx_virtual_directories_parent
+  ON virtual_directories(parent_id);
+
+CREATE INDEX IF NOT EXISTS idx_virtual_directories_merkle_root
+  ON virtual_directories(merkle_root);
+
+CREATE TABLE IF NOT EXISTS vdir_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_vdir_id TEXT NOT NULL,
+  child_type INTEGER NOT NULL,
+  child_merkle_root TEXT NULL,
+  child_vdir_id TEXT NULL,
+  suggested_name TEXT NULL,
+  added_at INTEGER NOT NULL,
+  FOREIGN KEY (parent_vdir_id) REFERENCES virtual_directories(id) ON DELETE CASCADE,
+  FOREIGN KEY (child_vdir_id) REFERENCES virtual_directories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_vdir_entries_parent
+  ON vdir_entries(parent_vdir_id);
+
+CREATE INDEX IF NOT EXISTS idx_vdir_entries_child_root
+  ON vdir_entries(child_merkle_root);
 `;
 
 export class SwarmDB {
@@ -90,6 +131,72 @@ export class SwarmDB {
 
   _initSchema() {
     this.db.exec(SCHEMA);
+  }
+
+  ensureVfsRoot(rootId) {
+    const existing = this.db.prepare('SELECT id FROM virtual_directories WHERE is_root = 1').get();
+    if (existing?.id) {
+      return existing.id;
+    }
+
+    const now = Date.now();
+    const stmt = this.db.prepare(`
+      INSERT INTO virtual_directories (id, name, parent_id, merkle_root, is_root, created_at, updated_at)
+      VALUES (?, ?, NULL, NULL, 1, ?, ?)
+    `);
+    stmt.run(rootId, '/', now, now);
+    return rootId;
+  }
+
+  getVfsRoot() {
+    return this.db.prepare('SELECT * FROM virtual_directories WHERE is_root = 1').get();
+  }
+
+  getVdirById(id) {
+    return this.db.prepare('SELECT * FROM virtual_directories WHERE id = ?').get(id);
+  }
+
+  getVdirByNameAndParent(name, parentId) {
+    return this.db.prepare('SELECT * FROM virtual_directories WHERE name = ? AND parent_id IS ?').get(name, parentId ?? null);
+  }
+
+  addVdir(id, name, parentId = null) {
+    const now = Date.now();
+    const stmt = this.db.prepare(`
+      INSERT INTO virtual_directories (id, name, parent_id, merkle_root, is_root, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 0, ?, ?)
+    `);
+    stmt.run(id, name, parentId, now, now);
+    return id;
+  }
+
+  listVdirsByParent(parentId = null) {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM virtual_directories
+      WHERE parent_id IS ?
+      ORDER BY name ASC
+    `);
+    return stmt.all(parentId ?? null);
+  }
+
+  listVdirEntries(parentVdirId) {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM vdir_entries
+      WHERE parent_vdir_id = ?
+      ORDER BY added_at ASC, id ASC
+    `);
+    return stmt.all(parentVdirId);
+  }
+
+  addVdirEntry(parentVdirId, childType, childMerkleRoot, childVdirId = null, suggestedName = null) {
+    const stmt = this.db.prepare(`
+      INSERT INTO vdir_entries (parent_vdir_id, child_type, child_merkle_root, child_vdir_id, suggested_name, added_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const res = stmt.run(parentVdirId, childType, childMerkleRoot, childVdirId, suggestedName, Date.now());
+    return res.lastInsertRowid;
   }
 
   /**

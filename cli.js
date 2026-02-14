@@ -299,6 +299,31 @@ program
   .action(wrapCommand(cmd.networkCommand));
 
 // ============================================================================
+// VIRTUAL FILESYSTEM (VFS)
+// ============================================================================
+
+const vdirCmd = program
+  .command('vdir')
+  .description('Manage virtual directories (VFS)');
+
+vdirCmd
+  .command('mkdir <vfsPath>')
+  .description('Create a VFS directory (absolute path like /photos/vacation)')
+  .action(wrapCommand(cmd.vdirMkdirCommand));
+
+vdirCmd
+  .command('ls [vfsPath]')
+  .description('List entries in a VFS directory (default: /)')
+  .action(wrapCommand(cmd.vdirLsCommand));
+
+vdirCmd
+  .command('add <paths...>')
+  .description('Add local file(s) into a VFS directory (last arg is vfs dir path)')
+  .option('--name <name>', 'Suggested display name (does not affect hashing)')
+  .action(wrapCommand(cmd.vdirAddCommand));
+
+
+// ============================================================================
 // TUI
 // ============================================================================
 

@@ -6,6 +6,7 @@
 import fs from 'fs'
 import path from 'path'
 import terminalKit from 'terminal-kit'
+import { VFS } from './vfs.js'
 
 const term = terminalKit.terminal;
 
@@ -46,6 +47,154 @@ function restoreTerminal() {
 function nowNs() {
   return process.hrtime.bigint()
 }
+
+function getVfs(swarmfs) {
+  if (!swarmfs?.db) {
+    swarmfs.open();
+  }
+  return new VFS(swarmfs.db);
+}
+
+function isInteractivePromptAvailable() {
+  return !!(process.stdin?.isTTY && process.stdout?.isTTY && typeof term.inputField === 'function');
+}
+
+async function promptTrackMissingFile(localPath) {
+  if (!isInteractivePromptAvailable()) {
+    throw new Error(`Local file not tracked: ${localPath}`);
+  }
+
+  const promptText = `${localPath} is not tracked. Track it? [Y] Yes  [A] Yes to All  [N] No  [L] No to All `;
+  try {
+    const choice = await new Promise((resolve) => {
+      term(promptText);
+      term.inputField({ echo: true, maxLength: 1 }, (err, input) => {
+        term('\n');
+        if (err) {
+          resolve('n');
+          return;
+        }
+        resolve(String(input || '').trim().toLowerCase());
+      });
+    });
+
+    if (choice === 'y' || choice === 'a' || choice === 'n' || choice === 'l') {
+      return choice;
+    }
+    return 'n';
+  } finally {
+    restoreTerminal();
+  }
+}
+
+export async function vdirMkdirCommand(swarmfs, vfsPath) {
+  const vfs = getVfs(swarmfs);
+  const dir = vfs.mkdir(vfsPath);
+  console.log(dir?.name === '/' ? '/' : (String(vfsPath || '').startsWith('/') ? vfsPath : `/${vfsPath}`));
+  return dir;
+}
+
+export async function vdirLsCommand(swarmfs, vfsPath = '/') {
+  const vfs = getVfs(swarmfs);
+  const effectivePath = typeof vfsPath === 'string' && vfsPath.length > 0 ? vfsPath : '/';
+  const { dirs, entries } = vfs.ls(effectivePath);
+
+  const hasDirs = Array.isArray(dirs) && dirs.length > 0;
+  const hasEntries = Array.isArray(entries) && entries.length > 0;
+  if (!hasDirs && !hasEntries) {
+    console.log('');
+    return { dirs: dirs ?? [], entries: entries ?? [] };
+  }
+
+  if (hasDirs) {
+    for (const d of dirs) {
+      if (d?.is_root === 1) continue;
+      console.log(`${d.name}/`);
+    }
+  }
+
+  if (hasEntries) {
+    for (const e of entries) {
+      const name = typeof e.suggested_name === 'string' && e.suggested_name.length > 0
+        ? e.suggested_name
+        : (typeof e.child_merkle_root === 'string' ? e.child_merkle_root : '');
+      console.log(name);
+    }
+  }
+  return { dirs, entries };
+}
+
+export async function vdirAddCommand(swarmfs, ...args) {
+  swarmfs.open();
+
+  // Commander passes (pathsArray, options)
+  // REPL passes (arg1, arg2, ..., options)
+  let options = {};
+  let raw = args;
+  if (raw.length > 0 && raw[raw.length - 1] && typeof raw[raw.length - 1] === 'object' && !Array.isArray(raw[raw.length - 1])) {
+    options = raw[raw.length - 1];
+    raw = raw.slice(0, -1);
+  }
+
+  const parts = raw.length === 1 && Array.isArray(raw[0]) ? raw[0] : raw;
+  const filtered = parts.filter((v) => typeof v === 'string' && v.length > 0);
+
+  if (filtered.length < 2) {
+    throw new Error('Usage: vdir add <localPath...> <vfsDirPath>')
+  }
+
+  const vfsDirPath = filtered[filtered.length - 1];
+  const localPaths = filtered.slice(0, -1);
+
+  const vfs = getVfs(swarmfs);
+  const results = [];
+
+  let trackAll = null; // null = ask, true = yes to all, false = no to all
+  for (const localPath of localPaths) {
+    const absoluteLocal = path.resolve(localPath);
+    const suggestedName = typeof options.name === 'string' && options.name.length > 0
+      ? options.name
+      : path.basename(absoluteLocal);
+
+    let fileInfo = swarmfs.db.getFile(absoluteLocal);
+    if (!fileInfo) {
+      let shouldTrack = false;
+      if (trackAll === true) {
+        shouldTrack = true;
+      } else if (trackAll === false) {
+        shouldTrack = false;
+      } else {
+        const choice = await promptTrackMissingFile(absoluteLocal);
+        if (choice === 'a') {
+          trackAll = true;
+          shouldTrack = true;
+        } else if (choice === 'l') {
+          trackAll = false;
+          shouldTrack = false;
+        } else {
+          shouldTrack = choice === 'y';
+        }
+      }
+
+      if (shouldTrack) {
+        await addOnePath(swarmfs, absoluteLocal);
+        fileInfo = swarmfs.db.getFile(absoluteLocal);
+      }
+    }
+
+    if (!fileInfo) {
+      results.push({ skipped: true, reason: 'not_tracked', localPath: absoluteLocal });
+      continue;
+    }
+
+    const result = vfs.addLocalFile(vfsDirPath, absoluteLocal, suggestedName);
+    console.log(result.file.merkle_root);
+    results.push(result);
+  }
+
+  return results.length === 1 ? results[0] : results;
+}
+
 
 export async function resumeCommand(swarmfs, topicName, options = {}) {
   swarmfs.open();
@@ -1029,6 +1178,11 @@ export const commands = {
   resume: resumeCommand,
   browse: browseCommand,
   network: networkCommand,
+
+  // VFS commands
+  'vdir.mkdir': vdirMkdirCommand,
+  'vdir.ls': vdirLsCommand,
+  'vdir.add': vdirAddCommand,
 
   // Top-level share
   share: shareCommand

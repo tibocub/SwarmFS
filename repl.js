@@ -123,6 +123,10 @@ async function executeCommand(line) {
     console.log('  browse <topic>');
     console.log('  download <topic> <merkleRoot> <outputPath>');
     console.log('  network                  Show network status');
+    console.log('\nVirtual Filesystem (VFS):');
+    console.log('  vdir mkdir <vfsPath>');
+    console.log('  vdir ls [vfsPath]');
+    console.log('  vdir add <localPath...> <vfsDirPath> [--name]');
     console.log('\nREPL:');
     console.log('  help                     Show this help');
     console.log('  clear                    Clear screen');
@@ -152,6 +156,15 @@ async function executeCommand(line) {
       return;
     }
     actualCmd = `topic.${cmdArgs[0]}`;
+    actualArgs = cmdArgs.slice(1);
+  }
+
+  if (cmdName === 'vdir') {
+    if (cmdArgs.length === 0) {
+      console.error('Error: vdir subcommand required (mkdir, ls, add, etc.)');
+      return;
+    }
+    actualCmd = `vdir.${cmdArgs[0]}`;
     actualArgs = cmdArgs.slice(1);
   }
   
