@@ -1,3 +1,10 @@
+# Rust TUI
+tui-rs/target
+tui-rs/debug
+tui-rs/**/*.rs.bk
+tui-rs/*.pdb
+tui-rs/**/mutants.out*/
+
 # SwarmFS data dir
 swarmfs-data
 
