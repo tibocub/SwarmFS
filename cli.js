@@ -9,6 +9,10 @@ import { Command } from 'commander';
 import { SwarmFS } from './src/swarmfs.js';
 import { getDataDir } from './src/config.js';
 import * as cmd from './src/commands.js';
+import { getIpcEndpoint } from './src/ipc/endpoint.js';
+import { NodeRuntime } from './src/node-runtime.js';
+import { IpcServer } from './src/ipc/server.js';
+import { connectIpc, createRpcClient } from './src/ipc/client.js';
 
 import path from "path";
 import { fileURLToPath } from "url";
@@ -297,6 +301,146 @@ program
   .command('network')
   .description('Show network status')
   .action(wrapCommand(cmd.networkCommand));
+
+// ============================================================================
+// DAEMON + IPC
+// ============================================================================
+
+const daemonCmd = program
+  .command('daemon')
+  .description('Run or control the local SwarmFS daemon (IPC)');
+
+daemonCmd
+  .command('start')
+  .description('Start SwarmFS daemon (foreground)')
+  .action(async () => {
+    const endpoint = getIpcEndpoint(DATA_DIR);
+    const node = new NodeRuntime(swarmfs);
+    await node.start();
+
+    const server = new IpcServer({ endpoint, nodeRuntime: node, version: program.version() });
+
+    const originalConsole = {
+      log: console.log,
+      error: console.error,
+      warn: console.warn
+    };
+
+    console.log = (...args) => {
+      originalConsole.log(...args);
+      server.pushLog(args.join(' '), 'info');
+    };
+
+    console.warn = (...args) => {
+      originalConsole.warn(...args);
+      server.pushLog(args.join(' '), 'warn');
+    };
+
+    console.error = (...args) => {
+      originalConsole.error(...args);
+      server.pushLog(args.join(' '), 'error');
+    };
+
+    const shutdown = async () => {
+      try {
+        await server.close();
+      } catch {
+        // ignore
+      }
+      try {
+        await node.stop();
+      } catch {
+        // ignore
+      }
+      process.exit(0);
+    };
+
+    server.on('shutdown', () => {
+      void shutdown();
+    });
+
+    process.on('SIGINT', () => {
+      void shutdown();
+    });
+
+    process.on('SIGTERM', () => {
+      void shutdown();
+    });
+
+    try {
+      await server.bind();
+    } catch (error) {
+      originalConsole.error('✗ Error:', error.message);
+      await shutdown();
+    }
+
+    console.log(`SwarmFS daemon listening on ${endpoint}`);
+  });
+
+daemonCmd
+  .command('ping')
+  .description('Ping daemon')
+  .action(async () => {
+    const endpoint = getIpcEndpoint(DATA_DIR);
+    const sock = await connectIpc(endpoint);
+    const client = createRpcClient(sock);
+    const res = await client.rpc('daemon.ping', {});
+    console.log(JSON.stringify(res, null, 2));
+    sock.destroy();
+  });
+
+daemonCmd
+  .command('status')
+  .description('Get daemon status')
+  .action(async () => {
+    const endpoint = getIpcEndpoint(DATA_DIR);
+    const sock = await connectIpc(endpoint);
+    const client = createRpcClient(sock);
+    const res = await client.rpc('node.status', {});
+    console.log(JSON.stringify(res, null, 2));
+    sock.destroy();
+  });
+
+daemonCmd
+  .command('shutdown')
+  .description('Shutdown daemon')
+  .action(async () => {
+    const endpoint = getIpcEndpoint(DATA_DIR);
+    const sock = await connectIpc(endpoint);
+    const client = createRpcClient(sock);
+    const res = await client.rpc('daemon.shutdown', {});
+    console.log(JSON.stringify(res, null, 2));
+    sock.destroy();
+  });
+
+daemonCmd
+  .command('logs')
+  .description('Show daemon logs (use --follow to stream)')
+  .option('-n, --lines <lines>', 'Number of lines to show', '200')
+  .option('-f, --follow', 'Follow log stream')
+  .action(async (options) => {
+    const endpoint = getIpcEndpoint(DATA_DIR);
+    const sock = await connectIpc(endpoint);
+    const client = createRpcClient(sock);
+
+    const n = parseInt(options.lines, 10);
+    const tail = await client.rpc('logs.tail', { lines: Number.isFinite(n) ? n : 200 });
+    for (const line of tail) {
+      console.log(line.message);
+    }
+
+    if (!options.follow) {
+      sock.destroy();
+      return;
+    }
+
+    await client.rpc('events.subscribe', { channels: ['log'] });
+    client.onEvent((evt) => {
+      if (evt?.event === 'log' && evt?.data?.message) {
+        console.log(evt.data.message);
+      }
+    });
+  });
 
 // ============================================================================
 // VIRTUAL FILESYSTEM (VFS)
