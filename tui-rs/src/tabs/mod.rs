@@ -72,6 +72,8 @@ pub enum UiCommand {
     Quit,
     SwitchTab(TabId),
     Refresh,
+    JoinSelected,
+    LeaveSelected,
 }
 
 pub trait Tab {

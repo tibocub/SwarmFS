@@ -204,6 +204,9 @@ export class IpcServer extends EventEmitter {
       case 'network.stats':
         return this.node.status().networkStats
 
+      case 'network.overview':
+        return this.node.networkOverview()
+
       case 'topic.list':
         return await this.node.listTopics()
 

@@ -54,6 +54,38 @@ export class NodeRuntime extends EventEmitter {
     }
   }
 
+  networkOverview() {
+    const topics = this.swarmfs?.db ? this.swarmfs.db.getAllTopics() : []
+    const stats = this.status().networkStats
+
+    const joined = new Set(Array.isArray(stats?.activeTopics) ? stats.activeTopics : [])
+    const peersByTopic = new Map(
+      Array.isArray(stats?.topicsDetails)
+        ? stats.topicsDetails.map((t) => [t?.name, Number(t?.peers || 0)])
+        : []
+    )
+
+    const topicsView = (Array.isArray(topics) ? topics : []).map((t) => {
+      const name = t?.name
+      return {
+        id: t?.id,
+        name,
+        topicKey: t?.topic_key,
+        autoJoin: t?.auto_join === 1,
+        createdAt: t?.created_at,
+        lastJoinedAt: t?.last_joined_at,
+
+        joined: joined.has(name),
+        peers: peersByTopic.get(name) || 0
+      }
+    })
+
+    return {
+      stats: stats || null,
+      topics: topicsView
+    }
+  }
+
   async listTopics() {
     return this.swarmfs.listTopics()
   }

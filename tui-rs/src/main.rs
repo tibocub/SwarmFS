@@ -89,7 +89,10 @@ fn main() -> Result<()> {
                     match global_keybind(key) {
                         UiCommand::Quit => app.should_quit = true,
                         UiCommand::SwitchTab(t) => app.set_active_tab(t),
-                        UiCommand::None | UiCommand::Refresh => {
+                        UiCommand::None
+                        | UiCommand::Refresh
+                        | UiCommand::JoinSelected
+                        | UiCommand::LeaveSelected => {
                             // Fallthrough to tab handlers.
                             let cmd = match app.active_tab {
                                 TabId::Network => network_tab.on_key(key, &mut app),
@@ -103,16 +106,7 @@ fn main() -> Result<()> {
                                 network_tab.refresh(&mut ipc);
                             }
 
-                            apply_command(cmd, &mut app, &mut ipc);
-
-                            // Keep these explicit and beginner-friendly.
-                            if app.active_tab == TabId::Network {
-                                match key.code {
-                                    crossterm::event::KeyCode::Enter => network_tab.join_selected(&mut ipc),
-                                    crossterm::event::KeyCode::Backspace => network_tab.leave_selected(&mut ipc),
-                                    _ => {}
-                                }
-                            }
+                            apply_command(cmd, &mut app, &mut ipc, &mut network_tab);
                         }
                     }
                 }
@@ -144,7 +138,7 @@ fn main() -> Result<()> {
                         TabId::Files => files_tab.on_mouse(m, areas.content, &mut app),
                         TabId::Logs => logs_tab.on_mouse(m, areas.content, &mut app),
                     };
-                    apply_command(cmd, &mut app, &mut ipc);
+                    apply_command(cmd, &mut app, &mut ipc, &mut network_tab);
                 }
 
                 _ => {}
@@ -163,7 +157,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn apply_command(cmd: UiCommand, app: &mut App, ipc: &mut IpcClient) {
+fn apply_command(cmd: UiCommand, app: &mut App, ipc: &mut IpcClient, network_tab: &mut NetworkTab) {
     match cmd {
         UiCommand::None => {}
         UiCommand::Quit => app.should_quit = true,
@@ -171,5 +165,7 @@ fn apply_command(cmd: UiCommand, app: &mut App, ipc: &mut IpcClient) {
         UiCommand::Refresh => {
             let _ = ipc;
         }
+        UiCommand::JoinSelected => network_tab.join_selected(ipc),
+        UiCommand::LeaveSelected => network_tab.leave_selected(ipc),
     }
 }
