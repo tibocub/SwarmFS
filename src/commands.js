@@ -131,13 +131,32 @@ export async function vdirAddCommand(swarmfs, ...args) {
   // REPL passes (arg1, arg2, ..., options)
   let options = {};
   let raw = args;
-  if (raw.length > 0 && raw[raw.length - 1] && typeof raw[raw.length - 1] === 'object' && !Array.isArray(raw[raw.length - 1])) {
+
+  // Commander also passes the Command object as the last argument.
+  // It has methods like .opts() and properties like .commands.
+  if (
+    raw.length > 0
+    && raw[raw.length - 1]
+    && typeof raw[raw.length - 1] === 'object'
+    && typeof raw[raw.length - 1].opts === 'function'
+  ) {
+    raw = raw.slice(0, -1);
+  }
+
+  if (
+    raw.length > 0
+    && raw[raw.length - 1]
+    && typeof raw[raw.length - 1] === 'object'
+    && !Array.isArray(raw[raw.length - 1])
+  ) {
     options = raw[raw.length - 1];
     raw = raw.slice(0, -1);
   }
 
-  const parts = raw.length === 1 && Array.isArray(raw[0]) ? raw[0] : raw;
-  const filtered = parts.filter((v) => typeof v === 'string' && v.length > 0);
+  // Commander: first arg is an array of all <paths...> including the vfs dir path as last element.
+  // REPL: args is already flat.
+  const flat = raw.length === 1 && Array.isArray(raw[0]) ? raw[0] : raw;
+  const filtered = flat.filter((v) => typeof v === 'string' && v.length > 0);
 
   if (filtered.length < 2) {
     throw new Error('Usage: vdir add <localPath...> <vfsDirPath>')
@@ -188,7 +207,9 @@ export async function vdirAddCommand(swarmfs, ...args) {
     }
 
     const result = vfs.addLocalFile(vfsDirPath, absoluteLocal, suggestedName);
-    console.log(result.file.merkle_root);
+    if (result?.file?.merkle_root) {
+      console.log(result.file.merkle_root);
+    }
     results.push(result);
   }
 
@@ -517,7 +538,7 @@ export async function verifyCommand(swarmfs, filePath) {
   swarmfs.open();
 
   console.log(`Verifying: ${filePath}`);
-  const result = await swarmfs.verifyFile(filePath);
+  const result = await swarmfs.verifyFile(filePath, { useParallel: false });
 
   if (result.valid) {
     console.log('✓ File is valid');

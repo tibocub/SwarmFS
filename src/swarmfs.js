@@ -369,7 +369,7 @@ export class SwarmFS {
 
     // Build directory Merkle tree
     const getFileHash = (filePath) => fileHashes.get(filePath);
-    const dirTreeWithMerkle = buildDirectoryTreeMerkle(tree, getFileHash);
+    const dirTreeWithMerkle = await buildDirectoryTreeMerkle(tree, getFileHash);
 
     // Store directory in database
     this.db.addDirectory(
@@ -429,7 +429,7 @@ export class SwarmFS {
    * Verify a file's integrity using parallel merkle tree building
    */
   async verifyFile(filePath, options = {}) {
-    const { useParallel = true, workerCount = null } = options;
+    const { useParallel = false, workerCount = null } = options;
     const absolutePath = path.resolve(filePath);
     const fileInfo = this.getFileInfo(absolutePath);
 
@@ -473,7 +473,7 @@ export class SwarmFS {
       const currentData = fs.readFileSync(absolutePath);
       const { chunkBuffer } = await import('./chunk.js');
       const chunks = chunkBuffer(currentData, fileInfo.chunk_size);
-      currentHashes = chunks.map( async chunk => await hashBuffer(chunk));
+      currentHashes = await Promise.all(chunks.map(async (chunk) => await hashBuffer(chunk)));
       currentRoot = await getMerkleRoot(currentHashes);
     }
 

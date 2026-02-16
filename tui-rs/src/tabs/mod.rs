@@ -74,6 +74,15 @@ pub enum UiCommand {
     Refresh,
     JoinSelected,
     LeaveSelected,
+    TopicNewOpen,
+    TopicNewSave,
+    TopicNewCancel,
+    TopicRemoveSelected,
+    FilesVerifySelected,
+    FilesRemoveSelected,
+    FilesAddOpen,
+    FilesAddConfirm,
+    FilesAddCancel,
 }
 
 pub trait Tab {

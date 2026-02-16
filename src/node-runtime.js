@@ -1,4 +1,6 @@
 import { EventEmitter } from 'events'
+import fs from 'fs'
+import path from 'path'
 
 export class NodeRuntime extends EventEmitter {
   constructor(swarmfs) {
@@ -97,6 +99,95 @@ export class NodeRuntime extends EventEmitter {
 
   async leaveTopic(name) {
     await this.swarmfs.leaveTopic(name)
+  }
+
+  async createTopic(name, autoJoin = true, password = null) {
+    this.swarmfs.open()
+    const n = String(name || '')
+    if (!n) throw new Error('name required')
+    const aj = autoJoin !== false
+    const pw = password ? String(password) : null
+    return await this.swarmfs.createTopic(n, aj, pw)
+  }
+
+  async deleteTopic(name) {
+    this.swarmfs.open()
+    const n = String(name || '')
+    if (!n) throw new Error('name required')
+    return await this.swarmfs.deleteTopic(n)
+  }
+
+  filesList() {
+    this.swarmfs.open()
+    const files = this.swarmfs.listFiles()
+    const dirs = this.swarmfs.db.getAllDirectories()
+    return { files, dirs }
+  }
+
+  filesInfo(path) {
+    this.swarmfs.open()
+    return this.swarmfs.getFileInfo(path)
+  }
+
+  async filesVerify(path) {
+    this.swarmfs.open()
+    return await this.swarmfs.verifyFile(path)
+  }
+
+  async filesAdd(paths) {
+    this.swarmfs.open()
+    const ps = Array.isArray(paths) ? paths : []
+    if (ps.length === 0) throw new Error('paths required')
+
+    const results = []
+    for (const p0 of ps) {
+      const p = String(p0 || '')
+      if (!p) continue
+      const abs = path.resolve(p)
+      if (!fs.existsSync(abs)) {
+        results.push({ ok: false, path: abs, error: 'not_found' })
+        continue
+      }
+
+      const st = fs.statSync(abs)
+      try {
+        if (st.isDirectory()) {
+          const r = await this.swarmfs.addDirectory(abs)
+          results.push({ ok: true, type: 'directory', path: abs, merkleRoot: r?.merkleRoot || null })
+        } else if (st.isFile()) {
+          const r = await this.swarmfs.addFile(abs)
+          results.push({ ok: true, type: 'file', path: abs, merkleRoot: r?.merkleRoot || null })
+        } else {
+          results.push({ ok: false, path: abs, error: 'not_file_or_directory' })
+        }
+      } catch (e) {
+        results.push({ ok: false, path: abs, error: e?.message || String(e) })
+      }
+    }
+
+    return { ok: true, results }
+  }
+
+  filesRemove(filePath) {
+    this.swarmfs.open()
+    const p = String(filePath || '')
+    if (!p) throw new Error('path required')
+
+    const abs = path.resolve(p)
+    const file = this.swarmfs.db.getFile(abs)
+    const dir = this.swarmfs.db.getDirectory(abs)
+
+    if (!file && !dir) {
+      return { removed: false, reason: 'not_tracked' }
+    }
+
+    this.swarmfs.db.removeTopicSharesByPath(abs)
+    if (file) {
+      this.swarmfs.removeFile(abs)
+      return { removed: true, type: 'file' }
+    }
+    this.swarmfs.removeDirectory(abs)
+    return { removed: true, type: 'directory' }
   }
 
   _installNetworkHandlersIfNeeded() {

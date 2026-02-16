@@ -6,6 +6,7 @@ use serde_json::Value;
 pub enum DaemonEvent {
     Log(LogEntry),
     Network(NetworkEvent),
+    State(StateEvent),
 }
 
 impl TryFrom<Value> for DaemonEvent {
@@ -22,7 +23,33 @@ impl TryFrom<Value> for DaemonEvent {
                 let data = v.get("data").cloned().unwrap_or(Value::Null);
                 Ok(DaemonEvent::Network(NetworkEvent::from_event_name(event, data)))
             }
+            _ if event.starts_with("state.") => {
+                let data = v.get("data").cloned().unwrap_or(Value::Null);
+                Ok(DaemonEvent::State(StateEvent::from_event_name(event, data)))
+            }
             _ => anyhow::bail!("unknown event: {}", event),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum StateEvent {
+    Files(Value),
+    Topics(Value),
+    Other { name: String, data: Value },
+}
+
+impl StateEvent {
+    pub fn from_event_name(name: &str, data: Value) -> Self {
+        if name == "state.files" {
+            return StateEvent::Files(data);
+        }
+        if name == "state.topics" {
+            return StateEvent::Topics(data);
+        }
+        StateEvent::Other {
+            name: name.to_string(),
+            data,
         }
     }
 }

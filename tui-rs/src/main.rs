@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton,
-        MouseEventKind,
+        MouseEventKind, KeyCode,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -37,18 +37,19 @@ fn main() -> Result<()> {
 
     let mut ipc = IpcClient::connect(endpoint.clone())?;
     let (evt_tx, evt_rx) = mpsc::channel::<DaemonEvent>();
-    ipc.subscribe_events(vec!["log", "network"], evt_tx)?;
+    ipc.subscribe_events(vec!["log", "network", "state"], evt_tx)?;
 
     let mut app = App::new();
     let _ = app.refresh_basics(&mut ipc);
 
-    let mut network_tab = NetworkTab::new();
+    let mut network_tab = NetworkTab::new(endpoint.clone());
     let mut browse_tab = BrowseTab::new();
     let mut downloads_tab = DownloadsTab::new();
-    let mut files_tab = FilesTab::new();
+    let mut files_tab = FilesTab::new(endpoint.clone());
     let mut logs_tab = LogsTab::new();
 
     network_tab.refresh(&mut ipc);
+    files_tab.refresh(&mut ipc);
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -60,9 +61,26 @@ fn main() -> Result<()> {
     let tick_rate = Duration::from_millis(50);
 
     loop {
+        files_tab.poll_async();
+        network_tab.poll_async();
         while let Ok(evt) = evt_rx.try_recv() {
-            if let DaemonEvent::Network(net_evt) = evt.clone() {
-                network_tab.on_network_event(net_evt);
+            match evt.clone() {
+                DaemonEvent::Network(net_evt) => {
+                    network_tab.on_network_event(net_evt);
+                }
+                DaemonEvent::State(state_evt) => {
+                    match state_evt {
+                        swarmfs_tui::ipc::types::StateEvent::Files(_)
+                        | swarmfs_tui::ipc::types::StateEvent::Topics(_)
+                        | swarmfs_tui::ipc::types::StateEvent::Other { .. } => {
+                            // Refresh tab state on any state event.
+                            // This keeps the UI reactive even if the event payload format changes.
+                            network_tab.refresh(&mut ipc);
+                            files_tab.refresh(&mut ipc);
+                        }
+                    }
+                }
+                _ => {}
             }
             app.on_daemon_event(evt);
         }
@@ -85,6 +103,19 @@ fn main() -> Result<()> {
         if event::poll(tick_rate)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if app.active_tab == TabId::Network && network_tab.is_modal_open() {
+                        let cmd = network_tab.on_key(key, &mut app);
+                        apply_command(cmd, &mut app, &mut ipc, &mut network_tab, &mut files_tab);
+                        continue;
+                    }
+
+                    // If a modal is open, it must capture all key input so typing works.
+                    // 'q' should remain a global quit shortcut ONLY when no modal is open.
+                    if matches!(key.code, KeyCode::Char('q')) {
+                        app.should_quit = true;
+                        continue;
+                    }
+
                     // Global keybinds (quit + tab switching)
                     match global_keybind(key) {
                         UiCommand::Quit => app.should_quit = true,
@@ -92,7 +123,16 @@ fn main() -> Result<()> {
                         UiCommand::None
                         | UiCommand::Refresh
                         | UiCommand::JoinSelected
-                        | UiCommand::LeaveSelected => {
+                        | UiCommand::LeaveSelected
+                        | UiCommand::TopicNewOpen
+                        | UiCommand::TopicNewSave
+                        | UiCommand::TopicNewCancel
+                        | UiCommand::TopicRemoveSelected
+                        | UiCommand::FilesVerifySelected
+                        | UiCommand::FilesRemoveSelected
+                        | UiCommand::FilesAddOpen
+                        | UiCommand::FilesAddConfirm
+                        | UiCommand::FilesAddCancel => {
                             // Fallthrough to tab handlers.
                             let cmd = match app.active_tab {
                                 TabId::Network => network_tab.on_key(key, &mut app),
@@ -106,7 +146,13 @@ fn main() -> Result<()> {
                                 network_tab.refresh(&mut ipc);
                             }
 
-                            apply_command(cmd, &mut app, &mut ipc, &mut network_tab);
+                            if matches!(cmd, UiCommand::Refresh) && app.active_tab == TabId::Files {
+                                files_tab.refresh(&mut ipc);
+                            }
+
+                            apply_command(cmd, &mut app, &mut ipc, &mut network_tab, &mut files_tab);
+
+                            // Files commands are dispatched via UiCommand.
                         }
                     }
                 }
@@ -138,7 +184,7 @@ fn main() -> Result<()> {
                         TabId::Files => files_tab.on_mouse(m, areas.content, &mut app),
                         TabId::Logs => logs_tab.on_mouse(m, areas.content, &mut app),
                     };
-                    apply_command(cmd, &mut app, &mut ipc, &mut network_tab);
+                    apply_command(cmd, &mut app, &mut ipc, &mut network_tab, &mut files_tab);
                 }
 
                 _ => {}
@@ -157,7 +203,13 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn apply_command(cmd: UiCommand, app: &mut App, ipc: &mut IpcClient, network_tab: &mut NetworkTab) {
+fn apply_command(
+    cmd: UiCommand,
+    app: &mut App,
+    ipc: &mut IpcClient,
+    network_tab: &mut NetworkTab,
+    files_tab: &mut FilesTab,
+) {
     match cmd {
         UiCommand::None => {}
         UiCommand::Quit => app.should_quit = true,
@@ -167,5 +219,14 @@ fn apply_command(cmd: UiCommand, app: &mut App, ipc: &mut IpcClient, network_tab
         }
         UiCommand::JoinSelected => network_tab.join_selected(ipc),
         UiCommand::LeaveSelected => network_tab.leave_selected(ipc),
+        UiCommand::TopicNewOpen => network_tab.topic_new_open(),
+        UiCommand::TopicNewCancel => network_tab.topic_new_cancel(),
+        UiCommand::TopicNewSave => network_tab.topic_new_save(ipc),
+        UiCommand::TopicRemoveSelected => network_tab.remove_selected(ipc),
+        UiCommand::FilesVerifySelected => files_tab.verify_selected(ipc),
+        UiCommand::FilesRemoveSelected => files_tab.remove_selected(ipc),
+        UiCommand::FilesAddOpen => files_tab.add_open(),
+        UiCommand::FilesAddConfirm => files_tab.add_confirm(ipc),
+        UiCommand::FilesAddCancel => files_tab.add_cancel(),
     }
 }

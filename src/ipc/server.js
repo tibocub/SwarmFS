@@ -212,11 +212,50 @@ export class IpcServer extends EventEmitter {
 
       case 'topic.join':
         await this.node.joinTopic(params?.name)
+        this._broadcast('state', { event: 'state.topics', data: { op: 'join', name: params?.name ?? null } })
         return { ok: true }
 
       case 'topic.leave':
         await this.node.leaveTopic(params?.name)
+        this._broadcast('state', { event: 'state.topics', data: { op: 'leave', name: params?.name ?? null } })
         return { ok: true }
+
+      case 'topic.create':
+        {
+          const res = await this.node.createTopic(params?.name, params?.autoJoin, params?.password)
+          this._broadcast('state', { event: 'state.topics', data: { op: 'create', name: params?.name ?? null } })
+          return res
+        }
+
+      case 'topic.rm':
+        {
+          const res = await this.node.deleteTopic(params?.name)
+          this._broadcast('state', { event: 'state.topics', data: { op: 'rm', name: params?.name ?? null } })
+          return res
+        }
+
+      case 'files.list':
+        return this.node.filesList()
+
+      case 'files.info':
+        return this.node.filesInfo(params?.path)
+
+      case 'files.verify':
+        return await this.node.filesVerify(params?.path)
+
+      case 'files.add':
+        {
+          const res = await this.node.filesAdd(params?.paths)
+          this._broadcast('state', { event: 'state.files', data: { op: 'add', paths: Array.isArray(params?.paths) ? params.paths : [] } })
+          return res
+        }
+
+      case 'files.remove':
+        {
+          const res = this.node.filesRemove(params?.path)
+          this._broadcast('state', { event: 'state.files', data: { op: 'remove', path: params?.path ?? null } })
+          return res
+        }
 
       case 'logs.tail': {
         const n = Number.isFinite(params?.lines) ? Math.max(1, Math.min(5000, params.lines)) : 200
@@ -228,7 +267,7 @@ export class IpcServer extends EventEmitter {
         const s = this._subs.get(sock)
         if (s) {
           for (const ch of channels) {
-            if (ch === 'log' || ch === 'network') {
+            if (ch === 'log' || ch === 'network' || ch === 'state') {
               s.add(ch)
             }
           }

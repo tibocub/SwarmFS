@@ -13,9 +13,9 @@ async function ensureSimd() {
   }
 
   const isBun = typeof process !== 'undefined' && !!process.versions?.bun
-  const enableSimdInBun = process?.env?.SWARMFS_BLAKE3_SIMD === '1'
+  const enableSimd = process?.env?.SWARMFS_BLAKE3_SIMD === '1'
 
-  if (isBun && !enableSimdInBun) {
+  if (!enableSimd) {
     initPromise = Promise.resolve(false)
     return initPromise
   }
@@ -28,9 +28,9 @@ function bufferToAlignedUint8Array(buffer) {
   const view = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
 
   const isBun = typeof process !== 'undefined' && !!process.versions?.bun
-  const enableSimdInBun = process?.env?.SWARMFS_BLAKE3_SIMD === '1'
+  const enableSimd = process?.env?.SWARMFS_BLAKE3_SIMD === '1'
 
-  if (isBun && !enableSimdInBun) {
+  if (!enableSimd) {
     return view
   }
 

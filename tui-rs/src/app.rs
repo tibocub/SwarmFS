@@ -49,6 +49,7 @@ impl App {
             DaemonEvent::Network(net_evt) => {
                 self.network.on_event(&net_evt);
             }
+            DaemonEvent::State(_state_evt) => {}
         }
     }
 
