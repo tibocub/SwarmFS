@@ -50,6 +50,7 @@ impl App {
                 self.network.on_event(&net_evt);
             }
             DaemonEvent::State(_state_evt) => {}
+            DaemonEvent::Downloads(_dl_evt) => {}
         }
     }
 

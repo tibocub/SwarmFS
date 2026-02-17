@@ -538,6 +538,35 @@ export class SwarmDB {
     return stmt.all();
   }
 
+  getAllDownloads() {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM downloads
+      ORDER BY created_at DESC
+    `);
+    return stmt.all();
+  }
+
+  deleteDownloads(ids) {
+    const xs = Array.isArray(ids) ? ids.filter((x) => Number.isFinite(x)) : [];
+    if (xs.length === 0) {
+      return { ok: true, deleted: 0 };
+    }
+
+    const stmt = this.db.prepare('DELETE FROM downloads WHERE id = ?');
+    const tx = this.db.transaction((items) => {
+      let deleted = 0;
+      for (const id of items) {
+        const res = stmt.run(id);
+        deleted += Number(res?.changes || 0);
+      }
+      return deleted;
+    });
+
+    const deleted = tx(xs);
+    return { ok: true, deleted };
+  }
+
   /**
    * Delete a topic
    */

@@ -985,6 +985,18 @@ export class SwarmFS {
     });
   }
 
+  if (typeof options.onComplete === 'function') {
+    session.on('complete', (info) => {
+      options.onComplete(info)
+    })
+  }
+
+  if (typeof options.onError === 'function') {
+    session.on('error', (error) => {
+      options.onError(error)
+    })
+  }
+
   // Start download
   await session.start();
 

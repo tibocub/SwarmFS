@@ -83,6 +83,13 @@ pub enum UiCommand {
     FilesAddOpen,
     FilesAddConfirm,
     FilesAddCancel,
+    BrowseRefresh,
+    BrowseDownloadSelected,
+    DownloadsRefresh,
+    DownloadsResume,
+    DownloadsAddOpen,
+    DownloadsAddConfirm,
+    DownloadsAddCancel,
 }
 
 pub trait Tab {

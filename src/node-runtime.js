@@ -117,6 +117,127 @@ export class NodeRuntime extends EventEmitter {
     return await this.swarmfs.deleteTopic(n)
   }
 
+  async browseTopic(name, timeout = 5000) {
+    this.swarmfs.open()
+    const n = String(name || '')
+    if (!n) throw new Error('name required')
+    const t = Number.isFinite(timeout) ? Math.max(100, timeout) : 5000
+    return await this.swarmfs.browseTopic(n, t)
+  }
+
+  downloadsList() {
+    this.swarmfs.open()
+    return this.swarmfs.db.getAllDownloads()
+  }
+
+  async downloadsResumeAll(topicName = null) {
+    this.swarmfs.open()
+    const downloads = this.swarmfs.db.getIncompleteDownloads(topicName)
+    const results = []
+    for (const d of downloads) {
+      const t = d?.topic_name
+      const root = d?.merkle_root
+      const out = d?.output_path
+      if (!t || !root || !out) {
+        continue
+      }
+
+      this._startDownloadAsync(t, root, out)
+      results.push({ ok: true, topic: t, merkleRoot: root, outputPath: out, started: true })
+    }
+    return { ok: true, results }
+  }
+
+  async downloadsStart(topicName, merkleRoot, outputPath) {
+    this.swarmfs.open()
+    const t = String(topicName || '')
+    const root = String(merkleRoot || '')
+    const out = String(outputPath || '')
+    if (!t) throw new Error('topic required')
+    if (!root) throw new Error('merkleRoot required')
+    if (!out) throw new Error('outputPath required')
+
+    this._startDownloadAsync(t, root, out)
+    return { ok: true, started: true }
+  }
+
+  _startDownloadAsync(topic, merkleRoot, outputPath) {
+    const absOutputPath = path.resolve(String(outputPath || ''))
+    void (async () => {
+      try {
+        this.swarmfs.open()
+
+        // Ensure we are joined so the session can bootstrap peers.
+        if (!this.swarmfs.network || !this.swarmfs.protocol) {
+          await this.swarmfs.joinTopic(topic)
+        }
+
+        await this.swarmfs.downloadFile(topic, merkleRoot, absOutputPath, {
+          onProgress: (info) => this._emitDownloadProgress(topic, merkleRoot, absOutputPath, info),
+          onComplete: (info) => this._emitDownloadComplete(topic, merkleRoot, absOutputPath, info),
+          onError: (err) => this._emitDownloadError(topic, merkleRoot, absOutputPath, err),
+        })
+      } catch (e) {
+        this._emitDownloadError(topic, merkleRoot, absOutputPath, e)
+      }
+    })()
+  }
+
+  _downloadKey(topic, merkleRoot, outputPath) {
+    return `${topic}::${merkleRoot}::${outputPath}`
+  }
+
+  _emitDownloadProgress(topic, merkleRoot, outputPath, info) {
+    if (!this._dlThrottle) {
+      this._dlThrottle = new Map() // key -> ts
+    }
+    const now = Date.now()
+    const key = this._downloadKey(topic, merkleRoot, outputPath)
+    const last = this._dlThrottle.get(key) || 0
+    if (now - last < 250) {
+      return
+    }
+    this._dlThrottle.set(key, now)
+
+    const verified = Number(info?.verified ?? info?.downloadedChunks ?? 0)
+    const total = Number(info?.total ?? info?.totalChunks ?? 0)
+    const bytes = Number(info?.bytes ?? info?.bytesDownloaded ?? 0)
+    this.emit('downloads', {
+      type: 'progress',
+      topic,
+      merkleRoot,
+      outputPath,
+      verified,
+      total,
+      bytes,
+      ts: now,
+    })
+  }
+
+  _emitDownloadComplete(topic, merkleRoot, outputPath, info) {
+    const now = Date.now()
+    this.emit('downloads', {
+      type: 'complete',
+      topic,
+      merkleRoot,
+      outputPath,
+      info: info ?? null,
+      ts: now,
+    })
+  }
+
+  _emitDownloadError(topic, merkleRoot, outputPath, err) {
+    const now = Date.now()
+    this.emit('downloads', {
+      type: 'error',
+      topic,
+      merkleRoot,
+      outputPath,
+      error: err?.message || String(err),
+      ts: now,
+    })
+  }
+
   filesList() {
     this.swarmfs.open()
     const files = this.swarmfs.listFiles()

@@ -7,6 +7,7 @@ pub enum DaemonEvent {
     Log(LogEntry),
     Network(NetworkEvent),
     State(StateEvent),
+    Downloads(DownloadsEvent),
 }
 
 impl TryFrom<Value> for DaemonEvent {
@@ -27,7 +28,37 @@ impl TryFrom<Value> for DaemonEvent {
                 let data = v.get("data").cloned().unwrap_or(Value::Null);
                 Ok(DaemonEvent::State(StateEvent::from_event_name(event, data)))
             }
+            _ if event.starts_with("downloads.") => {
+                let data = v.get("data").cloned().unwrap_or(Value::Null);
+                Ok(DaemonEvent::Downloads(DownloadsEvent::from_event_name(event, data)))
+            }
             _ => anyhow::bail!("unknown event: {}", event),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum DownloadsEvent {
+    Progress(Value),
+    Complete(Value),
+    Error(Value),
+    Other { name: String, data: Value },
+}
+
+impl DownloadsEvent {
+    pub fn from_event_name(name: &str, data: Value) -> Self {
+        if name == "downloads.progress" {
+            return DownloadsEvent::Progress(data);
+        }
+        if name == "downloads.complete" {
+            return DownloadsEvent::Complete(data);
+        }
+        if name == "downloads.error" {
+            return DownloadsEvent::Error(data);
+        }
+        DownloadsEvent::Other {
+            name: name.to_string(),
+            data,
         }
     }
 }
@@ -36,6 +67,7 @@ impl TryFrom<Value> for DaemonEvent {
 pub enum StateEvent {
     Files(Value),
     Topics(Value),
+    Downloads(Value),
     Other { name: String, data: Value },
 }
 
@@ -46,6 +78,9 @@ impl StateEvent {
         }
         if name == "state.topics" {
             return StateEvent::Topics(data);
+        }
+        if name == "state.downloads" {
+            return StateEvent::Downloads(data);
         }
         StateEvent::Other {
             name: name.to_string(),

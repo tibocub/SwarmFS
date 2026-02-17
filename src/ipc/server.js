@@ -91,6 +91,11 @@ export class IpcServer extends EventEmitter {
       this._broadcast('network', { event: `network.${evt.type}`, data: evt })
     })
 
+    this.node.on('downloads', (evt) => {
+      const typ = String(evt?.type || 'progress')
+      this._broadcast('downloads', { event: `downloads.${typ}`, data: evt })
+    })
+
     this._statsTimer = setInterval(() => {
       try {
         const status = this.node.status()
@@ -207,6 +212,26 @@ export class IpcServer extends EventEmitter {
       case 'network.overview':
         return this.node.networkOverview()
 
+      case 'browse.topic':
+        return await this.node.browseTopic(params?.name, params?.timeout)
+
+      case 'downloads.list':
+        return this.node.downloadsList()
+
+      case 'downloads.start':
+        {
+          const res = await this.node.downloadsStart(params?.topic, params?.merkleRoot, params?.outputPath)
+          this._broadcast('state', { event: 'state.downloads', data: { op: 'start', topic: params?.topic ?? null, merkleRoot: params?.merkleRoot ?? null } })
+          return res
+        }
+
+      case 'downloads.resume':
+        {
+          const res = await this.node.downloadsResumeAll(params?.topic ?? null)
+          this._broadcast('state', { event: 'state.downloads', data: { op: 'resume', topic: params?.topic ?? null } })
+          return res
+        }
+
       case 'topic.list':
         return await this.node.listTopics()
 
@@ -267,7 +292,7 @@ export class IpcServer extends EventEmitter {
         const s = this._subs.get(sock)
         if (s) {
           for (const ch of channels) {
-            if (ch === 'log' || ch === 'network' || ch === 'state') {
+            if (ch === 'log' || ch === 'network' || ch === 'state' || ch === 'downloads') {
               s.add(ch)
             }
           }

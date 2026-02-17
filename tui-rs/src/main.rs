@@ -37,18 +37,21 @@ fn main() -> Result<()> {
 
     let mut ipc = IpcClient::connect(endpoint.clone())?;
     let (evt_tx, evt_rx) = mpsc::channel::<DaemonEvent>();
-    ipc.subscribe_events(vec!["log", "network", "state"], evt_tx)?;
+    ipc.subscribe_events(vec!["log", "network", "state", "downloads"], evt_tx)?;
 
     let mut app = App::new();
     let _ = app.refresh_basics(&mut ipc);
 
     let mut network_tab = NetworkTab::new(endpoint.clone());
-    let mut browse_tab = BrowseTab::new();
+    let mut browse_tab = BrowseTab::new(endpoint.clone());
     let mut downloads_tab = DownloadsTab::new();
     let mut files_tab = FilesTab::new(endpoint.clone());
     let mut logs_tab = LogsTab::new();
 
     network_tab.refresh(&mut ipc);
+    downloads_tab.refresh(&mut ipc);
+    browse_tab.refresh(&mut ipc);
+    browse_tab.browse_prefetch();
     files_tab.refresh(&mut ipc);
 
     enable_raw_mode()?;
@@ -63,6 +66,7 @@ fn main() -> Result<()> {
     loop {
         files_tab.poll_async();
         network_tab.poll_async();
+        browse_tab.poll_async();
         while let Ok(evt) = evt_rx.try_recv() {
             match evt.clone() {
                 DaemonEvent::Network(net_evt) => {
@@ -72,12 +76,31 @@ fn main() -> Result<()> {
                     match state_evt {
                         swarmfs_tui::ipc::types::StateEvent::Files(_)
                         | swarmfs_tui::ipc::types::StateEvent::Topics(_)
+                        | swarmfs_tui::ipc::types::StateEvent::Downloads(_)
                         | swarmfs_tui::ipc::types::StateEvent::Other { .. } => {
                             // Refresh tab state on any state event.
                             // This keeps the UI reactive even if the event payload format changes.
                             network_tab.refresh(&mut ipc);
+                            browse_tab.refresh(&mut ipc);
+                            downloads_tab.refresh(&mut ipc);
                             files_tab.refresh(&mut ipc);
                         }
+                    }
+                }
+                DaemonEvent::Downloads(dl_evt) => {
+                    match dl_evt {
+                        swarmfs_tui::ipc::types::DownloadsEvent::Progress(v) => {
+                            downloads_tab.on_downloads_progress(v);
+                        }
+                        swarmfs_tui::ipc::types::DownloadsEvent::Complete(v) => {
+                            downloads_tab.on_downloads_complete(v);
+                            downloads_tab.refresh(&mut ipc);
+                        }
+                        swarmfs_tui::ipc::types::DownloadsEvent::Error(v) => {
+                            downloads_tab.on_downloads_error(v);
+                            downloads_tab.refresh(&mut ipc);
+                        }
+                        swarmfs_tui::ipc::types::DownloadsEvent::Other { .. } => {}
                     }
                 }
                 _ => {}
@@ -105,7 +128,29 @@ fn main() -> Result<()> {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.active_tab == TabId::Network && network_tab.is_modal_open() {
                         let cmd = network_tab.on_key(key, &mut app);
-                        apply_command(cmd, &mut app, &mut ipc, &mut network_tab, &mut files_tab);
+                        apply_command(
+                            cmd,
+                            &mut app,
+                            &mut ipc,
+                            &mut network_tab,
+                            &mut browse_tab,
+                            &mut downloads_tab,
+                            &mut files_tab,
+                        );
+                        continue;
+                    }
+
+                    if app.active_tab == TabId::Downloads && downloads_tab.is_modal_open() {
+                        let cmd = downloads_tab.on_key(key, &mut app);
+                        apply_command(
+                            cmd,
+                            &mut app,
+                            &mut ipc,
+                            &mut network_tab,
+                            &mut browse_tab,
+                            &mut downloads_tab,
+                            &mut files_tab,
+                        );
                         continue;
                     }
 
@@ -119,7 +164,12 @@ fn main() -> Result<()> {
                     // Global keybinds (quit + tab switching)
                     match global_keybind(key) {
                         UiCommand::Quit => app.should_quit = true,
-                        UiCommand::SwitchTab(t) => app.set_active_tab(t),
+                        UiCommand::SwitchTab(t) => {
+                            app.set_active_tab(t);
+                            if t == TabId::Logs {
+                                logs_tab.on_activated();
+                            }
+                        }
                         UiCommand::None
                         | UiCommand::Refresh
                         | UiCommand::JoinSelected
@@ -132,7 +182,14 @@ fn main() -> Result<()> {
                         | UiCommand::FilesRemoveSelected
                         | UiCommand::FilesAddOpen
                         | UiCommand::FilesAddConfirm
-                        | UiCommand::FilesAddCancel => {
+                        | UiCommand::FilesAddCancel
+                        | UiCommand::BrowseRefresh
+                        | UiCommand::BrowseDownloadSelected
+                        | UiCommand::DownloadsRefresh
+                        | UiCommand::DownloadsResume
+                        | UiCommand::DownloadsAddOpen
+                        | UiCommand::DownloadsAddConfirm
+                        | UiCommand::DownloadsAddCancel => {
                             // Fallthrough to tab handlers.
                             let cmd = match app.active_tab {
                                 TabId::Network => network_tab.on_key(key, &mut app),
@@ -150,7 +207,19 @@ fn main() -> Result<()> {
                                 files_tab.refresh(&mut ipc);
                             }
 
-                            apply_command(cmd, &mut app, &mut ipc, &mut network_tab, &mut files_tab);
+                            if matches!(cmd, UiCommand::Refresh) && app.active_tab == TabId::Downloads {
+                                downloads_tab.refresh(&mut ipc);
+                            }
+
+                            apply_command(
+                                cmd,
+                                &mut app,
+                                &mut ipc,
+                                &mut network_tab,
+                                &mut browse_tab,
+                                &mut downloads_tab,
+                                &mut files_tab,
+                            );
 
                             // Files commands are dispatched via UiCommand.
                         }
@@ -164,14 +233,22 @@ fn main() -> Result<()> {
 
                     // Tab-bar mouse click
                     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                        let mut clicked: Option<TabId> = None;
                         for hb in &app.ui.tab_hitboxes {
                             if m.column >= hb.x0
                                 && m.column < hb.x1
                                 && m.row >= hb.y0
                                 && m.row < hb.y1
                             {
-                                app.set_active_tab(hb.tab);
+                                clicked = Some(hb.tab);
                                 break;
+                            }
+                        }
+
+                        if let Some(t) = clicked {
+                            app.set_active_tab(t);
+                            if t == TabId::Logs {
+                                logs_tab.on_activated();
                             }
                         }
                     }
@@ -184,7 +261,15 @@ fn main() -> Result<()> {
                         TabId::Files => files_tab.on_mouse(m, areas.content, &mut app),
                         TabId::Logs => logs_tab.on_mouse(m, areas.content, &mut app),
                     };
-                    apply_command(cmd, &mut app, &mut ipc, &mut network_tab, &mut files_tab);
+                    apply_command(
+                        cmd,
+                        &mut app,
+                        &mut ipc,
+                        &mut network_tab,
+                        &mut browse_tab,
+                        &mut downloads_tab,
+                        &mut files_tab,
+                    );
                 }
 
                 _ => {}
@@ -208,6 +293,8 @@ fn apply_command(
     app: &mut App,
     ipc: &mut IpcClient,
     network_tab: &mut NetworkTab,
+    browse_tab: &mut BrowseTab,
+    downloads_tab: &mut DownloadsTab,
     files_tab: &mut FilesTab,
 ) {
     match cmd {
@@ -228,5 +315,15 @@ fn apply_command(
         UiCommand::FilesAddOpen => files_tab.add_open(),
         UiCommand::FilesAddConfirm => files_tab.add_confirm(ipc),
         UiCommand::FilesAddCancel => files_tab.add_cancel(),
+        UiCommand::BrowseRefresh => browse_tab.browse_refresh(ipc),
+        UiCommand::BrowseDownloadSelected => browse_tab.download_selected(ipc),
+        UiCommand::DownloadsRefresh => downloads_tab.refresh(ipc),
+        UiCommand::DownloadsResume => {
+            let _ = ipc.rpc("downloads.resume", serde_json::json!({}));
+            downloads_tab.refresh(ipc);
+        }
+        UiCommand::DownloadsAddOpen => downloads_tab.add_open(ipc),
+        UiCommand::DownloadsAddConfirm => downloads_tab.add_confirm(ipc),
+        UiCommand::DownloadsAddCancel => downloads_tab.add_cancel(),
     }
 }

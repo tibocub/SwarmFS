@@ -25,7 +25,6 @@ At its core:
 Non-goals (for now):
 
 - Global IPFS-like DHT content routing
-- A polished end-user UX (we're currently just making the terminal interface to test features during development)
 
 
 

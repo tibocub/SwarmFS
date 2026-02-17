@@ -15,7 +15,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use crate::widgets::{
     contains, compute_scrollbar_metrics, handle_scrollbar_down, handle_scrollbar_drag, mouse_in,
-    render_scrollbar, Button, ScrollbarDownResult,
+    render_scrollbar, hit_test_table_index, Button, ScrollbarDownResult,
 };
 
 #[derive(Debug, Clone)]
@@ -770,24 +770,14 @@ impl Tab for NetworkTab {
                 }
 
                 // Click on list row to select
-                // List inner area excludes borders.
-                let inner = Rect {
-                    x: list_area.x.saturating_add(1),
-                    y: list_area.y.saturating_add(1),
-                    width: list_area.width.saturating_sub(2),
-                    height: list_area.height.saturating_sub(2),
-                };
-
-                if contains(inner, mouse.column, mouse.row) {
-                    // Table has a 1-row header; clicks should map to data rows.
-                    let rel_y = mouse.row.saturating_sub(inner.y) as usize;
-                    if rel_y >= 1 {
-                        let row = rel_y - 1;
-                        let idx = self.table_state.offset().saturating_add(row);
-                        if idx < self.topics.len() {
-                            self.table_state.select(Some(idx));
-                        }
-                    }
+                if let Some(idx) = hit_test_table_index(
+                    list_area,
+                    1,
+                    &mouse,
+                    self.table_state.offset(),
+                    self.topics.len(),
+                ) {
+                    self.table_state.select(Some(idx));
                 }
 
                 // Click on buttons
