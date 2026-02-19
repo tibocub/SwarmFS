@@ -10,12 +10,17 @@ use ratatui::{
 };
 
 pub mod network;
-pub mod stubs;
 pub mod logs;
+pub mod common;
+pub mod browse;
+pub mod downloads;
+pub mod files;
 
 pub use logs::LogsTab;
 pub use network::NetworkTab;
-pub use stubs::{BrowseTab, DownloadsTab, FilesTab};
+pub use browse::BrowseTab;
+pub use downloads::DownloadsTab;
+pub use files::FilesTab;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabId {
