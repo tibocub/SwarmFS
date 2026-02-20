@@ -369,7 +369,7 @@ export class SwarmFS {
 
     // Build directory Merkle tree
     const getFileHash = (filePath) => fileHashes.get(filePath);
-    const dirTreeWithMerkle = buildDirectoryTreeMerkle(tree, getFileHash);
+    const dirTreeWithMerkle = await buildDirectoryTreeMerkle(tree, getFileHash);
 
     // Store directory in database
     this.db.addDirectory(
@@ -429,7 +429,7 @@ export class SwarmFS {
    * Verify a file's integrity using parallel merkle tree building
    */
   async verifyFile(filePath, options = {}) {
-    const { useParallel = true, workerCount = null } = options;
+    const { useParallel = false, workerCount = null } = options;
     const absolutePath = path.resolve(filePath);
     const fileInfo = this.getFileInfo(absolutePath);
 
@@ -473,7 +473,7 @@ export class SwarmFS {
       const currentData = fs.readFileSync(absolutePath);
       const { chunkBuffer } = await import('./chunk.js');
       const chunks = chunkBuffer(currentData, fileInfo.chunk_size);
-      currentHashes = chunks.map( async chunk => await hashBuffer(chunk));
+      currentHashes = await Promise.all(chunks.map(async (chunk) => await hashBuffer(chunk)));
       currentRoot = await getMerkleRoot(currentHashes);
     }
 
@@ -556,18 +556,25 @@ export class SwarmFS {
   // TOPIC MANAGEMENT
   // ============================================================================
 
+  static DEFAULT_TOPIC_SALT = 'SwarmFS:topic:v1'
+
   /**
    * Create a new topic
    */
-  async createTopic(name, autoJoin = true) {
+  async createTopic(name, autoJoin = true, password = null) {
     // Check if topic already exists
     const existing = this.db.getTopic(name);
     if (existing) {
       throw new Error(`Topic "${name}" already exists`);
     }
 
-    // Generate topic key from name (deterministic)
-    const topicKey = blake3.hashHex(name)
+    const secret = (typeof password === 'string' && password.length > 0)
+      ? password
+      : SwarmFS.DEFAULT_TOPIC_SALT
+
+    // Generate topic key from (name + secret) (deterministic)
+    // Using a SwarmFS-specific salt prevents collisions with other Hyperswarm apps.
+    const topicKey = blake3.hashHex(`${secret}\n${name}`)
 
     // Add to database
     const topicId = this.db.addTopic(name, topicKey, autoJoin);

@@ -65,6 +65,17 @@ export class SwarmNetwork extends EventEmitter {
       client: true   // Make connections
     });
 
+    // Store topic info immediately to avoid races where Hyperswarm emits
+    // incoming connections before we've registered this topic.
+    // Without this, early connections can end up unattributed, leading to
+    // asymmetric peer visibility and one-way request capability.
+    this.topics.set(topicKeyHex, {
+      discovery,
+      name: topicName,
+      key: topicKey,
+      connections: new Map()
+    });
+
     // Wait for topic to be fully announced
     await discovery.flushed();
 
@@ -79,14 +90,6 @@ export class SwarmNetwork extends EventEmitter {
     } else {
       await this.swarm.flush();
     }
-
-    // Store topic info
-    this.topics.set(topicKeyHex, {
-      discovery,
-      name: topicName,
-      key: topicKey,
-      connections: new Map()
-    });
 
     this.emit('topic:joined', topicName, topicKeyHex);
     debug(`[NETWORK] ✓ Joined topic: ${topicName}`);
@@ -231,10 +234,17 @@ export class SwarmNetwork extends EventEmitter {
    * Get connection statistics
    */
   getStats() {
+    const topicsDetails = Array.from(this.topics.values()).map((t) => ({
+      name: t.name,
+      peers: t.connections?.size || 0
+    }));
+
     return {
       topics: this.topics.size,
+      peerCount: this.peerConnections.size,
       connections: Array.from(this.topics.values()).reduce((acc, t) => acc + (t.connections?.size || 0), 0),
-      activeTopics: Array.from(this.topics.values()).map(t => t.name)
+      activeTopics: topicsDetails.map((t) => t.name),
+      topicsDetails
     };
   }
 

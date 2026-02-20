@@ -6,12 +6,216 @@
 import fs from 'fs'
 import path from 'path'
 import terminalKit from 'terminal-kit'
+import { VFS } from './vfs.js'
 
 const term = terminalKit.terminal;
+
+function restoreTerminal() {
+  try {
+    if (typeof term.grabInput === 'function') {
+      term.grabInput(false);
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (typeof term.styleReset === 'function') {
+      term.styleReset();
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (process.stdin?.isTTY && typeof process.stdin.setRawMode === 'function') {
+      process.stdin.setRawMode(false);
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (process.stdin && typeof process.stdin.pause === 'function') {
+      process.stdin.pause();
+    }
+  } catch {
+    // ignore
+  }
+}
 
 function nowNs() {
   return process.hrtime.bigint()
 }
+
+function getVfs(swarmfs) {
+  if (!swarmfs?.db) {
+    swarmfs.open();
+  }
+  return new VFS(swarmfs.db);
+}
+
+function isInteractivePromptAvailable() {
+  return !!(process.stdin?.isTTY && process.stdout?.isTTY && typeof term.inputField === 'function');
+}
+
+async function promptTrackMissingFile(localPath) {
+  if (!isInteractivePromptAvailable()) {
+    throw new Error(`Local file not tracked: ${localPath}`);
+  }
+
+  const promptText = `${localPath} is not tracked. Track it? [Y] Yes  [A] Yes to All  [N] No  [L] No to All `;
+  try {
+    const choice = await new Promise((resolve) => {
+      term(promptText);
+      term.inputField({ echo: true, maxLength: 1 }, (err, input) => {
+        term('\n');
+        if (err) {
+          resolve('n');
+          return;
+        }
+        resolve(String(input || '').trim().toLowerCase());
+      });
+    });
+
+    if (choice === 'y' || choice === 'a' || choice === 'n' || choice === 'l') {
+      return choice;
+    }
+    return 'n';
+  } finally {
+    restoreTerminal();
+  }
+}
+
+export async function vdirMkdirCommand(swarmfs, vfsPath) {
+  const vfs = getVfs(swarmfs);
+  const dir = vfs.mkdir(vfsPath);
+  console.log(dir?.name === '/' ? '/' : (String(vfsPath || '').startsWith('/') ? vfsPath : `/${vfsPath}`));
+  return dir;
+}
+
+export async function vdirLsCommand(swarmfs, vfsPath = '/') {
+  const vfs = getVfs(swarmfs);
+  const effectivePath = typeof vfsPath === 'string' && vfsPath.length > 0 ? vfsPath : '/';
+  const { dirs, entries } = vfs.ls(effectivePath);
+
+  const hasDirs = Array.isArray(dirs) && dirs.length > 0;
+  const hasEntries = Array.isArray(entries) && entries.length > 0;
+  if (!hasDirs && !hasEntries) {
+    console.log('');
+    return { dirs: dirs ?? [], entries: entries ?? [] };
+  }
+
+  if (hasDirs) {
+    for (const d of dirs) {
+      if (d?.is_root === 1) continue;
+      console.log(`${d.name}/`);
+    }
+  }
+
+  if (hasEntries) {
+    for (const e of entries) {
+      const name = typeof e.suggested_name === 'string' && e.suggested_name.length > 0
+        ? e.suggested_name
+        : (typeof e.child_merkle_root === 'string' ? e.child_merkle_root : '');
+      console.log(name);
+    }
+  }
+  return { dirs, entries };
+}
+
+export async function vdirAddCommand(swarmfs, ...args) {
+  swarmfs.open();
+
+  // Commander passes (pathsArray, options)
+  // REPL passes (arg1, arg2, ..., options)
+  let options = {};
+  let raw = args;
+
+  // Commander also passes the Command object as the last argument.
+  // It has methods like .opts() and properties like .commands.
+  if (
+    raw.length > 0
+    && raw[raw.length - 1]
+    && typeof raw[raw.length - 1] === 'object'
+    && typeof raw[raw.length - 1].opts === 'function'
+  ) {
+    raw = raw.slice(0, -1);
+  }
+
+  if (
+    raw.length > 0
+    && raw[raw.length - 1]
+    && typeof raw[raw.length - 1] === 'object'
+    && !Array.isArray(raw[raw.length - 1])
+  ) {
+    options = raw[raw.length - 1];
+    raw = raw.slice(0, -1);
+  }
+
+  // Commander: first arg is an array of all <paths...> including the vfs dir path as last element.
+  // REPL: args is already flat.
+  const flat = raw.length === 1 && Array.isArray(raw[0]) ? raw[0] : raw;
+  const filtered = flat.filter((v) => typeof v === 'string' && v.length > 0);
+
+  if (filtered.length < 2) {
+    throw new Error('Usage: vdir add <localPath...> <vfsDirPath>')
+  }
+
+  const vfsDirPath = filtered[filtered.length - 1];
+  const localPaths = filtered.slice(0, -1);
+
+  const vfs = getVfs(swarmfs);
+  const results = [];
+
+  let trackAll = null; // null = ask, true = yes to all, false = no to all
+  for (const localPath of localPaths) {
+    const absoluteLocal = path.resolve(localPath);
+    const suggestedName = typeof options.name === 'string' && options.name.length > 0
+      ? options.name
+      : path.basename(absoluteLocal);
+
+    let fileInfo = swarmfs.db.getFile(absoluteLocal);
+    if (!fileInfo) {
+      let shouldTrack = false;
+      if (trackAll === true) {
+        shouldTrack = true;
+      } else if (trackAll === false) {
+        shouldTrack = false;
+      } else {
+        const choice = await promptTrackMissingFile(absoluteLocal);
+        if (choice === 'a') {
+          trackAll = true;
+          shouldTrack = true;
+        } else if (choice === 'l') {
+          trackAll = false;
+          shouldTrack = false;
+        } else {
+          shouldTrack = choice === 'y';
+        }
+      }
+
+      if (shouldTrack) {
+        await addOnePath(swarmfs, absoluteLocal);
+        fileInfo = swarmfs.db.getFile(absoluteLocal);
+      }
+    }
+
+    if (!fileInfo) {
+      results.push({ skipped: true, reason: 'not_tracked', localPath: absoluteLocal });
+      continue;
+    }
+
+    const result = vfs.addLocalFile(vfsDirPath, absoluteLocal, suggestedName);
+    if (result?.file?.merkle_root) {
+      console.log(result.file.merkle_root);
+    }
+    results.push(result);
+  }
+
+  return results.length === 1 ? results[0] : results;
+}
+
 
 export async function resumeCommand(swarmfs, topicName, options = {}) {
   swarmfs.open();
@@ -334,7 +538,7 @@ export async function verifyCommand(swarmfs, filePath) {
   swarmfs.open();
 
   console.log(`Verifying: ${filePath}`);
-  const result = await swarmfs.verifyFile(filePath);
+  const result = await swarmfs.verifyFile(filePath, { useParallel: false });
 
   if (result.valid) {
     console.log('✓ File is valid');
@@ -355,11 +559,58 @@ export async function verifyCommand(swarmfs, filePath) {
   return result;
 }
 
-export async function topicSaveCommand(swarmfs, name, options = {}) {
+export async function topicSaveCommand(swarmfs, name, passwordArg, optionsArg) {
   swarmfs.open();
 
-  const autoJoin = options.autoJoin !== false;
-  const result = await swarmfs.createTopic(name, autoJoin);
+  // Commander action signature for: command('save <name> [password]')
+  // is typically: (name, password, options, command)
+  const positionalPassword = typeof passwordArg === 'string' && passwordArg.length > 0
+    ? passwordArg
+    : null;
+
+  const opts = (typeof optionsArg === 'object' && optionsArg !== null)
+    ? optionsArg
+    : (typeof passwordArg === 'object' && passwordArg !== null ? passwordArg : {});
+
+  const autoJoin = opts.autoJoin !== false;
+  const flagPassword = opts.password;
+
+  let password = null;
+  if (typeof positionalPassword === 'string' && positionalPassword.length > 0) {
+    if (typeof flagPassword !== 'undefined') {
+      throw new Error('Provide either a positional password or --password, not both')
+    }
+    password = positionalPassword;
+  } else if (typeof flagPassword === 'string' && flagPassword.length > 0) {
+    password = flagPassword;
+  } else if (flagPassword === true) {
+    const canPrompt = process.stdin?.isTTY && process.stdout?.isTTY && typeof term.inputField === 'function';
+    if (!canPrompt) {
+      throw new Error('Cannot prompt for password in non-interactive mode. Provide it as --password <password>.')
+    }
+
+    try {
+      password = await new Promise((resolve, reject) => {
+        term('Password: ');
+        term.inputField({ echo: false }, (err, input) => {
+          term('\n');
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(String(input || ''));
+        });
+      });
+    } finally {
+      restoreTerminal();
+    }
+
+    if (!password) {
+      throw new Error('Password cannot be empty')
+    }
+  }
+
+  const result = await swarmfs.createTopic(name, autoJoin, password);
 
   console.log('✓ Topic saved');
   console.log(`  Name: ${result.name}`);
@@ -889,19 +1140,31 @@ export async function networkCommand(swarmfs) {
   }
 
   const stats = swarmfs.network.getStats();
-  console.log(`\nNetwork Status:`);
-  if (typeof stats.peerCount === 'number') {
-    console.log(`  Peers: ${stats.peerCount}`);
-  }
-  if (typeof stats.topics === 'number') {
-    console.log(`  Topics: ${stats.topics}`);
-  }
-  if (stats.topicsDetails) {
-    console.log(`  Topic Details:`);
-    for (const topic of stats.topicsDetails) {
-      console.log(`    ${topic.name}: ${topic.peers} peer(s)`);
+
+  const topicsDetails = Array.isArray(stats?.topicsDetails)
+    ? stats.topicsDetails
+    : (Array.isArray(stats?.activeTopics) ? stats.activeTopics.map((name) => ({ name, peers: 0 })) : []);
+
+  const totalConnections = typeof stats?.connections === 'number'
+    ? stats.connections
+    : topicsDetails.reduce((acc, t) => acc + (t?.peers || 0), 0);
+
+  console.log('');
+  console.log('Topics joined:');
+  if (topicsDetails.length === 0) {
+    console.log('None');
+  } else {
+    for (const topic of topicsDetails) {
+      const name = topic?.name ?? '';
+      const peers = typeof topic?.peers === 'number' ? topic.peers : 0;
+      console.log(`${name}: ${peers}`);
     }
   }
+
+  console.log('');
+  console.log(`Total: ${totalConnections} connections.`);
+  console.log('');
+
   return stats;
 }
 
@@ -936,6 +1199,11 @@ export const commands = {
   resume: resumeCommand,
   browse: browseCommand,
   network: networkCommand,
+
+  // VFS commands
+  'vdir.mkdir': vdirMkdirCommand,
+  'vdir.ls': vdirLsCommand,
+  'vdir.add': vdirAddCommand,
 
   // Top-level share
   share: shareCommand
