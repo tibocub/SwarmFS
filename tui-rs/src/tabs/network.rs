@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::ipc::IpcClient;
 use crate::tabs::{Tab, TabId, UiCommand};
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Style},
@@ -13,9 +13,11 @@ use serde_json::Value;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
+use std::collections::BTreeSet;
 use crate::widgets::{
     contains, compute_scrollbar_metrics, handle_scrollbar_down, handle_scrollbar_drag, mouse_in,
-    render_scrollbar, hit_test_table_index, Button, ScrollbarDownResult,
+    render_scrollbar, Button, MultiSelectState, MultiSelectTableController, ScrollbarDownResult,
+    TableHitTestSpec,
 };
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 pub struct NetworkTab {
     topics: Vec<TopicRow>,
     table_state: TableState,
+    selection: MultiSelectState<String>,
     last_error: Option<String>,
     hovered: Hovered,
 
@@ -73,6 +76,9 @@ pub struct NetworkTab {
     last_viewport_rows: usize,
     // Scrollbar thumb drag grab offset.
     scrollbar_drag: Option<usize>,
+
+    // Click-drag selection start row (used for bittorrent-like drag-to-select).
+    drag_select_start: Option<usize>,
 
     topic_new: TopicNewState,
 }
@@ -121,6 +127,7 @@ impl NetworkTab {
         Self {
             topics: Vec::new(),
             table_state,
+            selection: MultiSelectState::default(),
             last_error: None,
             hovered: Hovered::None,
             endpoint,
@@ -129,6 +136,7 @@ impl NetworkTab {
             join_leave_busy: None,
             last_viewport_rows: 10,
             scrollbar_drag: None,
+            drag_select_start: None,
             topic_new: TopicNewState {
                 open: false,
                 focus: TopicNewFocus::Name,
@@ -149,10 +157,18 @@ impl NetworkTab {
             match msg {
                 JoinLeaveMsg::Done { overview } => {
                     self.topics = parse_overview_topics(&overview);
+
+                    let existing: BTreeSet<String> =
+                        self.topics.iter().map(|t| t.name.clone()).collect();
+                    self.selection.retain_existing(&existing);
+
                     if self.topics.is_empty() {
                         self.table_state.select(None);
                     } else if self.table_state.selected().is_none() {
                         self.table_state.select(Some(0));
+                    } else if let Some(sel) = self.table_state.selected() {
+                        self.table_state
+                            .select(Some(sel.min(self.topics.len().saturating_sub(1))));
                     }
                     self.join_leave_busy = None;
                     self.last_error = None;
@@ -173,10 +189,18 @@ impl NetworkTab {
         match ipc.rpc("network.overview", serde_json::json!({})) {
             Ok(v) => {
                 self.topics = parse_overview_topics(&v);
+
+                let existing: BTreeSet<String> =
+                    self.topics.iter().map(|t| t.name.clone()).collect();
+                self.selection.retain_existing(&existing);
+
                 if self.topics.is_empty() {
                     self.table_state.select(None);
                 } else if self.table_state.selected().is_none() {
                     self.table_state.select(Some(0));
+                } else if let Some(sel) = self.table_state.selected() {
+                    self.table_state
+                        .select(Some(sel.min(self.topics.len().saturating_sub(1))));
                 }
                 self.last_error = None;
             }
@@ -189,6 +213,13 @@ impl NetworkTab {
     fn selected_topic_name(&self) -> Option<String> {
         let idx = self.table_state.selected()?;
         self.topics.get(idx).map(|t| t.name.clone())
+    }
+
+    fn selected_topic_names_or_focused(&self) -> Vec<String> {
+        if !self.selection.selected().is_empty() {
+            return self.selection.selected().iter().cloned().collect();
+        }
+        self.selected_topic_name().into_iter().collect()
     }
 
     fn selected_topic(&self) -> Option<&TopicRow> {
@@ -247,9 +278,10 @@ impl NetworkTab {
 
     pub fn join_selected(&mut self, ipc: &mut IpcClient) {
         let _ = ipc;
-        let Some(name) = self.selected_topic_name() else {
+        let names = self.selected_topic_names_or_focused();
+        if names.is_empty() {
             return;
-        };
+        }
 
         let endpoint = self.endpoint.clone();
         let (tx, rx): (Sender<(u64, JoinLeaveMsg)>, Receiver<(u64, JoinLeaveMsg)>) = mpsc::channel();
@@ -258,13 +290,16 @@ impl NetworkTab {
         self.join_leave_req_id = self.join_leave_req_id.wrapping_add(1);
         let req_id = self.join_leave_req_id;
 
-        self.join_leave_busy = Some(format!("joining {}", name));
+        self.join_leave_busy = Some(format!("joining {} topic(s)", names.len()));
         self.last_error = None;
 
         thread::spawn(move || {
             let res = (|| {
                 let mut c = crate::ipc::IpcClient::connect(endpoint).map_err(|e| e.to_string())?;
-                c.rpc("topic.join", serde_json::json!({"name": name})).map_err(|e| e.to_string())?;
+                for name in names {
+                    c.rpc("topic.join", serde_json::json!({"name": name}))
+                        .map_err(|e| e.to_string())?;
+                }
                 let overview = c
                     .rpc("network.overview", serde_json::json!({}))
                     .map_err(|e| e.to_string())?;
@@ -284,9 +319,10 @@ impl NetworkTab {
 
     pub fn leave_selected(&mut self, ipc: &mut IpcClient) {
         let _ = ipc;
-        let Some(name) = self.selected_topic_name() else {
+        let names = self.selected_topic_names_or_focused();
+        if names.is_empty() {
             return;
-        };
+        }
 
         let endpoint = self.endpoint.clone();
         let (tx, rx): (Sender<(u64, JoinLeaveMsg)>, Receiver<(u64, JoinLeaveMsg)>) = mpsc::channel();
@@ -295,13 +331,16 @@ impl NetworkTab {
         self.join_leave_req_id = self.join_leave_req_id.wrapping_add(1);
         let req_id = self.join_leave_req_id;
 
-        self.join_leave_busy = Some(format!("leaving {}", name));
+        self.join_leave_busy = Some(format!("leaving {} topic(s)", names.len()));
         self.last_error = None;
 
         thread::spawn(move || {
             let res = (|| {
                 let mut c = crate::ipc::IpcClient::connect(endpoint).map_err(|e| e.to_string())?;
-                c.rpc("topic.leave", serde_json::json!({"name": name})).map_err(|e| e.to_string())?;
+                for name in names {
+                    c.rpc("topic.leave", serde_json::json!({"name": name}))
+                        .map_err(|e| e.to_string())?;
+                }
                 let overview = c
                     .rpc("network.overview", serde_json::json!({}))
                     .map_err(|e| e.to_string())?;
@@ -320,17 +359,23 @@ impl NetworkTab {
     }
 
     pub fn remove_selected(&mut self, ipc: &mut IpcClient) {
-        if let Some(name) = self.selected_topic_name() {
+        let names = self.selected_topic_names_or_focused();
+        if names.is_empty() {
+            return;
+        }
+
+        for name in names {
             match ipc.rpc("topic.rm", serde_json::json!({"name": name})) {
-                Ok(_) => {
-                    self.last_error = None;
-                    self.refresh(ipc);
-                }
+                Ok(_) => {}
                 Err(e) => {
                     self.last_error = Some(e.to_string());
+                    return;
                 }
             }
         }
+
+        self.last_error = None;
+        self.refresh(ipc);
     }
 
     pub fn on_network_event(&mut self, _evt: crate::ipc::NetworkEvent) {
@@ -361,9 +406,14 @@ impl Tab for NetworkTab {
         // Table viewport = inside borders minus 1 header row.
         self.last_viewport_rows = list_area.height.saturating_sub(3).max(1) as usize;
 
-        let header = Row::new(vec![" ", "Name", "Peers", "Auto"]).style(Style::default().fg(Color::Yellow));
+        let header =
+            Row::new(vec!["Sel", "Name", "Peers", "Auto"]).style(Style::default().fg(Color::Yellow));
         let rows = self.topics.iter().map(|t| {
-            let mark = if t.joined { "✓" } else { "" };
+            let mark = if self.selection.is_selected(&t.name) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
             let auto = t.auto_join.map(|b| if b { "yes" } else { "no" }).unwrap_or("?");
             Row::new(vec![
                 mark.to_string(),
@@ -376,7 +426,7 @@ impl Tab for NetworkTab {
         let table = Table::new(
             rows,
             [
-                Constraint::Length(2),
+                Constraint::Length(4),
                 Constraint::Min(12),
                 Constraint::Length(6),
                 Constraint::Length(6),
@@ -465,7 +515,7 @@ impl Tab for NetworkTab {
         };
 
         let mut lines = vec![Line::from(
-            "Keys: r refresh | n new | x/Del remove | Enter join | Backspace leave | j/k move",
+            "Keys: r refresh | n new | x/Del remove | Enter join | Backspace leave | tab/space toggle | Ctrl-click toggle | Shift-click range | drag-select resets | Ctrl+A all | c clear | j/k move",
         )];
         if let Some(e) = &self.last_error {
             lines.push(Line::from(format!("Error: {}", e)));
@@ -630,6 +680,7 @@ impl Tab for NetworkTab {
                 };
                 if !self.topics.is_empty() {
                     self.table_state.select(Some(next));
+                    self.selection.set_anchor(Some(next));
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -639,7 +690,26 @@ impl Tab for NetworkTab {
                 };
                 if !self.topics.is_empty() {
                     self.table_state.select(Some(next));
+                    self.selection.set_anchor(Some(next));
                 }
+            }
+            KeyCode::Tab | KeyCode::Char(' ') => {
+                if let Some(i) = self.table_state.selected() {
+                    if let Some(t) = self.topics.get(i) {
+                        self.selection.toggle(t.name.clone(), i);
+                    }
+                }
+            }
+            KeyCode::Char('c') => {
+                self.selection.clear();
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let keys: Vec<String> = self.topics.iter().map(|t| t.name.clone()).collect();
+                self.selection.select_all(&keys);
+            }
+            KeyCode::Char('A') => {
+                let keys: Vec<String> = self.topics.iter().map(|t| t.name.clone()).collect();
+                self.selection.select_all(&keys);
             }
             KeyCode::Char('r') => return UiCommand::Refresh,
             KeyCode::Enter => return UiCommand::JoinSelected,
@@ -712,9 +782,9 @@ impl Tab for NetworkTab {
         let list_area = main[0];
         let details_area = main[1];
 
-        let scrollbar_metrics = compute_scrollbar_metrics(
+        let list_table_ctrl = MultiSelectTableController::new(TableHitTestSpec::bordered(1));
+        let scrollbar_metrics = list_table_ctrl.scrollbar_metrics(
             list_area,
-            1,
             self.topics.len(),
             self.table_state.offset(),
         );
@@ -770,15 +840,16 @@ impl Tab for NetworkTab {
                 }
 
                 // Click on list row to select
-                if let Some(idx) = hit_test_table_index(
+                let keys: Vec<String> = self.topics.iter().map(|t| t.name.clone()).collect();
+                let _ = list_table_ctrl.click_from_mouse(
                     list_area,
-                    1,
                     &mouse,
                     self.table_state.offset(),
-                    self.topics.len(),
-                ) {
-                    self.table_state.select(Some(idx));
-                }
+                    &keys,
+                    &mut self.table_state,
+                    &mut self.selection,
+                    &mut self.drag_select_start,
+                );
 
                 // Click on buttons
                 if mouse_in(detail_chunks[1], &mouse) {
@@ -798,11 +869,24 @@ impl Tab for NetworkTab {
                     *self.table_state.offset_mut() = target;
                     self.table_state
                         .select(Some(target.min(self.topics.len().saturating_sub(1))));
+                    return UiCommand::None;
                 }
+
+                let keys: Vec<String> = self.topics.iter().map(|t| t.name.clone()).collect();
+                let _ = list_table_ctrl.drag_from_mouse(
+                    list_area,
+                    &mouse,
+                    self.table_state.offset(),
+                    &keys,
+                    &mut self.table_state,
+                    &mut self.selection,
+                    &mut self.drag_select_start,
+                );
             }
 
             MouseEventKind::Up(MouseButton::Left) => {
                 self.scrollbar_drag = None;
+                self.drag_select_start = None;
             }
             MouseEventKind::ScrollDown => {
                 if mouse_in(list_area, &mouse) {

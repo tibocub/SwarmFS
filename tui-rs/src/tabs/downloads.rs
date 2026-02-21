@@ -1,11 +1,11 @@
 use crate::app::App;
 use crate::ipc::IpcClient;
-use crate::tabs::common::{centered_rect, format_bytes_per_sec, now_ms, progress_percent};
 use crate::tabs::{Tab, TabId, UiCommand};
+use crate::tabs::common::{centered_rect, format_bytes_per_sec, now_ms, progress_percent};
 use crate::widgets::{
-    contains, compute_scrollbar_metrics, handle_scrollbar_down, handle_scrollbar_drag,
-    hit_test_table_index, mouse_in, render_scrollbar, Button, MultiSelectState,
-    ScrollbarDownResult,
+    compute_scrollbar_metrics, contains, handle_scrollbar_down, handle_scrollbar_drag, mouse_in,
+    render_scrollbar, Button, MultiSelectState, MultiSelectTableController, ScrollbarDownResult,
+    TableHitTestSpec,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -27,6 +27,8 @@ pub struct DownloadsTab {
     last_error: Option<String>,
     live: BTreeMap<DownloadKey, LiveDownload>,
     add: DownloadsAddState,
+
+    drag_select_start: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +78,6 @@ struct DownloadRow {
     topic: String,
     merkle_root: String,
     output_path: String,
-    created_at: Option<i64>,
     completed_at: Option<i64>,
 }
 
@@ -125,6 +126,8 @@ impl DownloadsTab {
                 destination: String::new(),
                 hovered: DownloadsAddHovered::None,
             },
+
+            drag_select_start: None,
         }
     }
 
@@ -148,6 +151,17 @@ impl DownloadsTab {
             self.add.topics_state.select(None);
         }
         self.last_error = None;
+    }
+
+    pub fn add_open_prefill(&mut self, ipc: &mut IpcClient, topic: String, merkle_root: String) {
+        self.add_open(ipc);
+        self.add.merkle_root = merkle_root;
+
+        if let Some(idx) = self.add.topics.iter().position(|t| t.name == topic) {
+            self.add.topics_state.select(Some(idx));
+        }
+
+        self.add.focus = DownloadsAddFocus::Destination;
     }
 
     pub fn add_cancel(&mut self) {
@@ -320,7 +334,6 @@ impl DownloadsTab {
                                 .and_then(|x| x.as_str())
                                 .unwrap_or("")
                                 .to_string(),
-                            created_at: it.get("created_at").and_then(|x| x.as_i64()),
                             completed_at: it.get("completed_at").and_then(|x| x.as_i64()),
                         })
                     })
@@ -506,20 +519,17 @@ impl Tab for DownloadsTab {
                 merkle_root: e.merkle_root.clone(),
                 output_path: e.output_path.clone(),
             };
-            let mut status = "".to_string();
-            let (speed, row_style) = if e.completed_at.is_some() {
-                status = "complete".to_string();
-                ("".to_string(), Style::default())
+
+            let (speed, status, row_style) = if e.completed_at.is_some() {
+                ("".to_string(), "complete".to_string(), Style::default())
             } else if let Some(l) = self.live.get(&lk) {
                 if l.error.is_some() {
-                    status = "error".to_string();
-                    ("".to_string(), Style::default())
+                    ("".to_string(), "error".to_string(), Style::default())
                 } else if l.completed {
-                    status = "complete".to_string();
-                    ("".to_string(), Style::default())
+                    ("".to_string(), "complete".to_string(), Style::default())
                 } else {
                     let stalled = now.saturating_sub(l.last_ts) > 3000;
-                    status = if stalled {
+                    let status = if stalled {
                         "paused".to_string()
                     } else {
                         "downloading".to_string()
@@ -529,11 +539,10 @@ impl Tab for DownloadsTab {
                     } else {
                         format_bytes_per_sec(l.speed_bps)
                     };
-                    (sp, Style::default())
+                    (sp, status, Style::default())
                 }
             } else {
-                status = "queued".to_string();
-                ("".to_string(), Style::default())
+                ("".to_string(), "queued".to_string(), Style::default())
             };
 
             Row::new(vec![
@@ -648,7 +657,7 @@ impl Tab for DownloadsTab {
             .split(footer_area);
 
         let mut footer_lines: Vec<Line> = vec![Line::from(
-            "Keys: n new | r refresh | R resume | tab/space toggle | A/Ctrl+A all | c clear | j/k move | PgUp/PgDn",
+            "Keys: n new | r refresh | R resume | tab/space toggle | Ctrl-click toggle | Shift-click range | drag-select resets | Ctrl+A all | c clear | j/k move | PgUp/PgDn",
         )];
         if let Some(e) = &self.last_error {
             footer_lines.push(Line::from(format!("Error: {}", e)));
@@ -832,6 +841,8 @@ impl Tab for DownloadsTab {
                 self.add.topics_state.offset(),
             );
 
+            let topics_table_ctrl = MultiSelectTableController::new(TableHitTestSpec::bordered(1));
+
             let btns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(12), Constraint::Length(12), Constraint::Min(10)].as_ref())
@@ -875,9 +886,8 @@ impl Tab for DownloadsTab {
                     return UiCommand::None;
                 }
 
-                if let Some(idx) = hit_test_table_index(
+                if let Some(idx) = topics_table_ctrl.hit_test_index(
                     chunks[0],
-                    1,
                     &mouse,
                     self.add.topics_state.offset(),
                     self.add.topics.len(),
@@ -963,6 +973,12 @@ impl Tab for DownloadsTab {
             self.hovered = DownloadsHovered::None;
         }
 
+        let list_table_ctrl = MultiSelectTableController::new(TableHitTestSpec {
+            checkbox_width: 4,
+            checkbox_rel_x_bias: 1,
+            ..TableHitTestSpec::bordered(1)
+        });
+
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if mouse_in(footer_chunks[1], &mouse) {
@@ -973,24 +989,33 @@ impl Tab for DownloadsTab {
                     return UiCommand::DownloadsResume;
                 }
 
-                if let Some(idx) = hit_test_table_index(
+                let keys: Vec<i64> = self.entries.iter().map(|e| e.id).collect();
+                let _ = list_table_ctrl.click_from_mouse(
                     list_area,
-                    1,
                     &mouse,
                     self.table_state.offset(),
-                    self.entries.len(),
-                ) {
-                    self.table_state.select(Some(idx));
-                    self.selection.set_anchor(Some(idx));
+                    &keys,
+                    &mut self.table_state,
+                    &mut self.selection,
+                    &mut self.drag_select_start,
+                );
+            }
 
-                    let inner = list_area.inner(Margin { vertical: 1, horizontal: 1 });
-                    let rel_x = mouse.column.saturating_sub(inner.x).saturating_sub(1);
-                    if rel_x < 4 {
-                        if let Some(e) = self.entries.get(idx) {
-                            self.selection.toggle(e.id, idx);
-                        }
-                    }
-                }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let keys: Vec<i64> = self.entries.iter().map(|e| e.id).collect();
+                let _ = list_table_ctrl.drag_from_mouse(
+                    list_area,
+                    &mouse,
+                    self.table_state.offset(),
+                    &keys,
+                    &mut self.table_state,
+                    &mut self.selection,
+                    &mut self.drag_select_start,
+                );
+            }
+
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag_select_start = None;
             }
             MouseEventKind::ScrollDown => {
                 if mouse_in(list_area, &mouse) {

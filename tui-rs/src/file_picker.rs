@@ -1,6 +1,6 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::widgets::{
-    compute_scrollbar_metrics, handle_scrollbar_down, handle_scrollbar_drag, hit_test_table_index,
-    render_scrollbar, MultiSelectState, ScrollbarDownResult,
+    handle_scrollbar_down, handle_scrollbar_drag, render_scrollbar, MultiSelectState,
+    MultiSelectTableController, ScrollbarDownResult, TableHitTestSpec, TextInput, TextInputAction,
 };
 
 /// Action emitted by the picker.
@@ -80,7 +80,10 @@ pub struct FilePicker {
     /// Selected paths remain selected even if they disappear due to filtering.
     selection: MultiSelectState<PathBuf>,
 
-    query: String,
+    // Click-drag selection start row (bittorrent-like drag-select reset).
+    drag_select_start: Option<usize>,
+
+    query: TextInput,
 }
 
 impl FilePicker {
@@ -100,7 +103,8 @@ impl FilePicker {
             scrollbar_grab: None,
             last_viewport_rows: 10,
             selection: MultiSelectState::default(),
-            query: String::new(),
+            drag_select_start: None,
+            query: TextInput::new(),
         }
     }
 
@@ -196,15 +200,8 @@ impl FilePicker {
             Style::default()
         };
 
-        let q = Paragraph::new(Line::from(self.query.clone()))
-            .style(search_style.bg(Color::Black))
-            .block(
-                Block::default()
-                    .title("Search")
-                    .borders(Borders::ALL)
-                    .style(Style::default().bg(Color::Black)),
-            );
-        f.render_widget(q, picker_chunks[0]);
+        let _ = search_style;
+        self.query.draw(f, picker_chunks[0], "Search", self.focus == Focus::Search);
 
         let rows = self.visible.iter().map(|vi| {
             let it = &self.items[vi.item_idx];
@@ -261,7 +258,15 @@ impl FilePicker {
 
         f.render_stateful_widget(table, table_area, &mut self.table_state);
 
-        if let Some(metrics) = compute_scrollbar_metrics(picker_chunks[1], 0, self.visible.len(), self.table_state.offset()) {
+        let table_ctrl = MultiSelectTableController::new(TableHitTestSpec {
+            checkbox_width: 4,
+            ..TableHitTestSpec::bordered(0)
+        });
+        if let Some(metrics) = table_ctrl.scrollbar_metrics(
+            picker_chunks[1],
+            self.visible.len(),
+            self.table_state.offset(),
+        ) {
             render_scrollbar(f, metrics);
         }
 
@@ -294,10 +299,12 @@ impl FilePicker {
         match key.code {
             KeyCode::Esc => {
                 // If search has text, first Esc clears the query. Second Esc cancels.
-                if self.focus == Focus::Search && !self.query.is_empty() {
-                    self.query.clear();
-                    self.recompute_visible();
-                    return PickerAction::None;
+                if self.focus == Focus::Search {
+                    if !self.query.value().is_empty() {
+                        self.query.clear();
+                        self.recompute_visible();
+                        return PickerAction::None;
+                    }
                 }
                 return PickerAction::Cancel;
             }
@@ -386,22 +393,23 @@ impl FilePicker {
             // Backspace: in Search it edits query, in Table it navigates up.
             KeyCode::Backspace => {
                 if self.focus == Focus::Search {
-                    self.query.pop();
-                    self.recompute_visible();
-                } else {
-                    self.go_up();
+                    if matches!(self.query.handle_key(key), TextInputAction::Changed) {
+                        self.recompute_visible();
+                    }
+                    return PickerAction::None;
                 }
-                return PickerAction::None;
+                // fallthrough to Table behavior below.
             }
 
             KeyCode::Char(c) => {
-                if self.focus == Focus::Search && !c.is_control() {
-                    self.query.push(c);
-                    self.recompute_visible();
+                if self.focus == Focus::Search {
+                    let _ = c;
+                    if matches!(self.query.handle_key(key), TextInputAction::Changed) {
+                        self.recompute_visible();
+                    }
                     return PickerAction::None;
                 }
             }
-
             _ => {}
         }
 
@@ -429,9 +437,12 @@ impl FilePicker {
             ])
             .split(inner);
 
-        let scrollbar_metrics = compute_scrollbar_metrics(
+        let table_ctrl = MultiSelectTableController::new(TableHitTestSpec {
+            checkbox_width: 4,
+            ..TableHitTestSpec::bordered(0)
+        });
+        let scrollbar_metrics = table_ctrl.scrollbar_metrics(
             picker_chunks[1],
-            0,
             self.visible.len(),
             self.table_state.offset(),
         );
@@ -468,64 +479,46 @@ impl FilePicker {
                 if contains(picker_chunks[1], mouse.column, mouse.row) {
                     self.focus = Focus::Table;
 
-                    if let Some(idx) = hit_test_table_index(
+                    let keys: Vec<PathBuf> = self
+                        .visible
+                        .iter()
+                        .filter_map(|vi| self.items.get(vi.item_idx).map(|it| it.path.clone()))
+                        .collect();
+                    if let Some(idx) = table_ctrl.click_from_mouse(
                         picker_chunks[1],
-                        0,
                         &mouse,
                         self.table_state.offset(),
-                        self.visible.len(),
+                        &keys,
+                        &mut self.table_state,
+                        &mut self.selection,
+                        &mut self.drag_select_start,
                     ) {
-                        let is_ctrl = mouse.modifiers.contains(KeyModifiers::CONTROL);
-                        let is_shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
 
-                        if is_shift {
-                            self.table_state.select(Some(idx));
-                            self.select_range_to(idx);
-                        } else if is_ctrl {
-                            self.table_state.select(Some(idx));
-                            self.selection.set_anchor(Some(idx));
-                            self.toggle_selected_current();
-                        } else {
-                            self.table_state.select(Some(idx));
-                            self.selection.set_anchor(Some(idx));
+                        // Double click:
+                        // - dir: enter it
+                        // - file: if nothing selected, confirm this item; otherwise confirm current selection
+                        let now = Instant::now();
+                        let is_double = self
+                            .last_click
+                            .map(|(prev_idx, t)| {
+                                prev_idx == idx && now.duration_since(t) <= Duration::from_millis(400)
+                            })
+                            .unwrap_or(false);
+                        self.last_click = Some((idx, now));
 
-                            let inner_table = picker_chunks[1].inner(Margin {
-                                vertical: 1,
-                                horizontal: 1,
-                            });
+                        if is_double {
+                            if let Some(it) = self.current_item() {
+                                if it.is_dir {
+                                    self.cwd = it.path.clone();
+                                    self.reload_items();
+                                    return PickerAction::None;
+                                }
+                            }
 
-                            // If click is in the first 4 columns, interpret as toggle.
-                            let rel_x = mouse.column.saturating_sub(inner_table.x);
-                            if rel_x < 4 {
+                            if self.selection.selected().is_empty() {
                                 self.toggle_selected_current();
                             }
-
-                            // Double click:
-                            // - dir: enter it
-                            // - file: if nothing selected, confirm this item; otherwise confirm current selection
-                            let now = Instant::now();
-                            let is_double = self
-                                .last_click
-                                .map(|(prev_idx, t)| {
-                                    prev_idx == idx && now.duration_since(t) <= Duration::from_millis(400)
-                                })
-                                .unwrap_or(false);
-                            self.last_click = Some((idx, now));
-
-                            if is_double {
-                                if let Some(it) = self.current_item() {
-                                    if it.is_dir {
-                                        self.cwd = it.path.clone();
-                                        self.reload_items();
-                                        return PickerAction::None;
-                                    }
-                                }
-
-                                if self.selection.selected().is_empty() {
-                                    self.toggle_selected_current();
-                                }
-                                return PickerAction::Confirm;
-                            }
+                            return PickerAction::Confirm;
                         }
                     }
 
@@ -549,11 +542,28 @@ impl FilePicker {
                         return PickerAction::None;
                     }
                 }
+
+                let keys: Vec<PathBuf> = self
+                    .visible
+                    .iter()
+                    .filter_map(|vi| self.items.get(vi.item_idx).map(|it| it.path.clone()))
+                    .collect();
+                let _ = table_ctrl.drag_from_mouse(
+                    picker_chunks[1],
+                    &mouse,
+                    self.table_state.offset(),
+                    &keys,
+                    &mut self.table_state,
+                    &mut self.selection,
+                    &mut self.drag_select_start,
+                );
+                return PickerAction::None;
             }
 
             MouseEventKind::Up(MouseButton::Left) => {
                 self.scrollbar_drag = false;
                 self.scrollbar_grab = None;
+                self.drag_select_start = None;
             }
 
             MouseEventKind::ScrollDown => {
@@ -586,15 +596,6 @@ impl FilePicker {
         let next = (cur + delta).clamp(0, (self.visible.len().saturating_sub(1)) as i32) as usize;
         self.table_state.select(Some(next));
         self.selection.set_anchor(Some(next));
-    }
-
-    fn select_range_to(&mut self, idx: usize) {
-        let keys: Vec<PathBuf> = self
-            .visible
-            .iter()
-            .filter_map(|vi| self.items.get(vi.item_idx).map(|it| it.path.clone()))
-            .collect();
-        self.selection.range_select(&keys, idx);
     }
 
     fn current_item(&self) -> Option<&PickerItem> {
@@ -671,7 +672,7 @@ impl FilePicker {
     }
 
     fn recompute_visible(&mut self) {
-        let q = self.query.trim();
+        let q = self.query.value().trim();
 
         if q.is_empty() {
             self.visible = self

@@ -90,6 +90,7 @@ pub enum UiCommand {
     FilesAddCancel,
     BrowseRefresh,
     BrowseDownloadSelected,
+    DownloadsAddOpenPrefill { topic: String, merkle_root: String },
     DownloadsRefresh,
     DownloadsResume,
     DownloadsAddOpen,

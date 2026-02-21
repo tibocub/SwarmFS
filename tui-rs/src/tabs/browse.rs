@@ -2,9 +2,9 @@ use crate::app::App;
 use crate::ipc::IpcClient;
 use crate::tabs::{Tab, TabId, UiCommand};
 use crate::widgets::{
-    contains, compute_scrollbar_metrics, handle_scrollbar_down, handle_scrollbar_drag,
-    hit_test_table_index, mouse_in, render_scrollbar, Button, MultiSelectState,
-    ScrollbarDownResult,
+    contains, handle_scrollbar_down, handle_scrollbar_drag, mouse_in, render_scrollbar, Button,
+    MultiSelectState, MultiSelectTableController, ScrollbarDownResult, TableHitTestSpec, TextInput,
+    TextInputAction,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -27,8 +27,9 @@ pub struct BrowseTab {
     topics_state: TableState,
     topics_sel: MultiSelectState<String>,
     topics_viewport_rows: usize,
+    topics_drag_select_start: Option<usize>,
 
-    query: String,
+    query: TextInput,
     focus: BrowseFocus,
 
     results: Vec<BrowseResultRow>,
@@ -37,6 +38,7 @@ pub struct BrowseTab {
     results_sel: MultiSelectState<String>,
     results_scrollbar_drag: Option<usize>,
     results_viewport_rows: usize,
+    results_drag_select_start: Option<usize>,
 
     browse_rx: Receiver<(u64, Result<Value, String>)>,
     browse_req_id: u64,
@@ -91,8 +93,9 @@ impl BrowseTab {
             topics_state,
             topics_sel: MultiSelectState::default(),
             topics_viewport_rows: 10,
+            topics_drag_select_start: None,
 
-            query: String::new(),
+            query: TextInput::new(),
             focus: BrowseFocus::Topics,
 
             results: Vec::new(),
@@ -101,6 +104,7 @@ impl BrowseTab {
             results_sel: MultiSelectState::default(),
             results_scrollbar_drag: None,
             results_viewport_rows: 10,
+            results_drag_select_start: None,
 
             browse_rx: rx,
             browse_req_id: 0,
@@ -109,6 +113,10 @@ impl BrowseTab {
             last_error: None,
             hovered: BrowseHovered::None,
         }
+    }
+
+    pub fn is_text_input_active(&self) -> bool {
+        self.focus == BrowseFocus::Search
     }
 
     pub fn poll_async(&mut self) {
@@ -233,13 +241,20 @@ impl BrowseTab {
     }
 
     pub fn download_selected(&mut self, _ipc: &mut IpcClient) {
-        // Placeholder for the upcoming download popup flow.
-        // For now we just surface an error if nothing selected.
-        if self.results_sel.selected().is_empty() {
-            self.last_error = Some("no browse items selected".to_string());
-        } else {
-            self.last_error = Some("download popup not implemented yet".to_string());
+        // Action is routed via UiCommand from on_key/on_mouse.
+        let _ = _ipc;
+    }
+
+    fn selected_download_target(&self) -> Option<(String, String)> {
+        if let Some(root) = self.results_sel.selected().iter().next() {
+            if let Some(r) = self.results.iter().find(|x| &x.merkle_root == root) {
+                return Some((r.topic.clone(), r.merkle_root.clone()));
+            }
         }
+
+        let idx = self.results_state.selected()?;
+        let r = self.results.get(idx)?;
+        Some((r.topic.clone(), r.merkle_root.clone()))
     }
 
     fn page_down(&mut self) {
@@ -310,7 +325,7 @@ impl BrowseTab {
             true
         });
 
-        let q = self.query.trim().to_lowercase();
+        let q = self.query.value().trim().to_lowercase();
         if !q.is_empty() {
             out.retain(|r| {
                 r.name.to_lowercase().contains(&q)
@@ -352,11 +367,6 @@ impl BrowseTab {
             return;
         };
         self.results_sel.toggle(r.merkle_root.clone(), idx);
-    }
-
-    fn select_result_range_to(&mut self, idx: usize) {
-        let keys: Vec<String> = self.results.iter().map(|r| r.merkle_root.clone()).collect();
-        self.results_sel.range_select(&keys, idx);
     }
 
     fn nav_down(&mut self) {
@@ -420,24 +430,13 @@ impl Tab for BrowseTab {
     fn draw(&mut self, f: &mut Frame, area: Rect, _app: &mut App) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(8), Constraint::Length(3)].as_ref())
+            .constraints([Constraint::Min(8), Constraint::Length(3)].as_ref())
             .split(area);
-
-        // Search bar
-        let search_style = if self.focus == BrowseFocus::Search {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
-        let search = Paragraph::new(Line::from(self.query.clone()))
-            .style(search_style)
-            .block(Block::default().title("Search (/)").borders(Borders::ALL));
-        f.render_widget(search, chunks[0]);
 
         let main = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)].as_ref())
-            .split(chunks[1]);
+            .split(chunks[0]);
 
         // Topics table
         self.topics_viewport_rows = main[0].height.saturating_sub(3).max(1) as usize;
@@ -477,8 +476,27 @@ impl Tab for BrowseTab {
         .row_highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         f.render_stateful_widget(topics_table, main[0], &mut self.topics_state);
 
+        // Public content area (search + results)
+        let public_style = if self.focus == BrowseFocus::Search || self.focus == BrowseFocus::Results {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+        let public_block = Block::default()
+            .title("Public content")
+            .borders(Borders::ALL)
+            .border_style(public_style);
+        f.render_widget(public_block.clone(), main[1]);
+
+        let public_inner = main[1].inner(Margin { vertical: 1, horizontal: 1 });
+        let public_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(5)].as_ref())
+            .split(public_inner);
+        self.query.draw(f, public_chunks[0], "Search (/)", self.focus == BrowseFocus::Search);
+
         // Results table
-        self.results_viewport_rows = main[1].height.saturating_sub(2).max(1) as usize;
+        self.results_viewport_rows = public_chunks[1].height.saturating_sub(2).max(1) as usize;
         let results_header = Row::new(vec!["Sel", "Topic", "Name", "Size", "Chunks", "Root"])
             .style(Style::default().fg(Color::Yellow));
         let result_rows = self.results.iter().map(|r| {
@@ -503,11 +521,6 @@ impl Tab for BrowseTab {
                 root,
             ])
         });
-        let results_table_style = if self.focus == BrowseFocus::Results {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
         let results_table = Table::new(
             result_rows,
             [
@@ -520,21 +533,31 @@ impl Tab for BrowseTab {
             ],
         )
         .header(results_header)
-        .block(
-            Block::default()
-                .title("Public content")
-                .borders(Borders::ALL)
-                .border_style(results_table_style),
-        )
+        .block(Block::default().borders(Borders::NONE))
         .row_highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow));
 
         let show_scrollbar = self.results.len() > self.results_viewport_rows;
-        let mut results_area = main[1];
+        let mut results_area = public_chunks[1];
         if show_scrollbar {
             results_area.width = results_area.width.saturating_sub(1);
         }
         f.render_stateful_widget(results_table, results_area, &mut self.results_state);
-        if let Some(metrics) = compute_scrollbar_metrics(main[1], 1, self.results.len(), self.results_state.offset()) {
+        let results_table_ctrl = MultiSelectTableController::new(TableHitTestSpec {
+            header_rows: 1,
+            inner_margin: Margin {
+                vertical: 0,
+                horizontal: 0,
+            },
+            hit_y_shift: 0,
+            hit_extra_height: 0,
+            checkbox_width: 4,
+            checkbox_rel_x_bias: 0,
+        });
+        if let Some(metrics) = results_table_ctrl.scrollbar_metrics(
+            public_chunks[1],
+            self.results.len(),
+            self.results_state.offset(),
+        ) {
             render_scrollbar(f, metrics);
         }
 
@@ -542,10 +565,10 @@ impl Tab for BrowseTab {
         let footer_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(10), Constraint::Length(12), Constraint::Length(14)].as_ref())
-            .split(chunks[2]);
+            .split(chunks[1]);
 
         let mut footer_lines: Vec<Line> = vec![Line::from(
-            "Keys: / focus search | Tab toggle | Shift-click range | Ctrl-click toggle | r browse | Enter download | PgUp/PgDn",
+            "Keys: / focus search | tab/space toggle | Ctrl-click toggle | Shift-click range | drag-select resets | Ctrl+A all | c clear | r browse | Enter download | PgUp/PgDn",
         )];
         if let Some((msg, started)) = &self.browse_busy {
             let secs = started.elapsed().as_secs_f32();
@@ -599,8 +622,19 @@ impl Tab for BrowseTab {
                 self.page_up();
             }
             KeyCode::Esc => {
-                if self.focus == BrowseFocus::Search && !self.query.is_empty() {
-                    self.query.clear();
+                if self.focus == BrowseFocus::Search {
+                    match self.query.handle_key(key) {
+                        TextInputAction::Changed => self.rebuild_results_from_cache(),
+                        TextInputAction::Cancel => {
+                            if !self.query.value().is_empty() {
+                                self.query.clear();
+                                self.rebuild_results_from_cache();
+                            } else {
+                                self.focus = BrowseFocus::Results;
+                            }
+                        }
+                        _ => {}
+                    }
                 } else {
                     self.focus = BrowseFocus::Results;
                 }
@@ -614,19 +648,49 @@ impl Tab for BrowseTab {
                 }
                 BrowseFocus::Search => {}
             },
+            KeyCode::Char('c') => match self.focus {
+                BrowseFocus::Topics => {
+                    self.topics_sel.clear();
+                    self.rebuild_results_from_cache();
+                }
+                BrowseFocus::Results => {
+                    self.results_sel.clear();
+                }
+                BrowseFocus::Search => {}
+            },
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => match self.focus {
+                BrowseFocus::Topics => {
+                    let keys: Vec<String> = self.topics.iter().map(|t| t.name.clone()).collect();
+                    self.topics_sel.select_all(&keys);
+                    self.rebuild_results_from_cache();
+                }
+                BrowseFocus::Results => {
+                    let keys: Vec<String> = self.results.iter().map(|r| r.merkle_root.clone()).collect();
+                    self.results_sel.select_all(&keys);
+                }
+                BrowseFocus::Search => {}
+            },
             KeyCode::Char('r') => return UiCommand::BrowseRefresh,
-            KeyCode::Enter => return UiCommand::BrowseDownloadSelected,
+            KeyCode::Enter => {
+                if let Some((topic, merkle_root)) = self.selected_download_target() {
+                    return UiCommand::DownloadsAddOpenPrefill { topic, merkle_root };
+                }
+                self.last_error = Some("no browse items selected".to_string());
+                return UiCommand::None;
+            }
 
             KeyCode::Backspace => {
                 if self.focus == BrowseFocus::Search {
-                    self.query.pop();
-                    self.rebuild_results_from_cache();
+                    if matches!(self.query.handle_key(key), TextInputAction::Changed) {
+                        self.rebuild_results_from_cache();
+                    }
                 }
             }
-            KeyCode::Char(c) => {
-                if self.focus == BrowseFocus::Search && !c.is_control() {
-                    self.query.push(c);
-                    self.rebuild_results_from_cache();
+            KeyCode::Char(_) => {
+                if self.focus == BrowseFocus::Search {
+                    if matches!(self.query.handle_key(key), TextInputAction::Changed) {
+                        self.rebuild_results_from_cache();
+                    }
                 }
             }
             _ => {}
@@ -638,20 +702,42 @@ impl Tab for BrowseTab {
     fn on_mouse(&mut self, mouse: MouseEvent, area: Rect, _app: &mut App) -> UiCommand {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(8), Constraint::Length(3)].as_ref())
+            .constraints([Constraint::Min(8), Constraint::Length(3)].as_ref())
             .split(area);
         let main = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)].as_ref())
-            .split(chunks[1]);
+            .split(chunks[0]);
 
         let footer_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(10), Constraint::Length(12), Constraint::Length(14)].as_ref())
-            .split(chunks[2]);
+            .split(chunks[1]);
 
         let topics_area = main[0];
-        let results_area = main[1];
+        let public_inner = main[1].inner(Margin { vertical: 1, horizontal: 1 });
+        let public_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(5)].as_ref())
+            .split(public_inner);
+        let search_area = public_chunks[0];
+        let results_area = public_chunks[1];
+
+        let topics_table_ctrl = MultiSelectTableController::new(TableHitTestSpec {
+            checkbox_width: 4,
+            ..TableHitTestSpec::bordered(1)
+        });
+        let results_table_ctrl = MultiSelectTableController::new(TableHitTestSpec {
+            header_rows: 1,
+            inner_margin: Margin {
+                vertical: 0,
+                horizontal: 0,
+            },
+            hit_y_shift: 0,
+            hit_extra_height: 0,
+            checkbox_width: 4,
+            checkbox_rel_x_bias: 0,
+        });
 
         if mouse_in(footer_chunks[1], &mouse) {
             self.hovered = BrowseHovered::Refresh;
@@ -661,44 +747,47 @@ impl Tab for BrowseTab {
             self.hovered = BrowseHovered::None;
         }
 
-        let scrollbar_metrics = compute_scrollbar_metrics(
-            results_area,
-            1,
-            self.results.len(),
-            self.results_state.offset(),
-        );
+        let scrollbar_metrics =
+            results_table_ctrl.scrollbar_metrics(results_area, self.results.len(), self.results_state.offset());
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if mouse_in(chunks[0], &mouse) {
+                // Focus blocks by clicking anywhere inside them.
+                if mouse_in(search_area, &mouse) {
                     self.focus = BrowseFocus::Search;
                     return UiCommand::None;
+                } else if mouse_in(results_area, &mouse) {
+                    self.focus = BrowseFocus::Results;
+                } else if mouse_in(topics_area, &mouse) {
+                    self.focus = BrowseFocus::Topics;
                 }
 
                 if mouse_in(footer_chunks[1], &mouse) {
                     return UiCommand::BrowseRefresh;
                 }
                 if mouse_in(footer_chunks[2], &mouse) {
-                    return UiCommand::BrowseDownloadSelected;
+                    if let Some((topic, merkle_root)) = self.selected_download_target() {
+                        return UiCommand::DownloadsAddOpenPrefill { topic, merkle_root };
+                    }
+                    self.last_error = Some("no browse items selected".to_string());
+                    return UiCommand::None;
                 }
 
-                if let Some(idx) = hit_test_table_index(
-                    topics_area,
-                    1,
-                    &mouse,
-                    self.topics_state.offset(),
-                    self.topics.len(),
-                ) {
+                let topic_keys: Vec<String> = self.topics.iter().map(|t| t.name.clone()).collect();
+                if topics_table_ctrl
+                    .click_from_mouse(
+                        topics_area,
+                        &mouse,
+                        self.topics_state.offset(),
+                        &topic_keys,
+                        &mut self.topics_state,
+                        &mut self.topics_sel,
+                        &mut self.topics_drag_select_start,
+                    )
+                    .is_some()
+                {
                     self.focus = BrowseFocus::Topics;
-                    self.topics_state.select(Some(idx));
-                    self.topics_sel.set_anchor(Some(idx));
-
-                    // Toggle when clicking in checkbox column.
-                    let inner = topics_area.inner(Margin { vertical: 1, horizontal: 1 });
-                    let rel_x = mouse.column.saturating_sub(inner.x);
-                    if rel_x < 4 {
-                        self.toggle_topic_current();
-                    }
+                    self.rebuild_results_from_cache();
                     return UiCommand::None;
                 }
 
@@ -723,34 +812,24 @@ impl Tab for BrowseTab {
                     }
                 }
 
-                if let Some(idx) = hit_test_table_index(
-                    results_area,
-                    1,
-                    &mouse,
-                    self.results_state.offset(),
-                    self.results.len(),
-                ) {
+                let result_keys: Vec<String> = self
+                    .results
+                    .iter()
+                    .map(|r| r.merkle_root.clone())
+                    .collect();
+                if results_table_ctrl
+                    .click_from_mouse(
+                        results_area,
+                        &mouse,
+                        self.results_state.offset(),
+                        &result_keys,
+                        &mut self.results_state,
+                        &mut self.results_sel,
+                        &mut self.results_drag_select_start,
+                    )
+                    .is_some()
+                {
                     self.focus = BrowseFocus::Results;
-                    let is_ctrl = mouse.modifiers.contains(KeyModifiers::CONTROL);
-                    let is_shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-
-                    if is_shift {
-                        self.results_state.select(Some(idx));
-                        self.select_result_range_to(idx);
-                    } else if is_ctrl {
-                        self.results_state.select(Some(idx));
-                        self.results_sel.set_anchor(Some(idx));
-                        self.toggle_result_current();
-                    } else {
-                        self.results_state.select(Some(idx));
-                        self.results_sel.set_anchor(Some(idx));
-
-                        let inner = results_area.inner(Margin { vertical: 1, horizontal: 1 });
-                        let rel_x = mouse.column.saturating_sub(inner.x);
-                        if rel_x < 4 {
-                            self.toggle_result_current();
-                        }
-                    }
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -762,11 +841,53 @@ impl Tab for BrowseTab {
                             target.min(self.results.len().saturating_sub(1)),
                         ));
                         self.results_sel.set_anchor(self.results_state.selected());
+                        return UiCommand::None;
                     }
+                }
+
+                // Drag-select in topics behaves like shift-select, but resets prior selection.
+                let topic_keys: Vec<String> = self.topics.iter().map(|t| t.name.clone()).collect();
+                if topics_table_ctrl
+                    .drag_from_mouse(
+                        topics_area,
+                        &mouse,
+                        self.topics_state.offset(),
+                        &topic_keys,
+                        &mut self.topics_state,
+                        &mut self.topics_sel,
+                        &mut self.topics_drag_select_start,
+                    )
+                    .is_some()
+                {
+                    self.rebuild_results_from_cache();
+                    return UiCommand::None;
+                }
+
+                // Drag-select in results behaves like shift-select, but resets prior selection.
+                let result_keys: Vec<String> = self
+                    .results
+                    .iter()
+                    .map(|r| r.merkle_root.clone())
+                    .collect();
+                if results_table_ctrl
+                    .drag_from_mouse(
+                        results_area,
+                        &mouse,
+                        self.results_state.offset(),
+                        &result_keys,
+                        &mut self.results_state,
+                        &mut self.results_sel,
+                        &mut self.results_drag_select_start,
+                    )
+                    .is_some()
+                {
+                    return UiCommand::None;
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.results_scrollbar_drag = None;
+                self.topics_drag_select_start = None;
+                self.results_drag_select_start = None;
             }
             MouseEventKind::ScrollDown => {
                 if mouse_in(results_area, &mouse) {

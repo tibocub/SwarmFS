@@ -3,12 +3,12 @@ use crate::file_picker::{FilePicker, PickerAction};
 use crate::ipc::IpcClient;
 use crate::tabs::{Tab, TabId, UiCommand};
 use crate::widgets::{
-    compute_scrollbar_metrics, handle_scrollbar_down, handle_scrollbar_drag, hit_test_table_index,
-    mouse_in, render_scrollbar, Button, MultiSelectState, ScrollbarDownResult,
+    handle_scrollbar_down, handle_scrollbar_drag, mouse_in, render_scrollbar, Button,
+    MultiSelectState, MultiSelectTableController, ScrollbarDownResult, TableHitTestSpec,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph, Row, Table, TableState},
@@ -26,6 +26,7 @@ pub struct FilesTab {
     table_state: TableState,
     selection: MultiSelectState<String>,
     scrollbar_drag: Option<usize>,
+    drag_select_start: Option<usize>,
     last_viewport_rows: usize,
     endpoint: String,
     info_rx: Receiver<(u64, String, Result<Value, String>)>,
@@ -78,6 +79,7 @@ impl FilesTab {
             table_state,
             selection: MultiSelectState::default(),
             scrollbar_drag: None,
+            drag_select_start: None,
             last_viewport_rows: 10,
             endpoint,
             info_rx: rx,
@@ -92,6 +94,10 @@ impl FilesTab {
             hovered: FilesHovered::None,
             picker: FilePicker::new(PathBuf::from(".")),
         }
+    }
+
+    pub fn is_modal_open(&self) -> bool {
+        self.picker.is_open()
     }
 
     pub fn poll_async(&mut self) {
@@ -306,11 +312,6 @@ impl FilesTab {
         self.selection.clear();
     }
 
-    fn select_range_to(&mut self, idx: usize) {
-        let keys: Vec<String> = self.entries.iter().map(|e| e.path.clone()).collect();
-        self.selection.range_select(&keys, idx);
-    }
-
     fn request_focused_info_if_needed(&mut self) {
         let Some(p) = self.selected_path() else {
             self.focused_path = None;
@@ -448,9 +449,16 @@ impl Tab for FilesTab {
 
         f.render_stateful_widget(table, table_area, &mut self.table_state);
 
-        if let Some(metrics) =
-            compute_scrollbar_metrics(list_area, 1, self.entries.len(), self.table_state.offset())
-        {
+        let list_table_ctrl = MultiSelectTableController::new(TableHitTestSpec {
+            checkbox_width: 4,
+            checkbox_rel_x_bias: 1,
+            ..TableHitTestSpec::bordered(1)
+        });
+        if let Some(metrics) = list_table_ctrl.scrollbar_metrics(
+            list_area,
+            self.entries.len(),
+            self.table_state.offset(),
+        ) {
             render_scrollbar(f, metrics);
         }
 
@@ -506,7 +514,7 @@ impl Tab for FilesTab {
 
         if info_lines.is_empty() {
             info_lines.push(Line::from(
-                "Keys: r refresh | a add | tab/space toggle | a/Ctrl+A all | c clear | i invert | v verify | x/Del remove | j/k move",
+                "Keys: r refresh | a add | tab/space toggle | Ctrl+A all | c clear | i invert | v verify | x/Del remove | j/k move | Ctrl/Shift-click",
             ));
         }
 
@@ -539,7 +547,7 @@ impl Tab for FilesTab {
         remove_btn.draw(f, detail_chunks[4], self.hovered == FilesHovered::Remove);
 
         let footer = Paragraph::new(
-            "Keys: r refresh | a add | tab/space toggle | a/Ctrl+A all | c clear | i invert | v verify | x/Del remove | j/k move",
+            "Keys: r refresh | a add | tab/space toggle | Ctrl+A all | c clear | i invert | v verify | x/Del remove | j/k move | Ctrl/Shift-click",
         )
         .block(Block::default().title("Actions").borders(Borders::ALL));
         f.render_widget(footer, chunks[1]);
@@ -640,13 +648,13 @@ impl Tab for FilesTab {
         let list_area = main[0];
         let details_area = main[1];
 
-        let list_inner = list_area.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
+        let list_table_ctrl = MultiSelectTableController::new(TableHitTestSpec {
+            checkbox_width: 4,
+            checkbox_rel_x_bias: 1,
+            ..TableHitTestSpec::bordered(1)
         });
-        let scrollbar_metrics = compute_scrollbar_metrics(
+        let scrollbar_metrics = list_table_ctrl.scrollbar_metrics(
             list_area,
-            1,
             self.entries.len(),
             self.table_state.offset(),
         );
@@ -696,38 +704,20 @@ impl Tab for FilesTab {
                     }
                 }
 
-                if let Some(idx) = hit_test_table_index(
-                    list_area,
-                    1,
-                    &mouse,
-                    self.table_state.offset(),
-                    self.entries.len(),
-                ) {
-                    let is_ctrl = mouse.modifiers.contains(KeyModifiers::CONTROL);
-                    let is_shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-
-                    if is_shift {
-                        self.table_state.select(Some(idx));
-                        self.select_range_to(idx);
-                        self.request_focused_info_if_needed();
-                    } else if is_ctrl {
-                        self.set_focus(Some(idx));
-                        if let Some(p) = self.selected_path() {
-                            self.selection.toggle(p, idx);
-                        }
-                    } else {
-                        self.set_focus(Some(idx));
-
-                        let rel_x = mouse
-                            .column
-                            .saturating_sub(list_inner.x)
-                            .saturating_sub(1);
-                        if rel_x < 4 {
-                            if let Some(p) = self.selected_path() {
-                                self.selection.toggle(p, idx);
-                            }
-                        }
-                    }
+                let keys: Vec<String> = self.entries.iter().map(|e| e.path.clone()).collect();
+                if list_table_ctrl
+                    .click_from_mouse(
+                        list_area,
+                        &mouse,
+                        self.table_state.offset(),
+                        &keys,
+                        &mut self.table_state,
+                        &mut self.selection,
+                        &mut self.drag_select_start,
+                    )
+                    .is_some()
+                {
+                    self.request_focused_info_if_needed();
                 }
                 if mouse_in(detail_chunks[1], &mouse) {
                     return UiCommand::Refresh;
@@ -751,11 +741,29 @@ impl Tab for FilesTab {
                             .select(Some(target.min(self.entries.len().saturating_sub(1))));
                         self.selection.set_anchor(self.table_state.selected());
                         self.request_focused_info_if_needed();
+                        return UiCommand::None;
                     }
+                }
+
+                let keys: Vec<String> = self.entries.iter().map(|e| e.path.clone()).collect();
+                if list_table_ctrl
+                    .drag_from_mouse(
+                        list_area,
+                        &mouse,
+                        self.table_state.offset(),
+                        &keys,
+                        &mut self.table_state,
+                        &mut self.selection,
+                        &mut self.drag_select_start,
+                    )
+                    .is_some()
+                {
+                    self.request_focused_info_if_needed();
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.scrollbar_drag = None;
+                self.drag_select_start = None;
             }
             MouseEventKind::ScrollDown => {
                 if mouse_in(list_area, &mouse) {

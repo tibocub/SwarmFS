@@ -154,6 +154,34 @@ fn main() -> Result<()> {
                         continue;
                     }
 
+                    if app.active_tab == TabId::Files && files_tab.is_modal_open() {
+                        let cmd = files_tab.on_key(key, &mut app);
+                        apply_command(
+                            cmd,
+                            &mut app,
+                            &mut ipc,
+                            &mut network_tab,
+                            &mut browse_tab,
+                            &mut downloads_tab,
+                            &mut files_tab,
+                        );
+                        continue;
+                    }
+
+                    if app.active_tab == TabId::Browse && browse_tab.is_text_input_active() {
+                        let cmd = browse_tab.on_key(key, &mut app);
+                        apply_command(
+                            cmd,
+                            &mut app,
+                            &mut ipc,
+                            &mut network_tab,
+                            &mut browse_tab,
+                            &mut downloads_tab,
+                            &mut files_tab,
+                        );
+                        continue;
+                    }
+
                     // If a modal is open, it must capture all key input so typing works.
                     // 'q' should remain a global quit shortcut ONLY when no modal is open.
                     if matches!(key.code, KeyCode::Char('q')) {
@@ -185,6 +213,7 @@ fn main() -> Result<()> {
                         | UiCommand::FilesAddCancel
                         | UiCommand::BrowseRefresh
                         | UiCommand::BrowseDownloadSelected
+                        | UiCommand::DownloadsAddOpenPrefill { .. }
                         | UiCommand::DownloadsRefresh
                         | UiCommand::DownloadsResume
                         | UiCommand::DownloadsAddOpen
@@ -317,6 +346,10 @@ fn apply_command(
         UiCommand::FilesAddCancel => files_tab.add_cancel(),
         UiCommand::BrowseRefresh => browse_tab.browse_refresh(ipc),
         UiCommand::BrowseDownloadSelected => browse_tab.download_selected(ipc),
+        UiCommand::DownloadsAddOpenPrefill { topic, merkle_root } => {
+            app.set_active_tab(TabId::Downloads);
+            downloads_tab.add_open_prefill(ipc, topic, merkle_root);
+        }
         UiCommand::DownloadsRefresh => downloads_tab.refresh(ipc),
         UiCommand::DownloadsResume => {
             let _ = ipc.rpc("downloads.resume", serde_json::json!({}));
