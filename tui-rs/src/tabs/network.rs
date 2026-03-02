@@ -15,9 +15,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::collections::BTreeSet;
 use crate::widgets::{
-    contains, draw_modal_shell, handle_scrollbar_down, handle_scrollbar_drag, modal_geometry,
-    mouse_in, render_scrollbar, Button, MultiSelectState, MultiSelectTableController,
-    ScrollbarDownResult, TableHitTestSpec,
+    contains, cycle_focus_next, cycle_focus_prev, draw_modal_shell, handle_scrollbar_down,
+    handle_scrollbar_drag, modal_geometry, mouse_in, render_scrollbar, Button, MultiSelectState,
+    MultiSelectTableController, ScrollbarDownResult, TableHitTestSpec,
 };
 
 #[derive(Debug, Clone)]
@@ -73,6 +73,13 @@ enum TopicNewFocus {
     Abort,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopicNewHovered {
+    None,
+    Save,
+    Abort,
+}
+
 #[derive(Debug, Clone)]
 struct TopicNewState {
     open: bool,
@@ -81,6 +88,7 @@ struct TopicNewState {
     auto_join: bool,
     password_enabled: bool,
     password: String,
+    hovered: TopicNewHovered,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +123,7 @@ impl NetworkTab {
                 auto_join: true,
                 password_enabled: false,
                 password: String::new(),
+                hovered: TopicNewHovered::None,
             },
         }
     }
@@ -205,6 +214,7 @@ impl NetworkTab {
         self.topic_new.auto_join = true;
         self.topic_new.password_enabled = false;
         self.topic_new.password.clear();
+        self.topic_new.hovered = TopicNewHovered::None;
         self.last_error = None;
     }
 
@@ -512,18 +522,30 @@ impl Tab for NetworkTab {
                 .as_ref())
                 .split(inner);
 
-            let name_style = if self.topic_new.focus == TopicNewFocus::Name {
-                Style::default().bg(Color::Blue)
+            let btns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .split(pchunks[4]);
+
+            if self.topic_new.hovered != TopicNewHovered::None {
+                // hover state is set in on_mouse; draw uses it.
+            }
+
+            let name_border = if self.topic_new.focus == TopicNewFocus::Name {
+                Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
             };
-            let name_p = Paragraph::new(Line::from(self.topic_new.name.clone()))
-                .block(Block::default().title("Name").borders(Borders::ALL))
-                .style(name_style);
+            let name_p = Paragraph::new(Line::from(self.topic_new.name.clone())).block(
+                Block::default()
+                    .title("Name")
+                    .borders(Borders::ALL)
+                    .border_style(name_border),
+            );
             f.render_widget(name_p, pchunks[0]);
 
-            let auto_style = if self.topic_new.focus == TopicNewFocus::AutoJoin {
-                Style::default().bg(Color::Blue)
+            let auto_border = if self.topic_new.focus == TopicNewFocus::AutoJoin {
+                Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
             };
@@ -531,13 +553,15 @@ impl Tab for NetworkTab {
                 "[{}] Auto join",
                 if self.topic_new.auto_join { "x" } else { " " }
             );
-            let auto_p = Paragraph::new(Line::from(auto_label))
-                .block(Block::default().borders(Borders::ALL))
-                .style(auto_style);
+            let auto_p = Paragraph::new(Line::from(auto_label)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(auto_border),
+            );
             f.render_widget(auto_p, pchunks[1]);
 
-            let pw_toggle_style = if self.topic_new.focus == TopicNewFocus::PasswordToggle {
-                Style::default().bg(Color::Blue)
+            let pw_toggle_border = if self.topic_new.focus == TopicNewFocus::PasswordToggle {
+                Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
             };
@@ -545,13 +569,15 @@ impl Tab for NetworkTab {
                 "[{}] Password",
                 if self.topic_new.password_enabled { "x" } else { " " }
             );
-            let pw_toggle_p = Paragraph::new(Line::from(pw_toggle_label))
-                .block(Block::default().borders(Borders::ALL))
-                .style(pw_toggle_style);
+            let pw_toggle_p = Paragraph::new(Line::from(pw_toggle_label)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(pw_toggle_border),
+            );
             f.render_widget(pw_toggle_p, pchunks[2]);
 
-            let pw_style = if self.topic_new.focus == TopicNewFocus::Password {
-                Style::default().bg(Color::Blue)
+            let pw_border = if self.topic_new.focus == TopicNewFocus::Password {
+                Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
             };
@@ -560,27 +586,29 @@ impl Tab for NetworkTab {
             } else {
                 "".to_string()
             };
-            let pw_p = Paragraph::new(Line::from(pw_val))
-                .block(Block::default().title("Password (optional)").borders(Borders::ALL))
-                .style(pw_style);
+            let pw_p = Paragraph::new(Line::from(pw_val)).block(
+                Block::default()
+                    .title("Password (optional)")
+                    .borders(Borders::ALL)
+                    .border_style(pw_border),
+            );
             f.render_widget(pw_p, pchunks[3]);
 
-            let btns = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-                .split(pchunks[4]);
+            let save_btn = Button { label: "Save".to_string(), enabled: true };
+            save_btn.draw(
+                f,
+                btns[0],
+                self.topic_new.focus == TopicNewFocus::Save
+                    || self.topic_new.hovered == TopicNewHovered::Save,
+            );
 
-            let save_btn = Button {
-                label: "Save".to_string(),
-                enabled: true,
-            };
-            save_btn.draw(f, btns[0], self.topic_new.focus == TopicNewFocus::Save);
-
-            let abort_btn = Button {
-                label: "Abort".to_string(),
-                enabled: true,
-            };
-            abort_btn.draw(f, btns[1], self.topic_new.focus == TopicNewFocus::Abort);
+            let abort_btn = Button { label: "Abort".to_string(), enabled: true };
+            abort_btn.draw(
+                f,
+                btns[1],
+                self.topic_new.focus == TopicNewFocus::Abort
+                    || self.topic_new.hovered == TopicNewHovered::Abort,
+            );
         }
     }
 
@@ -589,24 +617,26 @@ impl Tab for NetworkTab {
             match key.code {
                 KeyCode::Esc => return UiCommand::TopicNewCancel,
                 KeyCode::Tab => {
-                    self.topic_new.focus = match self.topic_new.focus {
-                        TopicNewFocus::Name => TopicNewFocus::AutoJoin,
-                        TopicNewFocus::AutoJoin => TopicNewFocus::PasswordToggle,
-                        TopicNewFocus::PasswordToggle => TopicNewFocus::Password,
-                        TopicNewFocus::Password => TopicNewFocus::Save,
-                        TopicNewFocus::Save => TopicNewFocus::Abort,
-                        TopicNewFocus::Abort => TopicNewFocus::Name,
-                    };
+                    const ORDER: [TopicNewFocus; 6] = [
+                        TopicNewFocus::Name,
+                        TopicNewFocus::AutoJoin,
+                        TopicNewFocus::PasswordToggle,
+                        TopicNewFocus::Password,
+                        TopicNewFocus::Save,
+                        TopicNewFocus::Abort,
+                    ];
+                    self.topic_new.focus = cycle_focus_next(self.topic_new.focus, &ORDER);
                 }
                 KeyCode::BackTab => {
-                    self.topic_new.focus = match self.topic_new.focus {
-                        TopicNewFocus::Name => TopicNewFocus::Abort,
-                        TopicNewFocus::AutoJoin => TopicNewFocus::Name,
-                        TopicNewFocus::PasswordToggle => TopicNewFocus::AutoJoin,
-                        TopicNewFocus::Password => TopicNewFocus::PasswordToggle,
-                        TopicNewFocus::Save => TopicNewFocus::Password,
-                        TopicNewFocus::Abort => TopicNewFocus::Save,
-                    };
+                    const ORDER: [TopicNewFocus; 6] = [
+                        TopicNewFocus::Name,
+                        TopicNewFocus::AutoJoin,
+                        TopicNewFocus::PasswordToggle,
+                        TopicNewFocus::Password,
+                        TopicNewFocus::Save,
+                        TopicNewFocus::Abort,
+                    ];
+                    self.topic_new.focus = cycle_focus_prev(self.topic_new.focus, &ORDER);
                 }
                 KeyCode::Enter => {
                     match self.topic_new.focus {
@@ -705,6 +735,14 @@ impl Tab for NetworkTab {
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
                 .split(pchunks[4]);
+
+            if mouse_in(btns[0], &mouse) {
+                self.topic_new.hovered = TopicNewHovered::Save;
+            } else if mouse_in(btns[1], &mouse) {
+                self.topic_new.hovered = TopicNewHovered::Abort;
+            } else {
+                self.topic_new.hovered = TopicNewHovered::None;
+            }
 
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {

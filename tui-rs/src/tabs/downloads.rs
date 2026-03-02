@@ -4,8 +4,8 @@ use crate::tabs::{Tab, TabId, UiCommand};
 use crate::tabs::common::{format_bytes_per_sec, now_ms, progress_percent};
 use crate::widgets::{
     compute_scrollbar_metrics, contains, handle_scrollbar_down, handle_scrollbar_drag, mouse_in,
-    modal_geometry, draw_modal_shell, render_scrollbar, Button, MultiSelectState,
-    MultiSelectTableController, ScrollbarDownResult, TableHitTestSpec,
+    cycle_focus_next, cycle_focus_prev, modal_geometry, draw_modal_shell, render_scrollbar, Button,
+    MultiSelectState, MultiSelectTableController, ScrollbarDownResult, TableHitTestSpec,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -452,13 +452,21 @@ impl DownloadsTab {
             label: "Start".to_string(),
             enabled: true,
         };
-        start_btn.draw(f, btns[0], self.add.hovered == DownloadsAddHovered::Start);
+        start_btn.draw(
+            f,
+            btns[0],
+            self.add.hovered == DownloadsAddHovered::Start || self.add.focus == DownloadsAddFocus::Start,
+        );
 
         let abort_btn = Button {
             label: "Abort".to_string(),
             enabled: true,
         };
-        abort_btn.draw(f, btns[1], self.add.hovered == DownloadsAddHovered::Abort);
+        abort_btn.draw(
+            f,
+            btns[1],
+            self.add.hovered == DownloadsAddHovered::Abort || self.add.focus == DownloadsAddFocus::Abort,
+        );
 
         let hint = Paragraph::new(Text::from(vec![Line::from(
             "Tab/Shift+Tab switch fields | Enter confirm | Esc abort",
@@ -677,25 +685,20 @@ impl Tab for DownloadsTab {
 
     fn on_key(&mut self, key: KeyEvent, _app: &mut App) -> UiCommand {
         if self.add.open {
+            const ORDER: [DownloadsAddFocus; 5] = [
+                DownloadsAddFocus::Topic,
+                DownloadsAddFocus::MerkleRoot,
+                DownloadsAddFocus::Destination,
+                DownloadsAddFocus::Start,
+                DownloadsAddFocus::Abort,
+            ];
             match key.code {
                 KeyCode::Esc => return UiCommand::DownloadsAddCancel,
                 KeyCode::Tab => {
-                    self.add.focus = match self.add.focus {
-                        DownloadsAddFocus::Topic => DownloadsAddFocus::MerkleRoot,
-                        DownloadsAddFocus::MerkleRoot => DownloadsAddFocus::Destination,
-                        DownloadsAddFocus::Destination => DownloadsAddFocus::Start,
-                        DownloadsAddFocus::Start => DownloadsAddFocus::Abort,
-                        DownloadsAddFocus::Abort => DownloadsAddFocus::Topic,
-                    };
+                    self.add.focus = cycle_focus_next(self.add.focus, &ORDER);
                 }
                 KeyCode::BackTab => {
-                    self.add.focus = match self.add.focus {
-                        DownloadsAddFocus::Topic => DownloadsAddFocus::Abort,
-                        DownloadsAddFocus::MerkleRoot => DownloadsAddFocus::Topic,
-                        DownloadsAddFocus::Destination => DownloadsAddFocus::MerkleRoot,
-                        DownloadsAddFocus::Start => DownloadsAddFocus::Destination,
-                        DownloadsAddFocus::Abort => DownloadsAddFocus::Start,
-                    };
+                    self.add.focus = cycle_focus_prev(self.add.focus, &ORDER);
                 }
                 KeyCode::Enter => match self.add.focus {
                     DownloadsAddFocus::Start => return UiCommand::DownloadsAddConfirm,

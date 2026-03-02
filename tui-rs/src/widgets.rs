@@ -59,6 +59,22 @@ pub fn draw_modal_shell(f: &mut Frame, percent_x: u16, percent_y: u16, area: Rec
     inner
 }
 
+pub fn cycle_focus_next<T: Copy + PartialEq>(current: T, order: &[T]) -> T {
+    if order.is_empty() {
+        return current;
+    }
+    let pos = order.iter().position(|x| *x == current).unwrap_or(0);
+    order[(pos + 1) % order.len()]
+}
+
+pub fn cycle_focus_prev<T: Copy + PartialEq>(current: T, order: &[T]) -> T {
+    if order.is_empty() {
+        return current;
+    }
+    let pos = order.iter().position(|x| *x == current).unwrap_or(0);
+    order[(pos + order.len() - 1) % order.len()]
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TableHitTestSpec {
     pub header_rows: u16,
