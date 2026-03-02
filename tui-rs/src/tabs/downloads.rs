@@ -1,11 +1,11 @@
 use crate::app::App;
 use crate::ipc::IpcClient;
 use crate::tabs::{Tab, TabId, UiCommand};
-use crate::tabs::common::{centered_rect, format_bytes_per_sec, now_ms, progress_percent};
+use crate::tabs::common::{format_bytes_per_sec, now_ms, progress_percent};
 use crate::widgets::{
     compute_scrollbar_metrics, contains, handle_scrollbar_down, handle_scrollbar_drag, mouse_in,
-    render_scrollbar, Button, MultiSelectState, MultiSelectTableController, ScrollbarDownResult,
-    TableHitTestSpec,
+    modal_geometry, draw_modal_shell, render_scrollbar, Button, MultiSelectState,
+    MultiSelectTableController, ScrollbarDownResult, TableHitTestSpec,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -367,16 +367,7 @@ impl DownloadsTab {
     }
 
     fn draw_add_modal(&mut self, f: &mut Frame, area: Rect) {
-        use ratatui::widgets::Clear;
-
-        let popup = centered_rect(80, 80, area);
-        f.render_widget(Clear, popup);
-        f.render_widget(
-            Block::default().title("Add download").borders(Borders::ALL),
-            popup,
-        );
-
-        let inner = popup.inner(Margin { vertical: 1, horizontal: 1 });
+        let inner = draw_modal_shell(f, 80, 80, area, "Add download");
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
@@ -819,8 +810,7 @@ impl Tab for DownloadsTab {
 
     fn on_mouse(&mut self, mouse: MouseEvent, area: Rect, _app: &mut App) -> UiCommand {
         if self.add.open {
-            let popup = centered_rect(80, 80, area);
-            let inner = popup.inner(Margin { vertical: 1, horizontal: 1 });
+            let (popup, inner) = modal_geometry(80, 80, area);
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints(
@@ -857,6 +847,9 @@ impl Tab for DownloadsTab {
             }
 
             if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                if !contains(popup, mouse.column, mouse.row) {
+                    return UiCommand::DownloadsAddCancel;
+                }
                 if let Some(metrics) = topic_scrollbar_metrics {
                     if contains(metrics.scrollbar_col, mouse.column, mouse.row) {
                         match handle_scrollbar_down(metrics, mouse.row) {

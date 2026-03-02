@@ -5,7 +5,7 @@ use ratatui::{
     layout::Margin,
     style::{Color, Style},
     text::{Line, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 use ratatui::widgets::TableState;
@@ -17,6 +17,46 @@ pub fn contains(rect: Rect, col: u16, row: u16) -> bool {
 
 pub fn mouse_in(rect: Rect, mouse: &MouseEvent) -> bool {
     contains(rect, mouse.column, mouse.row)
+}
+
+pub fn modal_geometry(percent_x: u16, percent_y: u16, area: Rect) -> (Rect, Rect) {
+    let popup_layout = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints(
+            [
+                ratatui::layout::Constraint::Percentage((100 - percent_y) / 2),
+                ratatui::layout::Constraint::Percentage(percent_y),
+                ratatui::layout::Constraint::Percentage((100 - percent_y) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(area);
+
+    let horizontal = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Horizontal)
+        .constraints(
+            [
+                ratatui::layout::Constraint::Percentage((100 - percent_x) / 2),
+                ratatui::layout::Constraint::Percentage(percent_x),
+                ratatui::layout::Constraint::Percentage((100 - percent_x) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(popup_layout[1]);
+
+    let popup = horizontal[1];
+    let inner = popup.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    (popup, inner)
+}
+
+pub fn draw_modal_shell(f: &mut Frame, percent_x: u16, percent_y: u16, area: Rect, title: &str) -> Rect {
+    let (popup, inner) = modal_geometry(percent_x, percent_y, area);
+    f.render_widget(Clear, popup);
+    f.render_widget(Block::default().title(title).borders(Borders::ALL), popup);
+    inner
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -3,10 +3,10 @@ use crate::ipc::IpcClient;
 use crate::tabs::{Tab, TabId, UiCommand};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Paragraph, Row, Table, TableState},
     Frame,
 };
 use serde_json::Value;
@@ -15,9 +15,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::collections::BTreeSet;
 use crate::widgets::{
-    contains, compute_scrollbar_metrics, handle_scrollbar_down, handle_scrollbar_drag, mouse_in,
-    render_scrollbar, Button, MultiSelectState, MultiSelectTableController, ScrollbarDownResult,
-    TableHitTestSpec,
+    contains, draw_modal_shell, handle_scrollbar_down, handle_scrollbar_drag, modal_geometry,
+    mouse_in, render_scrollbar, Button, MultiSelectState, MultiSelectTableController,
+    ScrollbarDownResult, TableHitTestSpec,
 };
 
 #[derive(Debug, Clone)]
@@ -28,35 +28,6 @@ pub struct TopicRow {
     pub last_joined_at: Option<i64>,
     pub joined: bool,
     pub peers: u64,
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ]
-            .as_ref(),
-        )
-        .split(r);
-
-    let vertical = popup_layout[1];
-    let horizontal_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(
-            [
-                Constraint::Percentage((100 - percent_x) / 2),
-                Constraint::Percentage(percent_x),
-                Constraint::Percentage((100 - percent_x) / 2),
-            ]
-            .as_ref(),
-        )
-        .split(vertical);
-
-    horizontal_layout[1]
 }
 
 pub struct NetworkTab {
@@ -443,9 +414,9 @@ impl Tab for NetworkTab {
         }
         f.render_stateful_widget(table, table_area, &mut self.table_state);
 
-        if let Some(metrics) = compute_scrollbar_metrics(
+        let list_table_ctrl = MultiSelectTableController::new(TableHitTestSpec::bordered(1));
+        if let Some(metrics) = list_table_ctrl.scrollbar_metrics(
             list_area,
-            1,
             self.topics.len(),
             self.table_state.offset(),
         ) {
@@ -528,12 +499,7 @@ impl Tab for NetworkTab {
         f.render_widget(stats, chunks[1]);
 
         if self.topic_new.open {
-            let popup = centered_rect(60, 60, area);
-            f.render_widget(Clear, popup);
-
-            let outer = Block::default().title("New topic").borders(Borders::ALL);
-            f.render_widget(outer, popup);
-            let inner = popup.inner(Margin { vertical: 1, horizontal: 1 });
+            let inner = draw_modal_shell(f, 60, 60, area, "New topic");
             let pchunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -723,8 +689,7 @@ impl Tab for NetworkTab {
 
     fn on_mouse(&mut self, mouse: MouseEvent, area: Rect, _app: &mut App) -> UiCommand {
         if self.topic_new.open {
-            let popup = centered_rect(60, 60, area);
-            let inner = popup.inner(Margin { vertical: 1, horizontal: 1 });
+            let (popup, inner) = modal_geometry(60, 60, area);
             let pchunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
