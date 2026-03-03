@@ -498,8 +498,8 @@ impl Tab for DownloadsTab {
             "Root",
             "Progress",
             "Speed",
+            "Status",
             "Output",
-            "Done",
         ])
         .style(Style::default().fg(Color::Yellow));
 
@@ -511,7 +511,6 @@ impl Tab for DownloadsTab {
             } else {
                 e.merkle_root.clone()
             };
-            let done = if e.completed_at.is_some() { "yes" } else { "" };
 
             let lk = DownloadKey {
                 topic: e.topic.clone(),
@@ -520,28 +519,22 @@ impl Tab for DownloadsTab {
             };
 
             let (speed, status, row_style) = if e.completed_at.is_some() {
-                ("".to_string(), "complete".to_string(), Style::default())
+                ("".to_string(), "done".to_string(), Style::default())
             } else if let Some(l) = self.live.get(&lk) {
                 if l.error.is_some() {
                     ("".to_string(), "error".to_string(), Style::default())
                 } else if l.completed {
-                    ("".to_string(), "complete".to_string(), Style::default())
+                    ("".to_string(), "done".to_string(), Style::default())
                 } else {
                     let stalled = now.saturating_sub(l.last_ts) > 3000;
-                    let status = if stalled {
-                        "paused".to_string()
+                    if stalled {
+                        ("".to_string(), "verifying".to_string(), Style::default())
                     } else {
-                        "downloading".to_string()
-                    };
-                    let sp = if stalled {
-                        "".to_string()
-                    } else {
-                        format_bytes_per_sec(l.speed_bps)
-                    };
-                    (sp, status, Style::default())
+                        (format_bytes_per_sec(l.speed_bps), "downloading".to_string(), Style::default())
+                    }
                 }
             } else {
-                ("".to_string(), "queued".to_string(), Style::default())
+                ("".to_string(), "pending".to_string(), Style::default())
             };
 
             Row::new(vec![
@@ -552,7 +545,6 @@ impl Tab for DownloadsTab {
                 speed,
                 status,
                 e.output_path.clone(),
-                done.to_string(),
             ])
             .style(row_style)
         });
@@ -565,12 +557,12 @@ impl Tab for DownloadsTab {
             Constraint::Length(10),
             Constraint::Length(12),
             Constraint::Min(10),
-            Constraint::Length(6),
         ];
 
         let table = Table::new(rows, constraints)
             .header(header)
             .block(Block::default().title("Downloads").borders(Borders::ALL))
+            .column_spacing(0)
             .row_highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow));
 
         f.render_stateful_widget(table, list_area, &mut self.table_state);
@@ -602,7 +594,7 @@ impl Tab for DownloadsTab {
                     if l.error.is_some() {
                         (
                             progress_percent(l.verified, l.total),
-                            "Verification error".to_string(),
+                            "Error".to_string(),
                             Color::Red,
                         )
                     } else if l.completed {
@@ -612,8 +604,8 @@ impl Tab for DownloadsTab {
                         if stalled {
                             (
                                 progress_percent(l.verified, l.total),
-                                "Paused".to_string(),
-                                Color::DarkGray,
+                                "Verifying".to_string(),
+                                Color::Yellow,
                             )
                         } else {
                             (
@@ -624,7 +616,7 @@ impl Tab for DownloadsTab {
                         }
                     }
                 } else {
-                    (0, "Queued".to_string(), Color::Gray)
+                    (0, "Pending".to_string(), Color::Gray)
                 };
 
                 let y = progress_col.y.saturating_add(1).saturating_add(rel as u16);
@@ -635,7 +627,7 @@ impl Tab for DownloadsTab {
                 let gauge_area = Rect {
                     x: progress_col.x,
                     y,
-                    width: progress_col.width,
+                    width: progress_col.width.saturating_sub(1),
                     height: 1,
                 };
 
