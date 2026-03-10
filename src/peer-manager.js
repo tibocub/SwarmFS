@@ -195,9 +195,22 @@ export class PeerManager {
     
     const successRate = peer.successfulChunks / totalRequests;
     
-    if (successRate < 0.5 || peer.timeouts > 5) {
-      console.warn(`🚫 Banning peer ${peer.peerId.substring(0, 8)} (success rate: ${(successRate * 100).toFixed(1)}%, timeouts: ${peer.timeouts})`);
-      this.removePeer(peer.peerId);
+    // Auto-ban disabled for real-world reliability.
+    // In local testing, timeouts were rare. In real-world usage with slow/unstable
+    // connections, timeouts are inevitable over long downloads, and the cumulative
+    // timeout counter would eventually ban all peers.
+    // TODO: Re-enable with smarter logic that:
+    //   - Checks if other peers have the same chunks before banning
+    //   - Implements timeout decay (forgive old timeouts over time)
+    //   - Uses adaptive thresholds based on network conditions
+    // if (successRate < 0.5 || peer.timeouts > 5) {
+    //   console.warn(`🚫 Banning peer ${peer.peerId.substring(0, 8)} (success rate: ${(successRate * 100).toFixed(1)}%, timeouts: ${peer.timeouts})`);
+    //   this.removePeer(peer.peerId);
+    // }
+    
+    // Log peer health for debugging (no banning)
+    if (peer.timeouts > 3 || successRate < 0.7) {
+      console.log(`📊 Peer health: ${peer.peerId.substring(0, 8)} (success: ${(successRate * 100).toFixed(1)}%, timeouts: ${peer.timeouts})`);
     }
   }
 
