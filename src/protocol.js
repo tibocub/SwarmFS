@@ -12,6 +12,7 @@ import { hashBuffer } from './hash.js'
 import { buildMerkleTree, generateSubtreeProofFromTree } from './merkle.js'
 import Protomux from 'protomux'
 import c from 'compact-encoding'
+import { memoryMonitor } from './memory-monitor.js'
 
 const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true'
 const debug = (...args) => {
@@ -306,8 +307,18 @@ export class Protocol extends EventEmitter {
             totalBytes,
             receivedBytes: 0,
             parts: [],
-            peerId
+            peerId,
+            createdAt: Date.now()
           })
+          
+          // Add timeout to cleanup incomplete subtrees
+          setTimeout(() => {
+            const rx = this._subtreeRx.get(requestId);
+            if (rx) {
+              console.warn(`🧹 Cleaning up incomplete subtree ${requestId.substring(0, 8)} (${rx.receivedBytes}/${rx.totalBytes} bytes)`);
+              this._subtreeRx.delete(requestId);
+            }
+          }, 60000); // 60 second timeout
         } catch {
           // ignore
         }
@@ -950,6 +961,8 @@ export class Protocol extends EventEmitter {
 
     const chunks = this.db.getFileChunks(file.id)
     const slice = chunks.slice(startChunk, endChunk + 1)
+    
+    memoryMonitor.takeSnapshot(`Subtree request: chunks=${slice.length}, start=${startChunk}`)
 
     // Subtree proofs require aligned power-of-two subtrees.
     // (Downloader uses power-of-two subtreeChunkCount, but guard here too.)
@@ -977,11 +990,13 @@ export class Protocol extends EventEmitter {
     // Send a subtree proof first (JSON frame), then stream SUBTREE_DATA (binary frame).
     // Proof is for the internal node that exactly covers [startChunk, startChunk+chunkCount).
     try {
+      memoryMonitor.takeSnapshot('Before merkle tree build');
       let tree = this._merkleTreeCache.get(merkleRoot)
       if (!tree) {
         const leafHashes = chunks.map((ch) => ch.chunk_hash)
         tree = await buildMerkleTree(leafHashes)
         this._merkleTreeCache.set(merkleRoot, tree)
+        memoryMonitor.takeSnapshot('After merkle tree build');
       }
 
       const level = Math.round(Math.log2(chunkCount))
@@ -1008,7 +1023,9 @@ export class Protocol extends EventEmitter {
     const fd = fs.openSync(file.path, 'r')
     try {
       if (!hasMux) {
+        memoryMonitor.takeSnapshot(`Before legacy buffer alloc: ${total} bytes`);
         const out = Buffer.allocUnsafe(total)
+        memoryMonitor.takeSnapshot('After legacy buffer alloc');
         let off = 0
         for (const ch of slice) {
           let remaining = ch.chunk_size
@@ -1024,6 +1041,7 @@ export class Protocol extends EventEmitter {
           off += ch.chunk_size
         }
         const dataBuf = off === out.length ? out : out.subarray(0, off)
+        memoryMonitor.takeSnapshot('Before encodeMessage with data');
         const msg = this.encodeMessage(MSG_TYPE.SUBTREE_DATA, {
           requestId,
           merkleRoot,
@@ -1031,7 +1049,9 @@ export class Protocol extends EventEmitter {
           chunkCount: slice.length,
           data: dataBuf
         })
+        memoryMonitor.takeSnapshot('After encodeMessage');
         void this._enqueueWrite(conn, msg)
+        memoryMonitor.takeSnapshot('After enqueueWrite (legacy mode)');
         return
       }
 
@@ -1043,11 +1063,14 @@ export class Protocol extends EventEmitter {
         return
       }
 
+      memoryMonitor.takeSnapshot('Before Protomux streaming');
       begin.send(JSON.stringify({ requestId, merkleRoot, startChunk, chunkCount: slice.length, totalBytes: total }))
 
       const requestIdBytes = Buffer.from(requestId, 'hex')
       const MAX_PART = 8 * 1024 * 1024
+      memoryMonitor.takeSnapshot('Before Protomux part buffer alloc');
       const partBuf = Buffer.allocUnsafe(16 + MAX_PART)
+      memoryMonitor.takeSnapshot('After Protomux part buffer alloc');
       requestIdBytes.copy(partBuf, 0)
 
       for (const ch of slice) {
@@ -1068,6 +1091,7 @@ export class Protocol extends EventEmitter {
       this.sendError(conn, requestId, `Failed to read subtree data: ${err?.message || String(err)}`)
     } finally {
       fs.closeSync(fd)
+      memoryMonitor.takeSnapshot('After file close');
     }
   }
 
@@ -1619,6 +1643,23 @@ export class Protocol extends EventEmitter {
         this.activeMetadataRequests.delete(requestId);
       }
     }
+
+    // CRITICAL: Cleanup subtree reassembly buffers to prevent memory leaks
+    let subtreeCleanupCount = 0;
+    let totalBufferedBytes = 0;
+    for (const [requestId, rx] of this._subtreeRx) {
+      if (now - (rx.createdAt || rx.timestamp || 0) > maxAge) {
+        const bufferedBytes = rx.parts.reduce((sum, part) => sum + part.length, 0);
+        console.warn(`🧹 Cleaning up stale subtree ${requestId.substring(0, 8)} (${rx.receivedBytes}/${rx.totalBytes} bytes, ${bufferedBytes} buffered)`);
+        this._subtreeRx.delete(requestId);
+        subtreeCleanupCount++;
+        totalBufferedBytes += bufferedBytes;
+      }
+    }
+    
+    if (subtreeCleanupCount > 0) {
+      console.log(`🧹 Cleaned up ${subtreeCleanupCount} stale subtree buffers (${this._formatBytes(totalBufferedBytes)})`);
+    }
   }
 
   /**
@@ -1627,8 +1668,17 @@ export class Protocol extends EventEmitter {
   getStats() {
     return {
       activeRequests: this.activeRequests.size,
-      activeDownloads: this.activeDownloads.size
+      activeDownloads: this.activeDownloads.size,
+      subtreeRxBuffers: this._subtreeRx.size
     };
+  }
+
+  _formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
   }
 
   /**
