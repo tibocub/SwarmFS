@@ -469,11 +469,18 @@ export class SwarmFS {
       currentRoot = tree.root;
       currentHashes = tree.levels[0];
     } else {
-      // Use single-threaded verification
-      const currentData = fs.readFileSync(absolutePath);
-      const { chunkBuffer } = await import('./chunk.js');
-      const chunks = chunkBuffer(currentData, fileInfo.chunk_size);
-      currentHashes = await Promise.all(chunks.map(async (chunk) => await hashBuffer(chunk)));
+      // Use streaming verification to handle files >2GB
+      // (fs.readFileSync fails with ERR_FS_FILE_TOO_LARGE for large files)
+      currentHashes = [];
+      const chunkSize = fileInfo.chunk_size;
+      let offset = 0;
+      
+      for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
+        const hash = await hashBuffer(buffer);
+        currentHashes.push(hash);
+        offset += buffer.length;
+      }
+      
       currentRoot = await getMerkleRoot(currentHashes);
     }
 

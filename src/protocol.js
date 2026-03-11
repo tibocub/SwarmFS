@@ -85,6 +85,11 @@ export class Protocol extends EventEmitter {
     this._enableMuxControl = false
     this._enableMux = false
     
+    // Backpressure: limit concurrent subtree serves to prevent memory exhaustion
+    this._activeSubtreeServes = 0;
+    this._maxConcurrentSubtreeServes = 8;
+    this._subtreeServeQueue = [];
+    
     // Setup network event handlers
     debug('[PROTOCOL] Setting up peer handler...');
 
@@ -887,6 +892,30 @@ export class Protocol extends EventEmitter {
       return
     }
 
+    // Backpressure: queue request if at capacity
+    if (this._activeSubtreeServes >= this._maxConcurrentSubtreeServes) {
+      this._subtreeServeQueue.push({ conn, peerId, payload })
+      debug('[PROTOCOL] Subtree request queued (active: %d, max: %d)', this._activeSubtreeServes, this._maxConcurrentSubtreeServes)
+      return
+    }
+
+    this._activeSubtreeServes++
+    try {
+      await this._serveSubtreeRequest(conn, peerId, payload)
+    } finally {
+      this._activeSubtreeServes--
+      // Process next queued request if any
+      if (this._subtreeServeQueue.length > 0 && this._activeSubtreeServes < this._maxConcurrentSubtreeServes) {
+        const next = this._subtreeServeQueue.shift()
+        // Fire-and-forget to avoid blocking
+        this.handleSubtreeRequest(next.conn, next.peerId, next.payload).catch(() => {})
+      }
+    }
+  }
+
+  async _serveSubtreeRequest(conn, peerId, payload) {
+    const { requestId, merkleRoot, startChunk, chunkCount, topicKey } = payload || {}
+    
     let file = null
     if (typeof topicKey === 'string' && topicKey.length > 0) {
       const topic = this.db.getTopicByKey(topicKey)

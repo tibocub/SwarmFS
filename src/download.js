@@ -74,13 +74,19 @@ export class DownloadSession extends EventEmitter {
     this.chunksInFlight = 0;
     this.bytesDownloaded = 0;
     
-    this.maxConcurrentRequests = 50;
+    // Adaptive concurrent requests: scale with peer count
+    // Formula: min(50, max(4, peerCount * 8))
+    // Updated dynamically as peers connect/disconnect
+    this.maxConcurrentRequests = 4; // Start low, will increase as peers connect
     this.requestTimeout = 30000;
     
     this.running = false;
     this.loopCount = 0;
     
     this.fileId = null;
+    
+    // Track if we need to update maxConcurrentRequests
+    this._lastPeerCount = 0;
 
     this.outputFd = null;
 
@@ -188,6 +194,7 @@ export class DownloadSession extends EventEmitter {
 
     if (added > 0) {
       console.log(`🔌 Bootstrapped ${added} existing peer(s) for download session`);
+      this._updateMaxConcurrentRequests();
     }
   }
 
@@ -661,11 +668,13 @@ export class DownloadSession extends EventEmitter {
     }
     
     this.peerManager.addPeer(peerId, conn);
+    this._updateMaxConcurrentRequests();
   }
 
   onPeerDisconnected(info) {
     const { peerId } = info;
     this.peerManager.removePeer(peerId);
+    this._updateMaxConcurrentRequests();
     for (const [, ch] of this.chunkStates) {
       if (!ch || ch.state === ChunkState.VERIFIED) {
         continue
@@ -987,14 +996,32 @@ export class DownloadSession extends EventEmitter {
   }
 
   async waitForSlot() {
-    return new Promise(resolve => {
-      const handler = () => {
-        this.removeListener('progress', handler);
-        resolve();
-      };
-      this.once('progress', handler);
-      setTimeout(resolve, 5000);
-    });
+    // Poll for available slot instead of using event listeners.
+    // The old approach added a new 'progress' listener every call, causing
+    // EventEmitter memory leak warnings and memory accumulation.
+    const maxPolls = 100; // 100 * 50ms = 5 seconds max wait
+    for (let i = 0; i < maxPolls; i++) {
+      if (this.chunksInFlight < this.maxConcurrentRequests) {
+        return;
+      }
+      await this.sleep(50);
+    }
+  }
+
+  _updateMaxConcurrentRequests() {
+    const peerCount = this.peerManager.peers.size;
+    if (peerCount === this._lastPeerCount) {
+      return; // No change
+    }
+    this._lastPeerCount = peerCount;
+    
+    // Adaptive formula: min(50, max(4, peerCount * 8))
+    const oldMax = this.maxConcurrentRequests;
+    this.maxConcurrentRequests = Math.min(50, Math.max(4, peerCount * 8));
+    
+    if (oldMax !== this.maxConcurrentRequests) {
+      console.log(`📊 Adaptive concurrency: ${this.maxConcurrentRequests} requests (${peerCount} peers)`);
+    }
   }
 
   sleep(ms) {
