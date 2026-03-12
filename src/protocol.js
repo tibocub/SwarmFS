@@ -61,9 +61,11 @@ export class Protocol extends EventEmitter {
     this.activeFileListRequests = new Map(); // requestId -> { topicKey, timeout }
     this.activeMetadataRequests = new Map(); // requestId -> { merkleRoot, topicKey, timeout }
 
-    // Cache merkle trees for serving subtree proofs.
-    // merkleRoot(hex) -> { root, levels, leafCount }
+    // Cache merkle trees for serving subtree proofs with LRU eviction.
+    // merkleRoot(hex) -> { root, levels, leafCount, timestamp }
+    // Limit to 10 trees to bound memory usage (~10-15MB max for large files)
     this._merkleTreeCache = new Map();
+    this._merkleTreeCacheMaxSize = 10;
 
     // Protomux integration
     this._muxByConn = new WeakMap(); // conn -> mux
@@ -78,6 +80,7 @@ export class Protocol extends EventEmitter {
     this._activeSubtreeServes = 0;
     this._maxConcurrentSubtreeServes = 8;
     this._subtreeServeQueue = [];
+    this._maxSubtreeServeQueueSize = 100; // Drop requests if queue exceeds this
     
     // Setup network event handlers
     debug('[PROTOCOL] Setting up peer handler...');
@@ -862,6 +865,12 @@ export class Protocol extends EventEmitter {
 
     // Backpressure: queue request if at capacity
     if (this._activeSubtreeServes >= this._maxConcurrentSubtreeServes) {
+      // Check queue size limit - drop request if overloaded
+      if (this._subtreeServeQueue.length >= this._maxSubtreeServeQueueSize) {
+        this.sendError(conn, requestId, 'Server overloaded, please retry')
+        debug('[PROTOCOL] Subtree request dropped - queue full (%d)', this._subtreeServeQueue.length)
+        return
+      }
       this._subtreeServeQueue.push({ conn, peerId, payload })
       debug('[PROTOCOL] Subtree request queued (active: %d, max: %d)', this._activeSubtreeServes, this._maxConcurrentSubtreeServes)
       return
@@ -916,15 +925,15 @@ export class Protocol extends EventEmitter {
       return
     }
 
-    const chunks = this.db.getFileChunks(file.id)
-    const slice = chunks.slice(startChunk, endChunk + 1)
-
     // Subtree proofs require aligned power-of-two subtrees.
     const isPowerOfTwo = (n) => n > 0 && (n & (n - 1)) === 0
     if (!isPowerOfTwo(chunkCount) || (startChunk % chunkCount) !== 0) {
       this.sendError(conn, requestId, 'Subtree request must be aligned power-of-two')
       return
     }
+
+    // Fetch only the chunks we need for serving (not the entire file)
+    const slice = this.db.getFileChunksRange(file.id, startChunk, endChunk)
 
     let total = 0
     for (const ch of slice) {
@@ -935,9 +944,30 @@ export class Protocol extends EventEmitter {
     try {
       let tree = this._merkleTreeCache.get(merkleRoot)
       if (!tree) {
+        // Only fetch all chunks if we need to build the tree (will be cached)
+        const chunks = this.db.getFileChunks(file.id)
         const leafHashes = chunks.map((ch) => ch.chunk_hash)
         tree = await buildMerkleTree(leafHashes)
+        tree.timestamp = Date.now() // LRU tracking
+        
+        // LRU eviction: remove oldest entry if cache is full
+        if (this._merkleTreeCache.size >= this._merkleTreeCacheMaxSize) {
+          let oldestKey = null
+          let oldestTime = Infinity
+          for (const [key, value] of this._merkleTreeCache) {
+            if (value.timestamp < oldestTime) {
+              oldestTime = value.timestamp
+              oldestKey = key
+            }
+          }
+          if (oldestKey) {
+            this._merkleTreeCache.delete(oldestKey)
+          }
+        }
         this._merkleTreeCache.set(merkleRoot, tree)
+      } else {
+        // Update timestamp for LRU
+        tree.timestamp = Date.now()
       }
 
       const level = Math.round(Math.log2(chunkCount))
@@ -981,10 +1011,38 @@ export class Protocol extends EventEmitter {
       const chunkBuf = Buffer.allocUnsafe(16 + CHUNK_SIZE)
       requestIdBytes.copy(chunkBuf, 0)
 
+      // Backpressure: track pending sends and wait for drain when threshold reached
+      // This prevents unbounded buffering in Protomux when network is slower than disk
+      const BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024 // 4MB pending
+      let pendingBytes = 0
+      let drainCallback = null
+      
+      const waitForDrain = () => new Promise(resolve => {
+        drainCallback = resolve
+      })
+      
+      // Set up drain listener on the underlying stream
+      const mux = this._muxByConn.get(conn)
+      const stream = mux?.stream
+      if (stream && typeof stream.once === 'function') {
+        stream.on('drain', () => {
+          pendingBytes = 0
+          if (drainCallback) {
+            drainCallback()
+            drainCallback = null
+          }
+        })
+      }
+
       for (const ch of slice) {
         let remaining = ch.chunk_size
         let localOff = 0
         while (remaining > 0) {
+          // Backpressure check: wait if too many bytes pending
+          if (pendingBytes >= BACKPRESSURE_THRESHOLD && stream?.writable !== false) {
+            await waitForDrain()
+          }
+          
           const toRead = Math.min(remaining, CHUNK_SIZE)
           const bytesRead = fs.readSync(fd, chunkBuf, 16, toRead, ch.chunk_offset + localOff)
           if (bytesRead <= 0) {
@@ -994,7 +1052,13 @@ export class Protocol extends EventEmitter {
           remaining -= bytesRead
           // Send immediately - no accumulation
           part.send(chunkBuf.subarray(0, 16 + bytesRead))
+          pendingBytes += bytesRead
         }
+      }
+      
+      // Cleanup drain listener
+      if (stream && typeof stream.removeListener === 'function' && drainCallback) {
+        stream.removeListener('drain', drainCallback)
       }
     } catch (err) {
       this.sendError(conn, requestId, `Failed to read subtree data: ${err?.message || String(err)}`)
@@ -1557,13 +1621,22 @@ export class Protocol extends EventEmitter {
   }
 
   /**
-   * Get stats
+   * Get stats including memory usage
    */
   getStats() {
+    const mem = process.memoryUsage()
     return {
       activeRequests: this.activeRequests.size,
       activeDownloads: this.activeDownloads.size,
-      subtreeRxBuffers: this._subtreeRx.size
+      subtreeRxBuffers: this._subtreeRx.size,
+      merkleTreeCache: this._merkleTreeCache.size,
+      subtreeServeQueue: this._subtreeServeQueue.length,
+      memory: {
+        heapUsed: this._formatBytes(mem.heapUsed),
+        heapTotal: this._formatBytes(mem.heapTotal),
+        external: this._formatBytes(mem.external),
+        rss: this._formatBytes(mem.rss)
+      }
     };
   }
 

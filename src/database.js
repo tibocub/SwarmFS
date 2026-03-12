@@ -313,6 +313,22 @@ export class SwarmDB {
   }
 
   /**
+   * Get chunks for a file within a range (for efficient subtree serving)
+   * @param {number} fileId - File ID
+   * @param {number} startIndex - Start chunk index (inclusive)
+   * @param {number} endIndex - End chunk index (inclusive)
+   */
+  getFileChunksRange(fileId, startIndex, endIndex) {
+    const stmt = this.db.prepare(`
+      SELECT chunk_index, chunk_hash, chunk_offset, chunk_size
+      FROM file_chunks
+      WHERE file_id = ? AND chunk_index >= ? AND chunk_index <= ?
+      ORDER BY chunk_index
+    `);
+    return stmt.all(fileId, startIndex, endIndex);
+  }
+
+  /**
    * Get chunk location (file path + offset/size) by hash
    */
   getChunkLocation(chunkHash) {
