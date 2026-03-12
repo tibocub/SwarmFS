@@ -118,8 +118,11 @@ export class Protocol extends EventEmitter {
     const control = this._controlMsgByConn.get(conn)
     const muxReady = this._muxReadyByConn.get(conn)
     
+    console.log(`[MUX] _enqueueWrite: control=${!!control} muxReady=${muxReady} dataLen=${data.length}`)
+    
     // Protomux required - use control channel
     if (!control) {
+      console.error(`[MUX] No control channel - cannot send`)
       return Promise.reject(new Error('Protomux channel not set up'))
     }
     
@@ -127,6 +130,7 @@ export class Protocol extends EventEmitter {
       // Channel is ready - send immediately
       try {
         control.send(data)
+        console.log(`[MUX] Sent ${data.length} bytes`)
         return Promise.resolve()
       } catch (err) {
         console.error('Protomux send error:', err)
@@ -135,6 +139,7 @@ export class Protocol extends EventEmitter {
     }
     
     // Channel is opening - queue the message
+    console.log(`[MUX] Channel not ready - queuing message`)
     return new Promise((resolve, reject) => {
       const queue = this._muxSendQueue?.get(conn) || []
       queue.push({ data, resolve, reject })
@@ -218,8 +223,11 @@ export class Protocol extends EventEmitter {
 
   _setupMux(conn, peerId) {
     if (this._controlMsgByConn.get(conn)) {
+      console.log(`[MUX] Channel already exists for ${peerId.substring(0, 8)}`)
       return
     }
+
+    console.log(`[MUX] Setting up channel for ${peerId.substring(0, 8)}`)
 
     try {
       const mux = Protomux.from(conn)
@@ -234,22 +242,26 @@ export class Protocol extends EventEmitter {
         protocol: 'swarmfs',
         id: Buffer.from([1]),
         onopen: () => {
+          console.log(`[MUX] Channel OPEN for ${peerId.substring(0, 8)}`)
           this._muxOpenByConn.set(conn, true)
           // Protomux is required - channel open means ready
           this._muxReadyByConn.set(conn, true)
           // Drain any queued messages
           const queue = this._muxSendQueue?.get(conn) || []
           this._muxSendQueue?.delete(conn)
+          console.log(`[MUX] Draining ${queue.length} queued messages`)
           for (const { data, resolve, reject } of queue) {
             try {
               control.send(data)
               resolve()
             } catch (err) {
+              console.error(`[MUX] Failed to drain message:`, err)
               reject(err)
             }
           }
         },
         onclose: () => {
+          console.log(`[MUX] Channel CLOSED for ${peerId.substring(0, 8)}`)
           this._muxOpenByConn.delete(conn)
           this._controlMsgByConn.delete(conn)
           this._subtreeBeginByConn.delete(conn)
@@ -259,16 +271,18 @@ export class Protocol extends EventEmitter {
       })
 
       if (!channel) {
+        console.error(`[MUX] Failed to create channel for ${peerId.substring(0, 8)}`)
         return
       }
 
     const control = channel.addMessage({
       encoding: c.binary,
       onmessage: async (buf) => {
+        console.log(`[MUX] Received control message: ${buf.length} bytes from ${peerId.substring(0, 8)}`)
         try {
           await this.handleMessage(conn, peerId, buf)
-        } catch {
-          // ignore
+        } catch (err) {
+          console.error(`[MUX] Error handling message:`, err)
         }
       }
     })
