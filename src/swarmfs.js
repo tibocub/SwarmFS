@@ -39,40 +39,6 @@ export class SwarmFS {
     }
   }
 
-  _chooseChunkSizeForFile(fileSize) {
-    if (typeof fileSize !== 'number' || !Number.isFinite(fileSize) || fileSize < 0) {
-      return DEFAULT_CHUNK_SIZE;
-    }
-
-    // Prefer larger chunks for large files (fewer hashes/proofs, fewer DB rows).
-    // Keep within [1MiB, 64MiB] by default.
-    if (fileSize >= 256 * 1024 * 1024 * 1024) {
-      return 64 * 1024 * 1024;
-    }
-
-    if (fileSize >= 64 * 1024 * 1024 * 1024) {
-      return 32 * 1024 * 1024;
-    }
-
-    if (fileSize >= 16 * 1024 * 1024 * 1024) {
-      return 16 * 1024 * 1024;
-    }
-
-    if (fileSize >= 4 * 1024 * 1024 * 1024) {
-      return 8 * 1024 * 1024;
-    }
-
-    if (fileSize >= 1024 * 1024 * 1024) {
-      return 4 * 1024 * 1024;
-    }
-
-    if (fileSize >= 256 * 1024 * 1024) {
-      return 2 * 1024 * 1024;
-    }
-
-    return DEFAULT_CHUNK_SIZE;
-  }
-
   /**
    * Initialize SwarmFS (create data directory, database, etc.)
    */
@@ -138,9 +104,9 @@ export class SwarmFS {
 
     const fileSize = stats.size;
 
-    if (chunkSize === null || chunkSize === undefined) {
-      chunkSize = this._chooseChunkSizeForFile(fileSize);
-    }
+    // Fixed 1MB chunk size for constant memory usage
+    // This simplifies streaming and ensures predictable memory footprint
+    chunkSize = DEFAULT_CHUNK_SIZE;
 
     // Decide whether to use parallel or single-threaded approach
     const shouldUseParallel = useParallel && (fileSize > 1024 * 1024); // Use parallel for files > 1MB

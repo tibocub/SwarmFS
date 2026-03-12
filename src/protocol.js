@@ -12,7 +12,6 @@ import { hashBuffer } from './hash.js'
 import { buildMerkleTree, generateSubtreeProofFromTree } from './merkle.js'
 import Protomux from 'protomux'
 import c from 'compact-encoding'
-import { memoryMonitor } from './memory-monitor.js'
 
 const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true'
 const debug = (...args) => {
@@ -83,8 +82,8 @@ export class Protocol extends EventEmitter {
     this._muxOpenByConn = new WeakMap(); // conn -> boolean
     this._muxHelloByPeer = new Map(); // peerId -> boolean (peer advertised mux support)
     this._muxReadyByConn = new WeakMap(); // conn -> boolean (safe to send via mux)
-    this._enableMuxControl = false
-    this._enableMux = false
+    this._enableMuxControl = true  // Required for streaming
+    this._enableMux = true         // Protomux required for all peers
     
     // Backpressure: limit concurrent subtree serves to prevent memory exhaustion
     this._activeSubtreeServes = 0;
@@ -233,8 +232,8 @@ export class Protocol extends EventEmitter {
   onPeerConnected(conn, peerId, topicKey) {
     console.log(`Peer connected: ${peerId.substring(0, 8)}`);
 
-    // Protomux disabled for now: it requires a framed stream, and attaching it to the raw
-    // Hyperswarm socket breaks legacy message reassembly.
+    // Setup Protomux for streaming (required for all peers)
+    this._setupMux(conn, peerId);
 
     // Emit event
     this.emit('peer:connected', { conn, peerId, topicKey });
@@ -306,9 +305,20 @@ export class Protocol extends EventEmitter {
             chunkCount,
             totalBytes,
             receivedBytes: 0,
-            parts: [],
+            nextChunkIndex: startChunk,  // Track which chunk we're receiving
+            chunkOffset: 0,              // Offset within current chunk
             peerId,
             createdAt: Date.now()
+          })
+          
+          // Emit begin event so download session can prepare
+          this.emit('subtree:begin', {
+            requestId,
+            merkleRoot,
+            startChunk,
+            chunkCount,
+            totalBytes,
+            peerId
           })
           
           // Add timeout to cleanup incomplete subtrees
@@ -338,18 +348,31 @@ export class Protocol extends EventEmitter {
         if (!rx) {
           return
         }
-        rx.parts.push(payload)
+        
+        // Stream directly: emit each part with its offset
+        // Download session will write to disk immediately
+        const offset = rx.receivedBytes
         rx.receivedBytes += payload.length
+        
+        this.emit('subtree:part', {
+          requestId,
+          merkleRoot: rx.merkleRoot,
+          startChunk: rx.startChunk,
+          offset,  // Byte offset within the subtree
+          data: payload,
+          peerId: rx.peerId,
+          isLast: rx.receivedBytes >= rx.totalBytes
+        })
+        
         if (rx.receivedBytes >= rx.totalBytes) {
           this._subtreeRx.delete(requestId)
-          const data = rx.parts.length === 1 ? rx.parts[0] : Buffer.concat(rx.parts, rx.receivedBytes)
-          this.emit('subtree:downloaded', {
+          // Emit complete event
+          this.emit('subtree:complete', {
             requestId,
             merkleRoot: rx.merkleRoot,
             startChunk: rx.startChunk,
             chunkCount: rx.chunkCount,
-            peerId: rx.peerId,
-            data
+            peerId: rx.peerId
           })
         }
       }
@@ -688,9 +711,6 @@ export class Protocol extends EventEmitter {
         case MSG_TYPE.SUBTREE_REQUEST:
           await this.handleSubtreeRequest(conn, peerId, payload);
           break;
-        case MSG_TYPE.SUBTREE_DATA:
-          await this.handleSubtreeData(conn, peerId, payload);
-          break;
         case MSG_TYPE.SUBTREE_PROOF:
           this.handleSubtreeProof(conn, peerId, payload);
           break;
@@ -961,42 +981,26 @@ export class Protocol extends EventEmitter {
 
     const chunks = this.db.getFileChunks(file.id)
     const slice = chunks.slice(startChunk, endChunk + 1)
-    
-    memoryMonitor.takeSnapshot(`Subtree request: chunks=${slice.length}, start=${startChunk}`)
 
     // Subtree proofs require aligned power-of-two subtrees.
-    // (Downloader uses power-of-two subtreeChunkCount, but guard here too.)
     const isPowerOfTwo = (n) => n > 0 && (n & (n - 1)) === 0
     if (!isPowerOfTwo(chunkCount) || (startChunk % chunkCount) !== 0) {
       this.sendError(conn, requestId, 'Subtree request must be aligned power-of-two')
       return
     }
 
-    const hasMux = !!this._controlMsgByConn.get(conn)
-    // Guard against Hyperswarm/secret-stream atomic write limit when using the legacy single-frame SUBTREE_DATA.
-    // Protomux can stream multiple parts, so only enforce this limit in legacy mode.
-    const MAX_ATOMIC_WRITE = 16777215
-    const SUBTREE_DATA_OVERHEAD = 6 + (1 + 16 + 32 + 4 + 2 + 4)
     let total = 0
     for (const ch of slice) {
       total += ch.chunk_size
     }
-    const projected = SUBTREE_DATA_OVERHEAD + total
-    if (!hasMux && projected > MAX_ATOMIC_WRITE) {
-      this.sendError(conn, requestId, `Subtree too large (${projected} bytes); reduce chunkCount`)
-      return
-    }
 
-    // Send a subtree proof first (JSON frame), then stream SUBTREE_DATA (binary frame).
-    // Proof is for the internal node that exactly covers [startChunk, startChunk+chunkCount).
+    // Send a subtree proof first (JSON frame), then stream chunks via Protomux.
     try {
-      memoryMonitor.takeSnapshot('Before merkle tree build');
       let tree = this._merkleTreeCache.get(merkleRoot)
       if (!tree) {
         const leafHashes = chunks.map((ch) => ch.chunk_hash)
         tree = await buildMerkleTree(leafHashes)
         this._merkleTreeCache.set(merkleRoot, tree)
-        memoryMonitor.takeSnapshot('After merkle tree build');
       }
 
       const level = Math.round(Math.log2(chunkCount))
@@ -1022,91 +1026,44 @@ export class Protocol extends EventEmitter {
 
     const fd = fs.openSync(file.path, 'r')
     try {
-      if (!hasMux) {
-        memoryMonitor.takeSnapshot(`Before legacy buffer alloc: ${total} bytes`);
-        const out = Buffer.allocUnsafe(total)
-        memoryMonitor.takeSnapshot('After legacy buffer alloc');
-        let off = 0
-        for (const ch of slice) {
-          let remaining = ch.chunk_size
-          let localOff = 0
-          while (remaining > 0) {
-            const bytesRead = fs.readSync(fd, out, off + localOff, remaining, ch.chunk_offset + localOff)
-            if (bytesRead <= 0) {
-              throw new Error(`Short read: expected=${ch.chunk_size} got=${localOff} chunk_index=${ch.chunk_index}`)
-            }
-            localOff += bytesRead
-            remaining -= bytesRead
-          }
-          off += ch.chunk_size
-        }
-        const dataBuf = off === out.length ? out : out.subarray(0, off)
-        memoryMonitor.takeSnapshot('Before encodeMessage with data');
-        const msg = this.encodeMessage(MSG_TYPE.SUBTREE_DATA, {
-          requestId,
-          merkleRoot,
-          startChunk,
-          chunkCount: slice.length,
-          data: dataBuf
-        })
-        memoryMonitor.takeSnapshot('After encodeMessage');
-        void this._enqueueWrite(conn, msg)
-        memoryMonitor.takeSnapshot('After enqueueWrite (legacy mode)');
-        return
-      }
-
-      // Protomux streaming mode: send a begin control message then stream parts.
+      // Protomux streaming mode: send a begin control message then stream chunks.
       const begin = this._subtreeBeginByConn.get(conn)
       const part = this._subtreePartByConn.get(conn)
       if (!begin || !part) {
-        this.sendError(conn, requestId, 'Mux subtree stream not available')
+        this.sendError(conn, requestId, 'Protomux required for streaming')
         return
       }
 
-      memoryMonitor.takeSnapshot('Before Protomux streaming');
       begin.send(JSON.stringify({ requestId, merkleRoot, startChunk, chunkCount: slice.length, totalBytes: total }))
 
       const requestIdBytes = Buffer.from(requestId, 'hex')
-      const MAX_PART = 8 * 1024 * 1024
-      memoryMonitor.takeSnapshot('Before Protomux part buffer alloc');
-      const partBuf = Buffer.allocUnsafe(16 + MAX_PART)
-      memoryMonitor.takeSnapshot('After Protomux part buffer alloc');
-      requestIdBytes.copy(partBuf, 0)
+      
+      // Zero-copy: reuse a single 1MB buffer (chunk size) for all reads
+      // This ensures constant memory usage regardless of file size
+      const CHUNK_SIZE = 1024 * 1024
+      const chunkBuf = Buffer.allocUnsafe(16 + CHUNK_SIZE)
+      requestIdBytes.copy(chunkBuf, 0)
 
       for (const ch of slice) {
         let remaining = ch.chunk_size
         let localOff = 0
         while (remaining > 0) {
-          const toRead = Math.min(remaining, MAX_PART)
-          const bytesRead = fs.readSync(fd, partBuf, 16, toRead, ch.chunk_offset + localOff)
+          const toRead = Math.min(remaining, CHUNK_SIZE)
+          const bytesRead = fs.readSync(fd, chunkBuf, 16, toRead, ch.chunk_offset + localOff)
           if (bytesRead <= 0) {
             throw new Error(`Short read: expected=${ch.chunk_size} got=${localOff} chunk_index=${ch.chunk_index}`)
           }
           localOff += bytesRead
           remaining -= bytesRead
-          part.send(partBuf.subarray(0, 16 + bytesRead))
+          // Send immediately - no accumulation
+          part.send(chunkBuf.subarray(0, 16 + bytesRead))
         }
       }
     } catch (err) {
       this.sendError(conn, requestId, `Failed to read subtree data: ${err?.message || String(err)}`)
     } finally {
       fs.closeSync(fd)
-      memoryMonitor.takeSnapshot('After file close');
     }
-  }
-
-  async handleSubtreeData(conn, peerId, payload) {
-    const { requestId, merkleRoot, startChunk, chunkCount } = payload
-    const data = Buffer.from(payload.data)
-
-    this.emit('subtree:downloaded', {
-      requestId,
-      merkleRoot,
-      startChunk,
-      chunkCount,
-      peerId,
-      data
-    })
   }
 
   handleSubtreeProof(conn, peerId, payload) {
