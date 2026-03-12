@@ -250,8 +250,11 @@ export class SwarmNetwork extends EventEmitter {
 
   /**
    * Broadcast data to all connections in a topic
+   * @param {Buffer} topicKey - Topic key
+   * @param {Buffer} data - Data to broadcast
+   * @param {Function} sendFn - Optional send function (conn, data) => Promise - used by Protocol for Protomux
    */
-  broadcast(topicKey, data) {
+  broadcast(topicKey, data, sendFn) {
     const topicKeyHex = topicKey.toString('hex');
     let sent = 0;
 
@@ -266,7 +269,13 @@ export class SwarmNetwork extends EventEmitter {
     for (const [peerId, conn] of topic.connections) {
       try {
         debug(`[NETWORK]   -> Sending to peer ${peerId.substring(0, 8)}`);
-        conn.write(data);
+        if (sendFn) {
+          // Use Protocol's send function (routes through Protomux)
+          sendFn(conn, data);
+        } else {
+          // Direct write (legacy, should not happen with Protomux)
+          conn.write(data);
+        }
         sent++;
       } catch (err) {
         console.error(`[NETWORK] ⚠️  Broadcast error to ${peerId.substring(0, 8)}:`, err.message);

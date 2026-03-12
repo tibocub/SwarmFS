@@ -1239,7 +1239,7 @@ export class Protocol extends EventEmitter {
       chunkHash
     });
     
-    const sent = this.network.broadcast(topicKey, message);
+    const sent = this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     if (VERBOSE) {
       console.log(`Broadcast to ${sent} peer(s)`);
     }
@@ -1349,7 +1349,7 @@ export class Protocol extends EventEmitter {
       topicKey: topicKeyHex
     });
 
-    this.network.broadcast(topicKey, message);
+    this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     return requestId;
   }
 
@@ -1402,7 +1402,7 @@ export class Protocol extends EventEmitter {
       topicKey: topicKeyHex
     });
 
-    this.network.broadcast(topicKey, message);
+    this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     return requestId;
   }
 
@@ -1497,7 +1497,7 @@ export class Protocol extends EventEmitter {
     
     // Broadcast CANCEL
     const message = this.encodeMessage(MSG_TYPE.CANCEL, { requestId });
-    this.network.broadcast(request.topicKey, message);
+    this.network.broadcast(request.topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     
     // Cleanup
     clearTimeout(request.timeout);
