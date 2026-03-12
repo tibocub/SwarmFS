@@ -76,6 +76,9 @@ export class Protocol extends EventEmitter {
     this._muxOpenByConn = new WeakMap(); // conn -> boolean
     this._muxReadyByConn = new WeakMap(); // conn -> boolean (safe to send via mux)
     
+    // Backpressure state per connection (to avoid listener accumulation)
+    this._backpressureByConn = new WeakMap(); // conn -> { pendingBytes, drainCallback }
+    
     // Backpressure: limit concurrent subtree serves to prevent memory exhaustion
     this._activeSubtreeServes = 0;
     this._maxConcurrentSubtreeServes = 8;
@@ -236,6 +239,24 @@ export class Protocol extends EventEmitter {
       const mux = Protomux.from(conn)
       this._muxByConn.set(conn, mux)
 
+      // Initialize backpressure state for this connection
+      this._backpressureByConn.set(conn, { pendingBytes: 0, drainCallback: null })
+
+      // Set up drain listener ONCE per connection (not per subtree request)
+      const stream = mux.stream
+      if (stream && typeof stream.on === 'function') {
+        stream.on('drain', () => {
+          const bp = this._backpressureByConn.get(conn)
+          if (bp) {
+            bp.pendingBytes = 0
+            if (bp.drainCallback) {
+              bp.drainCallback()
+              bp.drainCallback = null
+            }
+          }
+        })
+      }
+
       // Mark as not open yet. We only switch send/receive routing once onopen fires.
       this._muxOpenByConn.set(conn, false)
       this._muxReadyByConn.set(conn, false)
@@ -270,6 +291,7 @@ export class Protocol extends EventEmitter {
           this._subtreeBeginByConn.delete(conn)
           this._subtreePartByConn.delete(conn)
           this._muxReadyByConn.delete(conn)
+          this._backpressureByConn.delete(conn)
         }
       })
 
@@ -1011,36 +1033,19 @@ export class Protocol extends EventEmitter {
       const chunkBuf = Buffer.allocUnsafe(16 + CHUNK_SIZE)
       requestIdBytes.copy(chunkBuf, 0)
 
-      // Backpressure: track pending sends and wait for drain when threshold reached
-      // This prevents unbounded buffering in Protomux when network is slower than disk
+      // Backpressure: use shared per-connection state (drain listener set up in _setupMux)
       const BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024 // 4MB pending
-      let pendingBytes = 0
-      let drainCallback = null
-      
-      const waitForDrain = () => new Promise(resolve => {
-        drainCallback = resolve
-      })
-      
-      // Set up drain listener on the underlying stream
+      const bp = this._backpressureByConn.get(conn)
       const mux = this._muxByConn.get(conn)
       const stream = mux?.stream
-      if (stream && typeof stream.once === 'function') {
-        stream.on('drain', () => {
-          pendingBytes = 0
-          if (drainCallback) {
-            drainCallback()
-            drainCallback = null
-          }
-        })
-      }
 
       for (const ch of slice) {
         let remaining = ch.chunk_size
         let localOff = 0
         while (remaining > 0) {
           // Backpressure check: wait if too many bytes pending
-          if (pendingBytes >= BACKPRESSURE_THRESHOLD && stream?.writable !== false) {
-            await waitForDrain()
+          if (bp && bp.pendingBytes >= BACKPRESSURE_THRESHOLD && stream?.writable !== false) {
+            await new Promise(resolve => { bp.drainCallback = resolve })
           }
           
           const toRead = Math.min(remaining, CHUNK_SIZE)
@@ -1052,13 +1057,8 @@ export class Protocol extends EventEmitter {
           remaining -= bytesRead
           // Send immediately - no accumulation
           part.send(chunkBuf.subarray(0, 16 + bytesRead))
-          pendingBytes += bytesRead
+          if (bp) bp.pendingBytes += bytesRead
         }
-      }
-      
-      // Cleanup drain listener
-      if (stream && typeof stream.removeListener === 'function' && drainCallback) {
-        stream.removeListener('drain', drainCallback)
       }
     } catch (err) {
       this.sendError(conn, requestId, `Failed to read subtree data: ${err?.message || String(err)}`)
