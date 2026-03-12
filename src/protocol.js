@@ -40,8 +40,7 @@ export const MSG_TYPE = {
   BITFIELD_REQUEST: 0x0d,   // Request peer's bitfield
   SUBTREE_REQUEST: 0x0e,
   SUBTREE_DATA: 0x0f,
-  SUBTREE_PROOF: 0x10,
-  MUX_HELLO: 0x11
+  SUBTREE_PROOF: 0x10
 }
 
 export class Protocol extends EventEmitter {
@@ -62,13 +61,6 @@ export class Protocol extends EventEmitter {
     this.activeFileListRequests = new Map(); // requestId -> { topicKey, timeout }
     this.activeMetadataRequests = new Map(); // requestId -> { merkleRoot, topicKey, timeout }
 
-    // Stream reassembly buffers per peer (Hyperswarm delivers arbitrary-sized data chunks)
-    this._peerBuffers = new Map(); // peerId -> Buffer
-
-    // Per-connection send queues for backpressure-safe writes without stalling message handling.
-    // conn -> Promise chain
-    this._sendQueues = new Map();
-
     // Cache merkle trees for serving subtree proofs.
     // merkleRoot(hex) -> { root, levels, leafCount }
     this._merkleTreeCache = new Map();
@@ -80,10 +72,7 @@ export class Protocol extends EventEmitter {
     this._subtreePartByConn = new WeakMap();
     this._subtreeRx = new Map(); // requestId(hex) -> { merkleRoot, startChunk, chunkCount, totalBytes, receivedBytes, parts: Buffer[], peerId }
     this._muxOpenByConn = new WeakMap(); // conn -> boolean
-    this._muxHelloByPeer = new Map(); // peerId -> boolean (peer advertised mux support)
     this._muxReadyByConn = new WeakMap(); // conn -> boolean (safe to send via mux)
-    this._enableMuxControl = true  // Required for streaming
-    this._enableMux = true         // Protomux required for all peers
     
     // Backpressure: limit concurrent subtree serves to prevent memory exhaustion
     this._activeSubtreeServes = 0;
@@ -107,7 +96,7 @@ export class Protocol extends EventEmitter {
     });
     
     this.network.on('peer:disconnected', (peerId, topicKey) => {
-      // New SwarmNetwork emits a single object: { peerId, topicKey }
+      // New SwarmNetwork emits a single object: { conn, peerId, topicKey }
       if (peerId && typeof peerId === 'object' && peerId.peerId) {
         const { peerId: p, topicKey: t } = peerId;
         debug('[PROTOCOL] peer:disconnected (object payload)', p?.substring?.(0, 8));
@@ -119,19 +108,6 @@ export class Protocol extends EventEmitter {
       this.onPeerDisconnected(peerId, topicKey);
     });
     
-    this.network.on('peer:data', async (conn, peerId, data) => {
-      // New SwarmNetwork emits a single object: { conn, peerId, topicKey, data }
-      if (conn && typeof conn === 'object' && conn.data && conn.conn && conn.peerId) {
-        const { conn: c, peerId: p, data: d } = conn;
-        debug('[PROTOCOL] peer:data (object payload)', p?.substring?.(0, 8), 'len=', d?.length);
-        await this.handleData(c, p, d);
-        return;
-      }
-
-      debug('[PROTOCOL] peer:data (positional payload)', peerId?.substring?.(0, 8), 'len=', data?.length);
-      await this.handleData(conn, peerId, data);
-    });
-    
     debug('[PROTOCOL] Protocol initialized successfully');
     
     // Cleanup old requests periodically
@@ -140,30 +116,31 @@ export class Protocol extends EventEmitter {
 
   _enqueueWrite(conn, data) {
     const control = this._controlMsgByConn.get(conn)
-    const muxOpen = this._muxOpenByConn.get(conn)
     const muxReady = this._muxReadyByConn.get(conn)
-    if (this._enableMuxControl && control && muxOpen && muxReady) {
+    
+    // Protomux required - use control channel
+    if (!control) {
+      return Promise.reject(new Error('Protomux channel not set up'))
+    }
+    
+    if (muxReady) {
+      // Channel is ready - send immediately
       try {
         control.send(data)
         return Promise.resolve()
-      } catch {
-        // Fall back to legacy write path.
+      } catch (err) {
+        console.error('Protomux send error:', err)
+        return Promise.reject(err)
       }
     }
-
-    const prev = this._sendQueues.get(conn) || Promise.resolve();
-    const next = prev
-      .catch(() => {})
-      .then(() => {
-        const ok = conn.write(data);
-        if (ok) {
-          return;
-        }
-        return new Promise((resolve) => conn.once('drain', resolve));
-      });
-
-    this._sendQueues.set(conn, next);
-    return next;
+    
+    // Channel is opening - queue the message
+    return new Promise((resolve, reject) => {
+      const queue = this._muxSendQueue?.get(conn) || []
+      queue.push({ data, resolve, reject })
+      if (!this._muxSendQueue) this._muxSendQueue = new Map()
+      this._muxSendQueue.set(conn, queue)
+    })
   }
 
   async _findValidChunkSource(chunkHash, limit = 10) {
@@ -240,10 +217,6 @@ export class Protocol extends EventEmitter {
   }
 
   _setupMux(conn, peerId) {
-    if (!this._enableMux) {
-      return
-    }
-
     if (this._controlMsgByConn.get(conn)) {
       return
     }
@@ -252,14 +225,28 @@ export class Protocol extends EventEmitter {
       const mux = Protomux.from(conn)
       this._muxByConn.set(conn, mux)
 
+      // Mark as not open yet. We only switch send/receive routing once onopen fires.
+      this._muxOpenByConn.set(conn, false)
+      this._muxReadyByConn.set(conn, false)
+
+      // Create channel first (messages added before open)
       const channel = mux.createChannel({
         protocol: 'swarmfs',
         id: Buffer.from([1]),
         onopen: () => {
           this._muxOpenByConn.set(conn, true)
-          // Only enable mux writes if the peer also said it supports mux.
-          if (this._muxHelloByPeer.get(peerId)) {
-            this._muxReadyByConn.set(conn, true)
+          // Protomux is required - channel open means ready
+          this._muxReadyByConn.set(conn, true)
+          // Drain any queued messages
+          const queue = this._muxSendQueue?.get(conn) || []
+          this._muxSendQueue?.delete(conn)
+          for (const { data, resolve, reject } of queue) {
+            try {
+              control.send(data)
+              resolve()
+            } catch (err) {
+              reject(err)
+            }
           }
         },
         onclose: () => {
@@ -274,10 +261,6 @@ export class Protocol extends EventEmitter {
       if (!channel) {
         return
       }
-
-      // Mark as not open yet. We only switch send/receive routing once onopen fires.
-      this._muxOpenByConn.set(conn, false)
-      this._muxReadyByConn.set(conn, false)
 
     const control = channel.addMessage({
       encoding: c.binary,
@@ -595,45 +578,6 @@ export class Protocol extends EventEmitter {
     return { version, type, payload };
   }
 
-  _tryDecodeFrames(peerId) {
-    let buf = this._peerBuffers.get(peerId);
-    if (!buf || buf.length === 0) {
-      return [];
-    }
-
-    const frames = [];
-    while (buf.length >= 6) {
-      const length = buf.readUInt32BE(2);
-      const total = 6 + length;
-      if (buf.length < total) {
-        break;
-      }
-
-      const frame = buf.subarray(0, total);
-      frames.push(frame);
-      buf = buf.subarray(total);
-    }
-
-    this._peerBuffers.set(peerId, buf);
-    return frames;
-  }
-
-  async handleData(conn, peerId, data) {
-    try {
-      const prev = this._peerBuffers.get(peerId);
-      const next = prev && prev.length > 0 ? Buffer.concat([prev, data]) : data;
-      this._peerBuffers.set(peerId, next);
-
-      const frames = this._tryDecodeFrames(peerId);
-      for (const frame of frames) {
-        await this.handleMessage(conn, peerId, frame);
-      }
-    } catch (error) {
-      console.error(`Error handling data stream from ${peerId.substring(0, 8)}:`, error.message);
-      console.error(error.stack);
-    }
-  }
-
   /**
    * Handle incoming message
    */
@@ -654,9 +598,6 @@ export class Protocol extends EventEmitter {
       }
       
       switch (type) {
-        case MSG_TYPE.MUX_HELLO:
-          this.handleMuxHello(conn, peerId, payload)
-          break;
         case MSG_TYPE.REQUEST:
           if (VERBOSE) {
             console.log(`[DEBUG] Calling handleRequest`);
@@ -720,24 +661,6 @@ export class Protocol extends EventEmitter {
     } catch (error) {
       console.error(`Error handling message from ${peerId.substring(0, 8)}:`, error.message);
       console.error(error.stack);
-    }
-  }
-
-  handleMuxHello(conn, peerId, payload) {
-    try {
-      if (!payload || payload.mux !== true) {
-        return
-      }
-
-      this._muxHelloByPeer.set(peerId, true)
-
-      // If our mux channel is already open, we can start using it now.
-      const muxOpen = this._muxOpenByConn.get(conn)
-      if (muxOpen) {
-        this._muxReadyByConn.set(conn, true)
-      }
-    } catch {
-      // ignore
     }
   }
 
