@@ -11,6 +11,7 @@ import { PeerManager } from './peer-manager.js'
 import { ChunkScheduler, ChunkState } from './chunk-scheduler.js'
 import { getMerkleRoot, verifySubtreeProof } from './merkle.js'
 import { hashBuffer } from './hash.js'
+import { initLogger, getLogger } from './logger.js'
 
 export class ChunkMeta {
   constructor(index, hash, offset, size) {
@@ -78,6 +79,11 @@ export class DownloadSession extends EventEmitter {
     // Formula: min(50, max(4, peerCount * 8))
     // Updated dynamically as peers connect/disconnect
     this.maxConcurrentRequests = 4; // Start low, will increase as peers connect
+    
+    // Initialize logger for this download session
+    const logDir = '/tmp/swarmfs-logs'
+    const logFile = `${merkleRoot.substring(0, 8)}-${Date.now()}.log`
+    this.logger = initLogger(`${logDir}/${logFile}`)
     this.requestTimeout = 30000;
     
     this.running = false;
@@ -346,12 +352,47 @@ export class DownloadSession extends EventEmitter {
         
         if (toRequest.length === 0) {
           const stats = this.scheduler.getStats();
+          
+          // Case 1: All missing chunks are unavailable (no peer has them)
           if (stats.totalMissing > 0 && stats.unavailable === stats.totalMissing) {
             console.warn(`⚠️  STUCK: ${stats.unavailable} chunks unavailable`);
             await this.sleep(5000);
             continue;
           }
           
+          // Case 2: No missing chunks but verified < total = chunks stuck in REQUESTED
+          // This happens when timeouts haven't fired yet or requests are orphaned
+          if (stats.totalMissing === 0 && this.chunksVerified < this.totalChunks) {
+            const stuckCount = this.totalChunks - this.chunksVerified;
+            this.logger?.log('STUCK_STATE', {
+              verified: this.chunksVerified,
+              total: this.totalChunks,
+              stuck: stuckCount,
+              inFlight: this.chunksInFlight,
+              activeRequests: this._activeRequestIds.size
+            });
+            
+            // Force-check for stale REQUESTED chunks (requested > 60s ago)
+            let forceFailed = 0;
+            const staleThreshold = Date.now() - 60000;
+            for (const [idx, ch] of this.chunkStates) {
+              if (ch.state === ChunkState.REQUESTED && ch.requestedAt && ch.requestedAt < staleThreshold) {
+                ch.state = ChunkState.FAILED;
+                ch.retryCount++;
+                this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
+                forceFailed++;
+              }
+            }
+            if (forceFailed > 0) {
+              console.warn(`🔧 Force-failed ${forceFailed} stale REQUESTED chunks`);
+            }
+            
+            // Always sleep to prevent tight loop
+            await this.sleep(1000);
+            continue;
+          }
+          
+          // Case 3: Normal wait for in-flight requests to complete
           await this.waitForSlot();
           continue;
         }
@@ -360,7 +401,8 @@ export class DownloadSession extends EventEmitter {
           await this.requestChunk(chunkIndex);
         }
         
-        await this.sleep(10);
+        // Always yield to event loop
+        await this.sleep(50);
         
       } catch (error) {
         console.error('Download loop error:', error);
@@ -451,6 +493,14 @@ export class DownloadSession extends EventEmitter {
     peer.activeRequests.add(requestId);
     console.log(`⬇️  Requested subtree ${subtreeStart}-${subtreeEnd} req=${requestId.substring(0, 8)} peer=${peer.peerId.substring(0, 8)} chunks=${chunkIndices.length}`);
     
+    this.logger?.log('SUBTREE_REQUEST', {
+      requestId: requestId.substring(0, 8),
+      start: subtreeStart,
+      end: subtreeEnd,
+      chunks: chunkIndices.length,
+      peer: peer.peerId.substring(0, 8)
+    });
+    
     return true;
   }
 
@@ -473,6 +523,12 @@ export class DownloadSession extends EventEmitter {
       peer.activeRequests.delete(requestId);
       peer.timeouts++;
     }
+    
+    this.logger?.log('SUBTREE_TIMEOUT', {
+      requestId: requestId.substring(0, 8),
+      peer: peerId.substring(0, 8),
+      chunks: indices.length
+    });
 
     for (const idx of indices) {
       const ch = this.chunkStates.get(idx);
@@ -615,6 +671,13 @@ export class DownloadSession extends EventEmitter {
       const computedNode = await getMerkleRoot(leafHashes);
       if (computedNode !== node) {
         console.error(`Subtree proof mismatch for ${requestId.substring(0, 8)}`);
+        this.logger?.log('PROOF_MISMATCH', {
+          requestId: requestId.substring(0, 8),
+          startChunk,
+          chunkCount,
+          computedNode: computedNode?.substring(0, 16),
+          receivedNode: node?.substring(0, 16)
+        });
         return;
       }
       const ok = await verifySubtreeProof(node, proof, this.merkleRoot);
@@ -891,6 +954,9 @@ export class DownloadSession extends EventEmitter {
     this.running = false;
 
     this._clearAllChunkTimeouts();
+    
+    // Close logger
+    this.logger?.close();
 
     // Cancel all outstanding protocol requests to avoid post-success timeouts.
     for (const requestId of this._activeRequestIds) {

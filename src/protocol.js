@@ -343,14 +343,8 @@ export class Protocol extends EventEmitter {
             peerId
           })
           
-          // Add timeout to cleanup incomplete subtrees
-          setTimeout(() => {
-            const rx = this._subtreeRx.get(requestId);
-            if (rx) {
-              console.warn(`🧹 Cleaning up incomplete subtree ${requestId.substring(0, 8)} (${rx.receivedBytes}/${rx.totalBytes} bytes)`);
-              this._subtreeRx.delete(requestId);
-            }
-          }, 60000); // 60 second timeout
+          // Note: No timeout here - download session handles timeouts via onSubtreeTimeout
+          // which properly resets chunk states. Premature cleanup here would drop parts.
         } catch {
           // ignore
         }
@@ -1602,21 +1596,21 @@ export class Protocol extends EventEmitter {
       }
     }
 
-    // CRITICAL: Cleanup subtree reassembly buffers to prevent memory leaks
+    // CRITICAL: Cleanup stale subtree reassembly buffers to prevent memory leaks
+    // Use longer timeout (5 min) to avoid interfering with active downloads
+    // Download session handles its own timeouts (30s) and properly resets chunk states
+    const subtreeMaxAge = 5 * 60 * 1000; // 5 minutes
     let subtreeCleanupCount = 0;
-    let totalBufferedBytes = 0;
     for (const [requestId, rx] of this._subtreeRx) {
-      if (now - (rx.createdAt || rx.timestamp || 0) > maxAge) {
-        const bufferedBytes = rx.parts.reduce((sum, part) => sum + part.length, 0);
-        console.warn(`🧹 Cleaning up stale subtree ${requestId.substring(0, 8)} (${rx.receivedBytes}/${rx.totalBytes} bytes, ${bufferedBytes} buffered)`);
+      if (now - (rx.createdAt || rx.timestamp || 0) > subtreeMaxAge) {
+        console.warn(`🧹 Cleaning up stale subtree ${requestId.substring(0, 8)} (${rx.receivedBytes}/${rx.totalBytes} bytes)`);
         this._subtreeRx.delete(requestId);
         subtreeCleanupCount++;
-        totalBufferedBytes += bufferedBytes;
       }
     }
     
     if (subtreeCleanupCount > 0) {
-      console.log(`🧹 Cleaned up ${subtreeCleanupCount} stale subtree buffers (${this._formatBytes(totalBufferedBytes)})`);
+      console.log(`🧹 Cleaned up ${subtreeCleanupCount} stale subtree buffers`);
     }
   }
 
