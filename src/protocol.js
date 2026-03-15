@@ -84,6 +84,7 @@ export class Protocol extends EventEmitter {
     this._maxConcurrentSubtreeServes = 8;
     this._subtreeServeQueue = [];
     this._maxSubtreeServeQueueSize = 100; // Drop requests if queue exceeds this
+    this._activeSubtreeServeRequests = new Map(); // requestId -> { cancelled: boolean }
     
     // Setup network event handlers
     debug('[PROTOCOL] Setting up peer handler...');
@@ -884,8 +885,8 @@ export class Protocol extends EventEmitter {
     if (this._activeSubtreeServes >= this._maxConcurrentSubtreeServes) {
       // Check queue size limit - drop request if overloaded
       if (this._subtreeServeQueue.length >= this._maxSubtreeServeQueueSize) {
+        console.warn(`[PROTOCOL] Subtree request dropped - queue full (${this._subtreeServeQueue.length}), active=${this._activeSubtreeServes}/${this._maxConcurrentSubtreeServes}`)
         this.sendError(conn, requestId, 'Server overloaded, please retry')
-        debug('[PROTOCOL] Subtree request dropped - queue full (%d)', this._subtreeServeQueue.length)
         return
       }
       this._subtreeServeQueue.push({ conn, peerId, payload })
@@ -894,10 +895,12 @@ export class Protocol extends EventEmitter {
     }
 
     this._activeSubtreeServes++
+    this._activeSubtreeServeRequests.set(requestId, { cancelled: false })
     try {
       await this._serveSubtreeRequest(conn, peerId, payload)
     } finally {
       this._activeSubtreeServes--
+      this._activeSubtreeServeRequests.delete(requestId)
       // Process next queued request if any
       if (this._subtreeServeQueue.length > 0 && this._activeSubtreeServes < this._maxConcurrentSubtreeServes) {
         const next = this._subtreeServeQueue.shift()
@@ -1038,6 +1041,13 @@ export class Protocol extends EventEmitter {
       const stream = mux?.stream
 
       for (const ch of slice) {
+        // Check if this request was cancelled
+        const serveState = this._activeSubtreeServeRequests.get(requestId)
+        if (serveState?.cancelled) {
+          console.log(`[SUBTREE] Request ${requestId.substring(0, 8)} cancelled, stopping stream`)
+          break
+        }
+        
         console.log(`[SUBTREE] Streaming chunk ${ch.chunk_index} size=${ch.chunk_size}`)
         let remaining = ch.chunk_size
         let localOff = 0
@@ -1092,6 +1102,20 @@ export class Protocol extends EventEmitter {
     
     this.activeRequests.delete(requestId);
     this.activeDownloads.delete(requestId);
+    
+    // Cancel in-progress subtree serving
+    const serveState = this._activeSubtreeServeRequests.get(requestId)
+    if (serveState) {
+      serveState.cancelled = true
+      console.log(`[PROTOCOL] Marked subtree serve ${requestId.substring(0, 8)} as cancelled`)
+    }
+    
+    // Remove from subtree serve queue if pending
+    const queueIndex = this._subtreeServeQueue.findIndex(item => item.payload?.requestId === requestId)
+    if (queueIndex !== -1) {
+      this._subtreeServeQueue.splice(queueIndex, 1)
+      console.log(`[PROTOCOL] Removed request ${requestId.substring(0, 8)} from subtree queue`)
+    }
   }
 
   /**
