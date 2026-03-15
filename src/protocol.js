@@ -415,9 +415,10 @@ export class Protocol extends EventEmitter {
   /**
    * Request bitfield from peer (learn what chunks they have)
    */
-  requestBitfield(conn, peerId) {
+  requestBitfield(conn, peerId, merkleRoot = null) {
     const message = this.encodeMessage(MSG_TYPE.BITFIELD_REQUEST, {
-      requestId: crypto.randomBytes(16).toString('hex')
+      requestId: crypto.randomBytes(16).toString('hex'),
+      merkleRoot
     });
 
     void this._enqueueWrite(conn, message);
@@ -1008,15 +1009,18 @@ export class Protocol extends EventEmitter {
     }
 
     const fd = fs.openSync(file.path, 'r')
+    console.log(`[SUBTREE] Serving ${slice.length} chunks from ${file.path} for req=${requestId.substring(0, 8)}`)
     try {
       // Protomux streaming mode: send a begin control message then stream chunks.
       const begin = this._subtreeBeginByConn.get(conn)
       const part = this._subtreePartByConn.get(conn)
+      console.log(`[SUBTREE] begin=${!!begin} part=${!!part} for req=${requestId.substring(0, 8)}`)
       if (!begin || !part) {
         this.sendError(conn, requestId, 'Protomux required for streaming')
         return
       }
 
+      console.log(`[SUBTREE] Sending BEGIN for req=${requestId.substring(0, 8)} chunks=${slice.length} totalBytes=${total}`)
       begin.send(JSON.stringify({ requestId, merkleRoot, startChunk, chunkCount: slice.length, totalBytes: total }))
 
       const requestIdBytes = Buffer.from(requestId, 'hex')
@@ -1034,11 +1038,13 @@ export class Protocol extends EventEmitter {
       const stream = mux?.stream
 
       for (const ch of slice) {
+        console.log(`[SUBTREE] Streaming chunk ${ch.chunk_index} size=${ch.chunk_size}`)
         let remaining = ch.chunk_size
         let localOff = 0
         while (remaining > 0) {
           // Backpressure check: wait if too many bytes pending
           if (bp && bp.pendingBytes >= BACKPRESSURE_THRESHOLD && stream?.writable !== false) {
+            console.log(`[SUBTREE] Backpressure wait: ${bp.pendingBytes} bytes pending`)
             await new Promise(resolve => { bp.drainCallback = resolve })
           }
           
@@ -1250,17 +1256,36 @@ export class Protocol extends EventEmitter {
   /**
    * BITFIELD_REQUEST: Peer requests our bitfield
    */
-  handleBitfieldRequest(conn, peerId, payload) {
-    const { requestId } = payload;
+  async handleBitfieldRequest(conn, peerId, payload) {
+    const { requestId, merkleRoot } = payload;
     
-    console.log(`BITFIELD_REQUEST from ${peerId.substring(0, 8)}`);
+    console.log(`BITFIELD_REQUEST from ${peerId.substring(0, 8)} merkleRoot=${merkleRoot?.substring(0, 8)}`);
     
-    // For now, we don't have a global bitfield to send
-    // This would be implemented when we have active download sessions
-    // that track which chunks we have
+    // If we have the file, respond with a full bitfield (all chunks available)
+    if (merkleRoot) {
+      const file = this.db.getFileByMerkleRoot(merkleRoot);
+      if (file && file.chunk_count > 0) {
+        // Create a bitfield with all chunks set (we have the complete file)
+        const { BitField } = await import('./bitfield.js');
+        const bitfield = new BitField(file.chunk_count);
+        for (let i = 0; i < file.chunk_count; i++) {
+          bitfield.set(i);
+        }
+        
+        const message = this.encodeMessage(MSG_TYPE.BITFIELD, {
+          merkleRoot,
+          bitfield: bitfield.buffer.toString('base64'),
+          chunkCount: file.chunk_count
+        });
+        
+        void this._enqueueWrite(conn, message);
+        console.log(`BITFIELD sent to ${peerId.substring(0, 8)}: ${file.chunk_count} chunks`);
+        return;
+      }
+    }
     
-    // Emit event so download sessions can respond
-    this.emit('bitfield:request', { conn, peerId, requestId });
+    // Emit event so download sessions can respond (for partial bitfields)
+    this.emit('bitfield:request', { conn, peerId, requestId, merkleRoot });
   }
 
   // ============================================================================
