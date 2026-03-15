@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+*.md
+!README.md
+test/
+docs/
+*.mp4
+*.log
+swarmfs-data/
+tui-rs/
+warning.txt
