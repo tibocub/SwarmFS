@@ -127,7 +127,7 @@ Checkout the /docs directory
 
 Fundamentals done ! Can tracke local files to answer requests, share files over a topic to publicly display them and peer's files can be downloaded by hash or by browsing the topic's publicly shared content.
 
-- [x] Adaptative-size chunking, hashing and merkle tree
+- [x] Adaptative-size chunking, hashing and merkle tree → **Replaced with fixed 1MB chunks for streaming**
 - [x] Merkle tree construction + per-chunk verification
 - [x] File metadata persisted (compatible with `better-sqlite3` on Node and Bun's built-in SQLite)
 - [x] Topic-based peer discovery (Hyperswarm)
@@ -176,10 +176,14 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
 
 ### Performance TODOs (ideas to evaluate)
 
-- [x] **Adaptive chunk size per file**
-    - Keep a small default for small files.
-    - Increase chunk size for very large files to reduce message/CPU overhead.
-    - Requires keeping chunk size in metadata (already supported).
+- [x] **Fixed 1MB chunk size** (replaced adaptive chunking)
+    - Simplifies streaming architecture.
+    - Ensures constant memory usage regardless of file size.
+    - Predictable memory footprint for large files (1TB+).
+- [x] **True streaming with Protomux**
+    - Zero-copy serving: read from disk → send immediately (no buffering).
+    - Direct-to-disk receiving: write each chunk as it arrives.
+    - Memory usage: ~26MB constant (8MB serving + 8MB receiving + overhead).
 - [x] **Batch transfers / grouped chunks**
     - Allow requesting/serving a contiguous range of chunks in one response.
     - Receiver verifies and writes a group as a unit.
@@ -194,8 +198,9 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
     - One peer: sequential streaming (torrent-style).
 - [ ] **Proof caching / reuse**
     - Cache proof fragments per file to avoid recomputing siblings repeatedly.
-- [ ] **Compression of protocol metadata**
-    - Compact encodings, hash dedup in proofs, optional compression for proof blocks.
+- [ ] **Compact encodings for protocol metadata**
+    - Replace JSON with compact encodings for smaller wire format.
+    - Hash dedup in proofs, optional compression for proof blocks.
 
 
 

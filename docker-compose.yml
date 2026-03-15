@@ -1,0 +1,15 @@
+services:
+  swarmfs:
+    build: .
+    container_name: swarmfs
+    network_mode: host        # critical for P2P
+    volumes:
+      - swarmfs-data:/data
+    environment:
+      - SWARMFS_DATA_DIR=/data
+    stdin_open: true
+    tty: true
+    command: ["shell"]
+
+volumes:
+  swarmfs-data:

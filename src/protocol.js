@@ -40,8 +40,7 @@ export const MSG_TYPE = {
   BITFIELD_REQUEST: 0x0d,   // Request peer's bitfield
   SUBTREE_REQUEST: 0x0e,
   SUBTREE_DATA: 0x0f,
-  SUBTREE_PROOF: 0x10,
-  MUX_HELLO: 0x11
+  SUBTREE_PROOF: 0x10
 }
 
 export class Protocol extends EventEmitter {
@@ -62,16 +61,11 @@ export class Protocol extends EventEmitter {
     this.activeFileListRequests = new Map(); // requestId -> { topicKey, timeout }
     this.activeMetadataRequests = new Map(); // requestId -> { merkleRoot, topicKey, timeout }
 
-    // Stream reassembly buffers per peer (Hyperswarm delivers arbitrary-sized data chunks)
-    this._peerBuffers = new Map(); // peerId -> Buffer
-
-    // Per-connection send queues for backpressure-safe writes without stalling message handling.
-    // conn -> Promise chain
-    this._sendQueues = new Map();
-
-    // Cache merkle trees for serving subtree proofs.
-    // merkleRoot(hex) -> { root, levels, leafCount }
+    // Cache merkle trees for serving subtree proofs with LRU eviction.
+    // merkleRoot(hex) -> { root, levels, leafCount, timestamp }
+    // Limit to 10 trees to bound memory usage (~10-15MB max for large files)
     this._merkleTreeCache = new Map();
+    this._merkleTreeCacheMaxSize = 10;
 
     // Protomux integration
     this._muxByConn = new WeakMap(); // conn -> mux
@@ -80,10 +74,17 @@ export class Protocol extends EventEmitter {
     this._subtreePartByConn = new WeakMap();
     this._subtreeRx = new Map(); // requestId(hex) -> { merkleRoot, startChunk, chunkCount, totalBytes, receivedBytes, parts: Buffer[], peerId }
     this._muxOpenByConn = new WeakMap(); // conn -> boolean
-    this._muxHelloByPeer = new Map(); // peerId -> boolean (peer advertised mux support)
     this._muxReadyByConn = new WeakMap(); // conn -> boolean (safe to send via mux)
-    this._enableMuxControl = false
-    this._enableMux = false
+    
+    // Backpressure state per connection (to avoid listener accumulation)
+    this._backpressureByConn = new WeakMap(); // conn -> { pendingBytes, drainCallback }
+    
+    // Backpressure: limit concurrent subtree serves to prevent memory exhaustion
+    this._activeSubtreeServes = 0;
+    this._maxConcurrentSubtreeServes = 8;
+    this._subtreeServeQueue = [];
+    this._maxSubtreeServeQueueSize = 100; // Drop requests if queue exceeds this
+    this._activeSubtreeServeRequests = new Map(); // requestId -> { cancelled: boolean }
     
     // Setup network event handlers
     debug('[PROTOCOL] Setting up peer handler...');
@@ -102,7 +103,7 @@ export class Protocol extends EventEmitter {
     });
     
     this.network.on('peer:disconnected', (peerId, topicKey) => {
-      // New SwarmNetwork emits a single object: { peerId, topicKey }
+      // New SwarmNetwork emits a single object: { conn, peerId, topicKey }
       if (peerId && typeof peerId === 'object' && peerId.peerId) {
         const { peerId: p, topicKey: t } = peerId;
         debug('[PROTOCOL] peer:disconnected (object payload)', p?.substring?.(0, 8));
@@ -114,19 +115,6 @@ export class Protocol extends EventEmitter {
       this.onPeerDisconnected(peerId, topicKey);
     });
     
-    this.network.on('peer:data', async (conn, peerId, data) => {
-      // New SwarmNetwork emits a single object: { conn, peerId, topicKey, data }
-      if (conn && typeof conn === 'object' && conn.data && conn.conn && conn.peerId) {
-        const { conn: c, peerId: p, data: d } = conn;
-        debug('[PROTOCOL] peer:data (object payload)', p?.substring?.(0, 8), 'len=', d?.length);
-        await this.handleData(c, p, d);
-        return;
-      }
-
-      debug('[PROTOCOL] peer:data (positional payload)', peerId?.substring?.(0, 8), 'len=', data?.length);
-      await this.handleData(conn, peerId, data);
-    });
-    
     debug('[PROTOCOL] Protocol initialized successfully');
     
     // Cleanup old requests periodically
@@ -135,30 +123,36 @@ export class Protocol extends EventEmitter {
 
   _enqueueWrite(conn, data) {
     const control = this._controlMsgByConn.get(conn)
-    const muxOpen = this._muxOpenByConn.get(conn)
     const muxReady = this._muxReadyByConn.get(conn)
-    if (this._enableMuxControl && control && muxOpen && muxReady) {
+    
+    console.log(`[MUX] _enqueueWrite: control=${!!control} muxReady=${muxReady} dataLen=${data.length}`)
+    
+    // Protomux required - use control channel
+    if (!control) {
+      console.error(`[MUX] No control channel - cannot send`)
+      return Promise.reject(new Error('Protomux channel not set up'))
+    }
+    
+    if (muxReady) {
+      // Channel is ready - send immediately
       try {
         control.send(data)
+        console.log(`[MUX] Sent ${data.length} bytes`)
         return Promise.resolve()
-      } catch {
-        // Fall back to legacy write path.
+      } catch (err) {
+        console.error('Protomux send error:', err)
+        return Promise.reject(err)
       }
     }
-
-    const prev = this._sendQueues.get(conn) || Promise.resolve();
-    const next = prev
-      .catch(() => {})
-      .then(() => {
-        const ok = conn.write(data);
-        if (ok) {
-          return;
-        }
-        return new Promise((resolve) => conn.once('drain', resolve));
-      });
-
-    this._sendQueues.set(conn, next);
-    return next;
+    
+    // Channel is opening - queue the message
+    console.log(`[MUX] Channel not ready - queuing message`)
+    return new Promise((resolve, reject) => {
+      const queue = this._muxSendQueue?.get(conn) || []
+      queue.push({ data, resolve, reject })
+      if (!this._muxSendQueue) this._muxSendQueue = new Map()
+      this._muxSendQueue.set(conn, queue)
+    })
   }
 
   async _findValidChunkSource(chunkHash, limit = 10) {
@@ -227,60 +221,94 @@ export class Protocol extends EventEmitter {
   onPeerConnected(conn, peerId, topicKey) {
     console.log(`Peer connected: ${peerId.substring(0, 8)}`);
 
-    // Protomux disabled for now: it requires a framed stream, and attaching it to the raw
-    // Hyperswarm socket breaks legacy message reassembly.
+    // Setup Protomux for streaming (required for all peers)
+    this._setupMux(conn, peerId);
 
     // Emit event
     this.emit('peer:connected', { conn, peerId, topicKey });
   }
 
   _setupMux(conn, peerId) {
-    if (!this._enableMux) {
+    if (this._controlMsgByConn.get(conn)) {
+      console.log(`[MUX] Channel already exists for ${peerId.substring(0, 8)}`)
       return
     }
 
-    if (this._controlMsgByConn.get(conn)) {
-      return
-    }
+    console.log(`[MUX] Setting up channel for ${peerId.substring(0, 8)}`)
 
     try {
       const mux = Protomux.from(conn)
       this._muxByConn.set(conn, mux)
 
-      const channel = mux.createChannel({
-        protocol: 'swarmfs',
-        id: Buffer.from([1]),
-        onopen: () => {
-          this._muxOpenByConn.set(conn, true)
-          // Only enable mux writes if the peer also said it supports mux.
-          if (this._muxHelloByPeer.get(peerId)) {
-            this._muxReadyByConn.set(conn, true)
-          }
-        },
-        onclose: () => {
-          this._muxOpenByConn.delete(conn)
-          this._controlMsgByConn.delete(conn)
-          this._subtreeBeginByConn.delete(conn)
-          this._subtreePartByConn.delete(conn)
-          this._muxReadyByConn.delete(conn)
-        }
-      })
+      // Initialize backpressure state for this connection
+      this._backpressureByConn.set(conn, { pendingBytes: 0, drainCallback: null })
 
-      if (!channel) {
-        return
+      // Set up drain listener ONCE per connection (not per subtree request)
+      const stream = mux.stream
+      if (stream && typeof stream.on === 'function') {
+        stream.on('drain', () => {
+          const bp = this._backpressureByConn.get(conn)
+          if (bp) {
+            bp.pendingBytes = 0
+            if (bp.drainCallback) {
+              bp.drainCallback()
+              bp.drainCallback = null
+            }
+          }
+        })
       }
 
       // Mark as not open yet. We only switch send/receive routing once onopen fires.
       this._muxOpenByConn.set(conn, false)
       this._muxReadyByConn.set(conn, false)
 
+      // Create channel first (messages added before open)
+      const channel = mux.createChannel({
+        protocol: 'swarmfs',
+        id: Buffer.from([1]),
+        onopen: () => {
+          console.log(`[MUX] Channel OPEN for ${peerId.substring(0, 8)}`)
+          this._muxOpenByConn.set(conn, true)
+          // Protomux is required - channel open means ready
+          this._muxReadyByConn.set(conn, true)
+          // Drain any queued messages
+          const queue = this._muxSendQueue?.get(conn) || []
+          this._muxSendQueue?.delete(conn)
+          console.log(`[MUX] Draining ${queue.length} queued messages`)
+          for (const { data, resolve, reject } of queue) {
+            try {
+              control.send(data)
+              resolve()
+            } catch (err) {
+              console.error(`[MUX] Failed to drain message:`, err)
+              reject(err)
+            }
+          }
+        },
+        onclose: () => {
+          console.log(`[MUX] Channel CLOSED for ${peerId.substring(0, 8)}`)
+          this._muxOpenByConn.delete(conn)
+          this._controlMsgByConn.delete(conn)
+          this._subtreeBeginByConn.delete(conn)
+          this._subtreePartByConn.delete(conn)
+          this._muxReadyByConn.delete(conn)
+          this._backpressureByConn.delete(conn)
+        }
+      })
+
+      if (!channel) {
+        console.error(`[MUX] Failed to create channel for ${peerId.substring(0, 8)}`)
+        return
+      }
+
     const control = channel.addMessage({
       encoding: c.binary,
       onmessage: async (buf) => {
+        console.log(`[MUX] Received control message: ${buf.length} bytes from ${peerId.substring(0, 8)}`)
         try {
           await this.handleMessage(conn, peerId, buf)
-        } catch {
-          // ignore
+        } catch (err) {
+          console.error(`[MUX] Error handling message:`, err)
         }
       }
     })
@@ -300,9 +328,24 @@ export class Protocol extends EventEmitter {
             chunkCount,
             totalBytes,
             receivedBytes: 0,
-            parts: [],
+            nextChunkIndex: startChunk,  // Track which chunk we're receiving
+            chunkOffset: 0,              // Offset within current chunk
+            peerId,
+            createdAt: Date.now()
+          })
+          
+          // Emit begin event so download session can prepare
+          this.emit('subtree:begin', {
+            requestId,
+            merkleRoot,
+            startChunk,
+            chunkCount,
+            totalBytes,
             peerId
           })
+          
+          // Note: No timeout here - download session handles timeouts via onSubtreeTimeout
+          // which properly resets chunk states. Premature cleanup here would drop parts.
         } catch {
           // ignore
         }
@@ -322,18 +365,31 @@ export class Protocol extends EventEmitter {
         if (!rx) {
           return
         }
-        rx.parts.push(payload)
+        
+        // Stream directly: emit each part with its offset
+        // Download session will write to disk immediately
+        const offset = rx.receivedBytes
         rx.receivedBytes += payload.length
+        
+        this.emit('subtree:part', {
+          requestId,
+          merkleRoot: rx.merkleRoot,
+          startChunk: rx.startChunk,
+          offset,  // Byte offset within the subtree
+          data: payload,
+          peerId: rx.peerId,
+          isLast: rx.receivedBytes >= rx.totalBytes
+        })
+        
         if (rx.receivedBytes >= rx.totalBytes) {
           this._subtreeRx.delete(requestId)
-          const data = rx.parts.length === 1 ? rx.parts[0] : Buffer.concat(rx.parts, rx.receivedBytes)
-          this.emit('subtree:downloaded', {
+          // Emit complete event
+          this.emit('subtree:complete', {
             requestId,
             merkleRoot: rx.merkleRoot,
             startChunk: rx.startChunk,
             chunkCount: rx.chunkCount,
-            peerId: rx.peerId,
-            data
+            peerId: rx.peerId
           })
         }
       }
@@ -360,9 +416,10 @@ export class Protocol extends EventEmitter {
   /**
    * Request bitfield from peer (learn what chunks they have)
    */
-  requestBitfield(conn, peerId) {
+  requestBitfield(conn, peerId, merkleRoot = null) {
     const message = this.encodeMessage(MSG_TYPE.BITFIELD_REQUEST, {
-      requestId: crypto.randomBytes(16).toString('hex')
+      requestId: crypto.randomBytes(16).toString('hex'),
+      merkleRoot
     });
 
     void this._enqueueWrite(conn, message);
@@ -556,45 +613,6 @@ export class Protocol extends EventEmitter {
     return { version, type, payload };
   }
 
-  _tryDecodeFrames(peerId) {
-    let buf = this._peerBuffers.get(peerId);
-    if (!buf || buf.length === 0) {
-      return [];
-    }
-
-    const frames = [];
-    while (buf.length >= 6) {
-      const length = buf.readUInt32BE(2);
-      const total = 6 + length;
-      if (buf.length < total) {
-        break;
-      }
-
-      const frame = buf.subarray(0, total);
-      frames.push(frame);
-      buf = buf.subarray(total);
-    }
-
-    this._peerBuffers.set(peerId, buf);
-    return frames;
-  }
-
-  async handleData(conn, peerId, data) {
-    try {
-      const prev = this._peerBuffers.get(peerId);
-      const next = prev && prev.length > 0 ? Buffer.concat([prev, data]) : data;
-      this._peerBuffers.set(peerId, next);
-
-      const frames = this._tryDecodeFrames(peerId);
-      for (const frame of frames) {
-        await this.handleMessage(conn, peerId, frame);
-      }
-    } catch (error) {
-      console.error(`Error handling data stream from ${peerId.substring(0, 8)}:`, error.message);
-      console.error(error.stack);
-    }
-  }
-
   /**
    * Handle incoming message
    */
@@ -615,9 +633,6 @@ export class Protocol extends EventEmitter {
       }
       
       switch (type) {
-        case MSG_TYPE.MUX_HELLO:
-          this.handleMuxHello(conn, peerId, payload)
-          break;
         case MSG_TYPE.REQUEST:
           if (VERBOSE) {
             console.log(`[DEBUG] Calling handleRequest`);
@@ -672,9 +687,6 @@ export class Protocol extends EventEmitter {
         case MSG_TYPE.SUBTREE_REQUEST:
           await this.handleSubtreeRequest(conn, peerId, payload);
           break;
-        case MSG_TYPE.SUBTREE_DATA:
-          await this.handleSubtreeData(conn, peerId, payload);
-          break;
         case MSG_TYPE.SUBTREE_PROOF:
           this.handleSubtreeProof(conn, peerId, payload);
           break;
@@ -684,24 +696,6 @@ export class Protocol extends EventEmitter {
     } catch (error) {
       console.error(`Error handling message from ${peerId.substring(0, 8)}:`, error.message);
       console.error(error.stack);
-    }
-  }
-
-  handleMuxHello(conn, peerId, payload) {
-    try {
-      if (!payload || payload.mux !== true) {
-        return
-      }
-
-      this._muxHelloByPeer.set(peerId, true)
-
-      // If our mux channel is already open, we can start using it now.
-      const muxOpen = this._muxOpenByConn.get(conn)
-      if (muxOpen) {
-        this._muxReadyByConn.set(conn, true)
-      }
-    } catch {
-      // ignore
     }
   }
 
@@ -887,6 +881,38 @@ export class Protocol extends EventEmitter {
       return
     }
 
+    // Backpressure: queue request if at capacity
+    if (this._activeSubtreeServes >= this._maxConcurrentSubtreeServes) {
+      // Check queue size limit - drop request if overloaded
+      if (this._subtreeServeQueue.length >= this._maxSubtreeServeQueueSize) {
+        console.warn(`[PROTOCOL] Subtree request dropped - queue full (${this._subtreeServeQueue.length}), active=${this._activeSubtreeServes}/${this._maxConcurrentSubtreeServes}`)
+        this.sendError(conn, requestId, 'Server overloaded, please retry')
+        return
+      }
+      this._subtreeServeQueue.push({ conn, peerId, payload })
+      debug('[PROTOCOL] Subtree request queued (active: %d, max: %d)', this._activeSubtreeServes, this._maxConcurrentSubtreeServes)
+      return
+    }
+
+    this._activeSubtreeServes++
+    this._activeSubtreeServeRequests.set(requestId, { cancelled: false })
+    try {
+      await this._serveSubtreeRequest(conn, peerId, payload)
+    } finally {
+      this._activeSubtreeServes--
+      this._activeSubtreeServeRequests.delete(requestId)
+      // Process next queued request if any
+      if (this._subtreeServeQueue.length > 0 && this._activeSubtreeServes < this._maxConcurrentSubtreeServes) {
+        const next = this._subtreeServeQueue.shift()
+        // Fire-and-forget to avoid blocking
+        this.handleSubtreeRequest(next.conn, next.peerId, next.payload).catch(() => {})
+      }
+    }
+  }
+
+  async _serveSubtreeRequest(conn, peerId, payload) {
+    const { requestId, merkleRoot, startChunk, chunkCount, topicKey } = payload || {}
+    
     let file = null
     if (typeof topicKey === 'string' && topicKey.length > 0) {
       const topic = this.db.getTopicByKey(topicKey)
@@ -919,40 +945,49 @@ export class Protocol extends EventEmitter {
       return
     }
 
-    const chunks = this.db.getFileChunks(file.id)
-    const slice = chunks.slice(startChunk, endChunk + 1)
-
     // Subtree proofs require aligned power-of-two subtrees.
-    // (Downloader uses power-of-two subtreeChunkCount, but guard here too.)
     const isPowerOfTwo = (n) => n > 0 && (n & (n - 1)) === 0
     if (!isPowerOfTwo(chunkCount) || (startChunk % chunkCount) !== 0) {
       this.sendError(conn, requestId, 'Subtree request must be aligned power-of-two')
       return
     }
 
-    const hasMux = !!this._controlMsgByConn.get(conn)
-    // Guard against Hyperswarm/secret-stream atomic write limit when using the legacy single-frame SUBTREE_DATA.
-    // Protomux can stream multiple parts, so only enforce this limit in legacy mode.
-    const MAX_ATOMIC_WRITE = 16777215
-    const SUBTREE_DATA_OVERHEAD = 6 + (1 + 16 + 32 + 4 + 2 + 4)
+    // Fetch only the chunks we need for serving (not the entire file)
+    const slice = this.db.getFileChunksRange(file.id, startChunk, endChunk)
+
     let total = 0
     for (const ch of slice) {
       total += ch.chunk_size
     }
-    const projected = SUBTREE_DATA_OVERHEAD + total
-    if (!hasMux && projected > MAX_ATOMIC_WRITE) {
-      this.sendError(conn, requestId, `Subtree too large (${projected} bytes); reduce chunkCount`)
-      return
-    }
 
-    // Send a subtree proof first (JSON frame), then stream SUBTREE_DATA (binary frame).
-    // Proof is for the internal node that exactly covers [startChunk, startChunk+chunkCount).
+    // Send a subtree proof first (JSON frame), then stream chunks via Protomux.
     try {
       let tree = this._merkleTreeCache.get(merkleRoot)
       if (!tree) {
+        // Only fetch all chunks if we need to build the tree (will be cached)
+        const chunks = this.db.getFileChunks(file.id)
         const leafHashes = chunks.map((ch) => ch.chunk_hash)
         tree = await buildMerkleTree(leafHashes)
+        tree.timestamp = Date.now() // LRU tracking
+        
+        // LRU eviction: remove oldest entry if cache is full
+        if (this._merkleTreeCache.size >= this._merkleTreeCacheMaxSize) {
+          let oldestKey = null
+          let oldestTime = Infinity
+          for (const [key, value] of this._merkleTreeCache) {
+            if (value.timestamp < oldestTime) {
+              oldestTime = value.timestamp
+              oldestKey = key
+            }
+          }
+          if (oldestKey) {
+            this._merkleTreeCache.delete(oldestKey)
+          }
+        }
         this._merkleTreeCache.set(merkleRoot, tree)
+      } else {
+        // Update timestamp for LRU
+        tree.timestamp = Date.now()
       }
 
       const level = Math.round(Math.log2(chunkCount))
@@ -977,62 +1012,62 @@ export class Protocol extends EventEmitter {
     }
 
     const fd = fs.openSync(file.path, 'r')
+    console.log(`[SUBTREE] Serving ${slice.length} chunks from ${file.path} for req=${requestId.substring(0, 8)}`)
     try {
-      if (!hasMux) {
-        const out = Buffer.allocUnsafe(total)
-        let off = 0
-        for (const ch of slice) {
-          let remaining = ch.chunk_size
-          let localOff = 0
-          while (remaining > 0) {
-            const bytesRead = fs.readSync(fd, out, off + localOff, remaining, ch.chunk_offset + localOff)
-            if (bytesRead <= 0) {
-              throw new Error(`Short read: expected=${ch.chunk_size} got=${localOff} chunk_index=${ch.chunk_index}`)
-            }
-            localOff += bytesRead
-            remaining -= bytesRead
-          }
-          off += ch.chunk_size
-        }
-        const dataBuf = off === out.length ? out : out.subarray(0, off)
-        const msg = this.encodeMessage(MSG_TYPE.SUBTREE_DATA, {
-          requestId,
-          merkleRoot,
-          startChunk,
-          chunkCount: slice.length,
-          data: dataBuf
-        })
-        void this._enqueueWrite(conn, msg)
-        return
-      }
-
-      // Protomux streaming mode: send a begin control message then stream parts.
+      // Protomux streaming mode: send a begin control message then stream chunks.
       const begin = this._subtreeBeginByConn.get(conn)
       const part = this._subtreePartByConn.get(conn)
+      console.log(`[SUBTREE] begin=${!!begin} part=${!!part} for req=${requestId.substring(0, 8)}`)
       if (!begin || !part) {
-        this.sendError(conn, requestId, 'Mux subtree stream not available')
+        this.sendError(conn, requestId, 'Protomux required for streaming')
         return
       }
 
+      console.log(`[SUBTREE] Sending BEGIN for req=${requestId.substring(0, 8)} chunks=${slice.length} totalBytes=${total}`)
       begin.send(JSON.stringify({ requestId, merkleRoot, startChunk, chunkCount: slice.length, totalBytes: total }))
 
       const requestIdBytes = Buffer.from(requestId, 'hex')
-      const MAX_PART = 8 * 1024 * 1024
-      const partBuf = Buffer.allocUnsafe(16 + MAX_PART)
-      requestIdBytes.copy(partBuf, 0)
+      
+      // Zero-copy: reuse a single 1MB buffer (chunk size) for all reads
+      // This ensures constant memory usage regardless of file size
+      const CHUNK_SIZE = 1024 * 1024
+      const chunkBuf = Buffer.allocUnsafe(16 + CHUNK_SIZE)
+      requestIdBytes.copy(chunkBuf, 0)
+
+      // Backpressure: use shared per-connection state (drain listener set up in _setupMux)
+      const BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024 // 4MB pending
+      const bp = this._backpressureByConn.get(conn)
+      const mux = this._muxByConn.get(conn)
+      const stream = mux?.stream
 
       for (const ch of slice) {
+        // Check if this request was cancelled
+        const serveState = this._activeSubtreeServeRequests.get(requestId)
+        if (serveState?.cancelled) {
+          console.log(`[SUBTREE] Request ${requestId.substring(0, 8)} cancelled, stopping stream`)
+          break
+        }
+        
+        console.log(`[SUBTREE] Streaming chunk ${ch.chunk_index} size=${ch.chunk_size}`)
         let remaining = ch.chunk_size
         let localOff = 0
         while (remaining > 0) {
-          const toRead = Math.min(remaining, MAX_PART)
-          const bytesRead = fs.readSync(fd, partBuf, 16, toRead, ch.chunk_offset + localOff)
+          // Backpressure check: wait if too many bytes pending
+          if (bp && bp.pendingBytes >= BACKPRESSURE_THRESHOLD && stream?.writable !== false) {
+            console.log(`[SUBTREE] Backpressure wait: ${bp.pendingBytes} bytes pending`)
+            await new Promise(resolve => { bp.drainCallback = resolve })
+          }
+          
+          const toRead = Math.min(remaining, CHUNK_SIZE)
+          const bytesRead = fs.readSync(fd, chunkBuf, 16, toRead, ch.chunk_offset + localOff)
           if (bytesRead <= 0) {
             throw new Error(`Short read: expected=${ch.chunk_size} got=${localOff} chunk_index=${ch.chunk_index}`)
           }
           localOff += bytesRead
           remaining -= bytesRead
-          part.send(partBuf.subarray(0, 16 + bytesRead))
+          // Send immediately - no accumulation
+          part.send(chunkBuf.subarray(0, 16 + bytesRead))
+          if (bp) bp.pendingBytes += bytesRead
         }
       }
     } catch (err) {
@@ -1040,20 +1075,6 @@ export class Protocol extends EventEmitter {
     } finally {
       fs.closeSync(fd)
     }
-  }
-
-  async handleSubtreeData(conn, peerId, payload) {
-    const { requestId, merkleRoot, startChunk, chunkCount } = payload
-    const data = Buffer.from(payload.data)
-
-    this.emit('subtree:downloaded', {
-      requestId,
-      merkleRoot,
-      startChunk,
-      chunkCount,
-      peerId,
-      data
-    })
   }
 
   handleSubtreeProof(conn, peerId, payload) {
@@ -1081,6 +1102,20 @@ export class Protocol extends EventEmitter {
     
     this.activeRequests.delete(requestId);
     this.activeDownloads.delete(requestId);
+    
+    // Cancel in-progress subtree serving
+    const serveState = this._activeSubtreeServeRequests.get(requestId)
+    if (serveState) {
+      serveState.cancelled = true
+      console.log(`[PROTOCOL] Marked subtree serve ${requestId.substring(0, 8)} as cancelled`)
+    }
+    
+    // Remove from subtree serve queue if pending
+    const queueIndex = this._subtreeServeQueue.findIndex(item => item.payload?.requestId === requestId)
+    if (queueIndex !== -1) {
+      this._subtreeServeQueue.splice(queueIndex, 1)
+      console.log(`[PROTOCOL] Removed request ${requestId.substring(0, 8)} from subtree queue`)
+    }
   }
 
   /**
@@ -1245,17 +1280,36 @@ export class Protocol extends EventEmitter {
   /**
    * BITFIELD_REQUEST: Peer requests our bitfield
    */
-  handleBitfieldRequest(conn, peerId, payload) {
-    const { requestId } = payload;
+  async handleBitfieldRequest(conn, peerId, payload) {
+    const { requestId, merkleRoot } = payload;
     
-    console.log(`BITFIELD_REQUEST from ${peerId.substring(0, 8)}`);
+    console.log(`BITFIELD_REQUEST from ${peerId.substring(0, 8)} merkleRoot=${merkleRoot?.substring(0, 8)}`);
     
-    // For now, we don't have a global bitfield to send
-    // This would be implemented when we have active download sessions
-    // that track which chunks we have
+    // If we have the file, respond with a full bitfield (all chunks available)
+    if (merkleRoot) {
+      const file = this.db.getFileByMerkleRoot(merkleRoot);
+      if (file && file.chunk_count > 0) {
+        // Create a bitfield with all chunks set (we have the complete file)
+        const { BitField } = await import('./bitfield.js');
+        const bitfield = new BitField(file.chunk_count);
+        for (let i = 0; i < file.chunk_count; i++) {
+          bitfield.set(i);
+        }
+        
+        const message = this.encodeMessage(MSG_TYPE.BITFIELD, {
+          merkleRoot,
+          bitfield: bitfield.buffer.toString('base64'),
+          chunkCount: file.chunk_count
+        });
+        
+        void this._enqueueWrite(conn, message);
+        console.log(`BITFIELD sent to ${peerId.substring(0, 8)}: ${file.chunk_count} chunks`);
+        return;
+      }
+    }
     
-    // Emit event so download sessions can respond
-    this.emit('bitfield:request', { conn, peerId, requestId });
+    // Emit event so download sessions can respond (for partial bitfields)
+    this.emit('bitfield:request', { conn, peerId, requestId, merkleRoot });
   }
 
   // ============================================================================
@@ -1292,7 +1346,7 @@ export class Protocol extends EventEmitter {
       chunkHash
     });
     
-    const sent = this.network.broadcast(topicKey, message);
+    const sent = this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     if (VERBOSE) {
       console.log(`Broadcast to ${sent} peer(s)`);
     }
@@ -1402,7 +1456,7 @@ export class Protocol extends EventEmitter {
       topicKey: topicKeyHex
     });
 
-    this.network.broadcast(topicKey, message);
+    this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     return requestId;
   }
 
@@ -1455,7 +1509,7 @@ export class Protocol extends EventEmitter {
       topicKey: topicKeyHex
     });
 
-    this.network.broadcast(topicKey, message);
+    this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     return requestId;
   }
 
@@ -1550,7 +1604,7 @@ export class Protocol extends EventEmitter {
     
     // Broadcast CANCEL
     const message = this.encodeMessage(MSG_TYPE.CANCEL, { requestId });
-    this.network.broadcast(request.topicKey, message);
+    this.network.broadcast(request.topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     
     // Cleanup
     clearTimeout(request.timeout);
@@ -1590,16 +1644,51 @@ export class Protocol extends EventEmitter {
         this.activeMetadataRequests.delete(requestId);
       }
     }
+
+    // CRITICAL: Cleanup stale subtree reassembly buffers to prevent memory leaks
+    // Use longer timeout (5 min) to avoid interfering with active downloads
+    // Download session handles its own timeouts (30s) and properly resets chunk states
+    const subtreeMaxAge = 5 * 60 * 1000; // 5 minutes
+    let subtreeCleanupCount = 0;
+    for (const [requestId, rx] of this._subtreeRx) {
+      if (now - (rx.createdAt || rx.timestamp || 0) > subtreeMaxAge) {
+        console.warn(`🧹 Cleaning up stale subtree ${requestId.substring(0, 8)} (${rx.receivedBytes}/${rx.totalBytes} bytes)`);
+        this._subtreeRx.delete(requestId);
+        subtreeCleanupCount++;
+      }
+    }
+    
+    if (subtreeCleanupCount > 0) {
+      console.log(`🧹 Cleaned up ${subtreeCleanupCount} stale subtree buffers`);
+    }
   }
 
   /**
-   * Get stats
+   * Get stats including memory usage
    */
   getStats() {
+    const mem = process.memoryUsage()
     return {
       activeRequests: this.activeRequests.size,
-      activeDownloads: this.activeDownloads.size
+      activeDownloads: this.activeDownloads.size,
+      subtreeRxBuffers: this._subtreeRx.size,
+      merkleTreeCache: this._merkleTreeCache.size,
+      subtreeServeQueue: this._subtreeServeQueue.length,
+      memory: {
+        heapUsed: this._formatBytes(mem.heapUsed),
+        heapTotal: this._formatBytes(mem.heapTotal),
+        external: this._formatBytes(mem.external),
+        rss: this._formatBytes(mem.rss)
+      }
     };
+  }
+
+  _formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
   }
 
   /**

@@ -11,6 +11,7 @@ import { PeerManager } from './peer-manager.js'
 import { ChunkScheduler, ChunkState } from './chunk-scheduler.js'
 import { getMerkleRoot, verifySubtreeProof } from './merkle.js'
 import { hashBuffer } from './hash.js'
+import { initLogger, getLogger } from './logger.js'
 
 export class ChunkMeta {
   constructor(index, hash, offset, size) {
@@ -74,13 +75,24 @@ export class DownloadSession extends EventEmitter {
     this.chunksInFlight = 0;
     this.bytesDownloaded = 0;
     
-    this.maxConcurrentRequests = 50;
+    // Adaptive concurrent requests: scale with peer count
+    // Formula: min(50, max(4, peerCount * 8))
+    // Updated dynamically as peers connect/disconnect
+    this.maxConcurrentRequests = 4; // Start low, will increase as peers connect
+    
+    // Initialize logger for this download session
+    const logDir = '/tmp/swarmfs-logs'
+    const logFile = `${merkleRoot.substring(0, 8)}-${Date.now()}.log`
+    this.logger = initLogger(`${logDir}/${logFile}`)
     this.requestTimeout = 30000;
     
     this.running = false;
     this.loopCount = 0;
     
     this.fileId = null;
+    
+    // Track if we need to update maxConcurrentRequests
+    this._lastPeerCount = 0;
 
     this.outputFd = null;
 
@@ -184,10 +196,15 @@ export class DownloadSession extends EventEmitter {
     for (const [peerId, conn] of topic.connections) {
       this.peerManager.addPeer(peerId, conn);
       added++;
+      
+      // Request bitfield from this peer (same as onPeerConnected)
+      console.log(`[BITFIELD] Requesting bitfield from bootstrapped peer ${peerId.substring(0, 8)} for ${this.merkleRoot.substring(0, 8)}`);
+      this.protocol.requestBitfield(conn, peerId, this.merkleRoot);
     }
 
     if (added > 0) {
       console.log(`🔌 Bootstrapped ${added} existing peer(s) for download session`);
+      this._updateMaxConcurrentRequests();
     }
   }
 
@@ -274,39 +291,47 @@ export class DownloadSession extends EventEmitter {
   setupProtocolHandlers() {
     const onPeerConnected = (info) => this.onPeerConnected(info);
     const onPeerDisconnected = (info) => this.onPeerDisconnected(info);
+    const onPeerBitfield = (info) => this.onPeerBitfield(info);
     const onChunkOffer = (info) => this.onChunkOffer(info);
     const onChunkReceived = (info) => this.onChunkReceived(info);
-    const onSubtreeReceived = (info) => this.onSubtreeReceived(info);
+    const onSubtreePart = (info) => this.onSubtreePart(info);
     const onSubtreeProof = (info) => this.onSubtreeProof(info);
+    const onSubtreeComplete = (info) => this.onSubtreeComplete(info);
 
     this._protocolHandlers = {
       onPeerConnected,
       onPeerDisconnected,
+      onPeerBitfield,
       onChunkOffer,
       onChunkReceived,
-      onSubtreeReceived,
-      onSubtreeProof
+      onSubtreePart,
+      onSubtreeProof,
+      onSubtreeComplete
     };
 
     this.protocol.on('peer:connected', onPeerConnected);
     this.protocol.on('peer:disconnected', onPeerDisconnected);
+    this.protocol.on('peer:bitfield', onPeerBitfield);
     this.protocol.on('chunk:offer', onChunkOffer);
     this.protocol.on('chunk:downloaded', onChunkReceived);
-    this.protocol.on('subtree:downloaded', onSubtreeReceived);
+    this.protocol.on('subtree:part', onSubtreePart);
     this.protocol.on('subtree:proof', onSubtreeProof);
+    this.protocol.on('subtree:complete', onSubtreeComplete);
   }
 
   detachProtocolHandlers() {
     if (!this._protocolHandlers) {
       return;
     }
-    const { onPeerConnected, onPeerDisconnected, onChunkOffer, onChunkReceived, onSubtreeReceived, onSubtreeProof } = this._protocolHandlers;
+    const { onPeerConnected, onPeerDisconnected, onPeerBitfield, onChunkOffer, onChunkReceived, onSubtreePart, onSubtreeProof, onSubtreeComplete } = this._protocolHandlers;
     this.protocol.off('peer:connected', onPeerConnected);
     this.protocol.off('peer:disconnected', onPeerDisconnected);
+    this.protocol.off('peer:bitfield', onPeerBitfield);
     this.protocol.off('chunk:offer', onChunkOffer);
     this.protocol.off('chunk:downloaded', onChunkReceived);
-    this.protocol.off('subtree:downloaded', onSubtreeReceived);
+    this.protocol.off('subtree:part', onSubtreePart);
     this.protocol.off('subtree:proof', onSubtreeProof);
+    this.protocol.off('subtree:complete', onSubtreeComplete);
     this._protocolHandlers = null;
   }
 
@@ -335,12 +360,63 @@ export class DownloadSession extends EventEmitter {
         
         if (toRequest.length === 0) {
           const stats = this.scheduler.getStats();
+          
+          // Case 1: All missing chunks are unavailable (no peer has them)
           if (stats.totalMissing > 0 && stats.unavailable === stats.totalMissing) {
             console.warn(`⚠️  STUCK: ${stats.unavailable} chunks unavailable`);
             await this.sleep(5000);
             continue;
           }
           
+          // Case 2: No missing chunks but verified < total = chunks stuck in REQUESTED
+          // This happens when timeouts haven't fired yet or requests are orphaned
+          if (stats.totalMissing === 0 && this.chunksVerified < this.totalChunks) {
+            const stuckCount = this.totalChunks - this.chunksVerified;
+            this.logger?.log('STUCK_STATE', {
+              verified: this.chunksVerified,
+              total: this.totalChunks,
+              stuck: stuckCount,
+              inFlight: this.chunksInFlight,
+              activeRequests: this._activeRequestIds.size
+            });
+            
+            // Force-check for stale REQUESTED chunks (requested > 60s ago)
+            // Count unique stale subtrees, not individual chunks
+            const staleThreshold = Date.now() - 60000;
+            const staleSubtrees = new Set();
+            for (const [idx, ch] of this.chunkStates) {
+              if (ch.state === ChunkState.REQUESTED && ch.requestedAt && ch.requestedAt < staleThreshold) {
+                // Find the requestId for this chunk
+                for (const [reqId, indices] of this._subtreeRequestMap.entries()) {
+                  if (indices.includes(idx)) {
+                    staleSubtrees.add(reqId);
+                    break;
+                  }
+                }
+              }
+            }
+            
+            // Force-timeout stale subtrees
+            for (const reqId of staleSubtrees) {
+              const indices = this._subtreeRequestMap.get(reqId) || [];
+              if (indices.length > 0) {
+                const ch = this.chunkStates.get(indices[0]);
+                if (ch) {
+                  this.onSubtreeTimeout(reqId, ch.requestedFrom);
+                }
+              }
+            }
+            
+            if (staleSubtrees.size > 0) {
+              console.warn(`🔧 Force-failed ${staleSubtrees.size} stale subtree requests`);
+            }
+            
+            // Always sleep to prevent tight loop
+            await this.sleep(1000);
+            continue;
+          }
+          
+          // Case 3: Normal wait for in-flight requests to complete
           await this.waitForSlot();
           continue;
         }
@@ -349,7 +425,8 @@ export class DownloadSession extends EventEmitter {
           await this.requestChunk(chunkIndex);
         }
         
-        await this.sleep(10);
+        // Always yield to event loop
+        await this.sleep(50);
         
       } catch (error) {
         console.error('Download loop error:', error);
@@ -429,8 +506,11 @@ export class DownloadSession extends EventEmitter {
       ch.state = ChunkState.REQUESTED;
       ch.requestedFrom = peer.peerId;
       ch.requestedAt = Date.now();
-      this.chunksInFlight++;
     }
+
+    // Count this as ONE in-flight request (the subtree), not N chunks
+    // This allows maxConcurrentRequests to control concurrent subtree requests
+    this.chunksInFlight++;
 
     const timeout = setTimeout(() => {
       this.onSubtreeTimeout(requestId, peer.peerId);
@@ -439,6 +519,14 @@ export class DownloadSession extends EventEmitter {
 
     peer.activeRequests.add(requestId);
     console.log(`⬇️  Requested subtree ${subtreeStart}-${subtreeEnd} req=${requestId.substring(0, 8)} peer=${peer.peerId.substring(0, 8)} chunks=${chunkIndices.length}`);
+    
+    this.logger?.log('SUBTREE_REQUEST', {
+      requestId: requestId.substring(0, 8),
+      start: subtreeStart,
+      end: subtreeEnd,
+      chunks: chunkIndices.length,
+      peer: peer.peerId.substring(0, 8)
+    });
     
     return true;
   }
@@ -462,6 +550,12 @@ export class DownloadSession extends EventEmitter {
       peer.activeRequests.delete(requestId);
       peer.timeouts++;
     }
+    
+    this.logger?.log('SUBTREE_TIMEOUT', {
+      requestId: requestId.substring(0, 8),
+      peer: peerId.substring(0, 8),
+      chunks: indices.length
+    });
 
     for (const idx of indices) {
       const ch = this.chunkStates.get(idx);
@@ -470,187 +564,180 @@ export class DownloadSession extends EventEmitter {
       }
       ch.state = ChunkState.FAILED;
       ch.retryCount++;
-      this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
     }
+    
+    // Decrement chunksInFlight by 1 (we count per-subtree, not per-chunk)
+    this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
   }
 
-  async onSubtreeReceived(info) {
-    const { requestId, startChunk, chunkCount, data, peerId } = info;
+  // Streaming: write each part directly to disk as it arrives
+  // Parts may span multiple chunks or be partial chunks
+  async onSubtreePart(info) {
+    const { requestId, startChunk, offset, data, peerId } = info;
     if (!this.running) {
       return;
     }
 
-    // Proof may arrive after data; pair them by requestId.
-    const proofInfo = this._pendingSubtreeProofs.get(requestId);
-    if (!proofInfo) {
-      this._pendingSubtreeData.set(requestId, info);
-      return;
+    // Calculate which chunk(s) this part belongs to
+    // offset is the byte offset within the subtree (starting at startChunk)
+    let partOffset = 0;
+    let remaining = data.length;
+    
+    // Find the starting chunk by summing chunk sizes
+    let chunkIndex = startChunk;
+    let chunkByteOffset = 0;
+    for (let i = startChunk; i < this.totalChunks; i++) {
+      const ch = this.chunkStates.get(i);
+      if (!ch) return;
+      if (chunkByteOffset + ch.size > offset) {
+        chunkIndex = i;
+        break;
+      }
+      chunkByteOffset += ch.size;
     }
-    this._pendingSubtreeProofs.delete(requestId);
-    await this._processSubtreeWithProof(proofInfo, info);
+    
+    // Write data to the appropriate chunk(s)
+    while (remaining > 0 && chunkIndex < this.totalChunks) {
+      const ch = this.chunkStates.get(chunkIndex);
+      if (!ch) break;
+      
+      // Skip already verified chunks
+      if (ch.state === ChunkState.VERIFIED) {
+        remaining -= ch.size;
+        chunkIndex++;
+        continue;
+      }
+      
+      // Calculate write position within this chunk
+      const writeOffset = Math.max(0, offset - chunkByteOffset);
+      const writeSize = Math.min(remaining, ch.size - writeOffset);
+      
+      if (writeSize <= 0) {
+        chunkIndex++;
+        continue;
+      }
+      
+      // For now, we need to accumulate data per chunk to verify hash
+      // This is a limitation - we can't verify partial chunk hashes
+      // Store partial data and verify when complete
+      if (!this._partialChunks) {
+        this._partialChunks = new Map();
+      }
+      
+      const chunkKey = `${requestId}:${chunkIndex}`;
+      let partial = this._partialChunks.get(chunkKey);
+      if (!partial) {
+        partial = { data: Buffer.allocUnsafe(ch.size), written: 0, expectedSize: ch.size };
+        this._partialChunks.set(chunkKey, partial);
+      }
+      
+      // Copy data to partial buffer
+      data.copy(partial.data, writeOffset, partOffset, partOffset + writeSize);
+      partial.written += writeSize;
+      
+      // If chunk is complete, verify and write to disk
+      if (partial.written >= ch.size) {
+        try {
+          const actualHash = await hashBuffer(partial.data);
+          if (actualHash !== ch.hash) {
+            throw new Error('Hash mismatch');
+          }
+          
+          if (!this.outputFd) {
+            await this.openOutputFile();
+          }
+          const { bytesWritten } = await this.outputFd.write(partial.data, 0, ch.size, ch.offset);
+          if (bytesWritten !== ch.size) {
+            throw new Error(`Short write: expected=${ch.size} got=${bytesWritten}`);
+          }
+          
+          ch.state = ChunkState.VERIFIED;
+          this.chunksVerified = Math.min(this.totalChunks, this.chunksVerified + 1);
+          this.bytesDownloaded = Math.min(this.fileSize, this.bytesDownloaded + ch.size);
+          this.ourBitfield.set(chunkIndex);
+          this.peerManager.updatePeerStats(peerId, true, ch.size, Math.max(1, Date.now() - (ch.requestedAt || Date.now())));
+          // Note: chunksInFlight is decremented in onSubtreeComplete, not per-chunk
+          
+          this.emit('progress', {
+            verified: this.chunksVerified,
+            total: this.totalChunks,
+            bytes: this.bytesDownloaded,
+            percentage: (this.chunksVerified / this.totalChunks) * 100
+          });
+          
+          this._partialChunks.delete(chunkKey);
+        } catch (err) {
+          ch.state = ChunkState.FAILED;
+          ch.retryCount++;
+          this.peerManager.updatePeerStats(peerId, false);
+          // Note: chunksInFlight is decremented in onSubtreeComplete, not per-chunk
+          this._partialChunks.delete(chunkKey);
+        }
+      }
+      
+      partOffset += writeSize;
+      remaining -= writeSize;
+      chunkIndex++;
+    }
   }
 
   async onSubtreeProof(info) {
-    const { requestId } = info;
+    const { requestId, merkleRoot, startChunk, chunkCount, node, proof, peerId } = info;
     if (!this.running) {
       return;
     }
 
-    const dataInfo = this._pendingSubtreeData.get(requestId);
-    if (!dataInfo) {
-      this._pendingSubtreeProofs.set(requestId, info);
-      return;
-    }
-    this._pendingSubtreeData.delete(requestId);
-    await this._processSubtreeWithProof(info, dataInfo);
-  }
-
-  async _processSubtreeWithProof(proofInfo, dataInfo) {
-    const { requestId, merkleRoot, startChunk: proofStart, chunkCount: proofCount, node, proof, peerId: proofPeerId } = proofInfo;
-    const { startChunk, chunkCount, data, peerId } = dataInfo;
-
-    if (peerId !== proofPeerId) {
-      return;
-    }
-    if (merkleRoot !== this.merkleRoot) {
-      return;
-    }
-    if (startChunk !== proofStart || chunkCount !== proofCount) {
-      return;
-    }
-
-    const failSubtree = () => {
-      const indices = this._subtreeRequestMap.get(requestId) || [];
-      this._subtreeRequestMap.delete(requestId);
-      this._activeRequestIds.delete(requestId);
-
-      const t = this._subtreeTimeouts.get(requestId);
-      if (t) {
-        clearTimeout(t);
-      }
-      this._subtreeTimeouts.delete(requestId);
-
-      for (const idx of indices) {
-        const ch = this.chunkStates.get(idx);
-        if (!ch || ch.state === ChunkState.VERIFIED) {
-          continue;
-        }
-        ch.state = ChunkState.FAILED;
-        ch.retryCount++;
-        this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
-      }
-    }
-
-    // Compute subtree root from expected chunk hashes (data integrity is ensured by per-chunk hashing below).
+    // Verify merkle proof
     const leafHashes = [];
     for (let i = startChunk; i < startChunk + chunkCount && i < this.totalChunks; i++) {
       const ch = this.chunkStates.get(i);
-      if (!ch) {
-        break;
+      if (ch) {
+        leafHashes.push(ch.hash);
       }
-      leafHashes.push(ch.hash);
     }
 
-    // Only validate if we have a full subtree worth of leaves.
     if (leafHashes.length === chunkCount) {
       const computedNode = await getMerkleRoot(leafHashes);
       if (computedNode !== node) {
-        failSubtree();
+        console.error(`Subtree proof mismatch for ${requestId.substring(0, 8)}`);
+        this.logger?.log('PROOF_MISMATCH', {
+          requestId: requestId.substring(0, 8),
+          startChunk,
+          chunkCount,
+          computedNode: computedNode?.substring(0, 16),
+          receivedNode: node?.substring(0, 16)
+        });
         return;
       }
       const ok = await verifySubtreeProof(node, proof, this.merkleRoot);
       if (!ok) {
-        failSubtree();
+        console.error(`Subtree proof verification failed for ${requestId.substring(0, 8)}`);
         return;
       }
     }
-
+    
+    // Clear timeout - proof received
     const t = this._subtreeTimeouts.get(requestId);
     if (t) {
       clearTimeout(t);
     }
     this._subtreeTimeouts.delete(requestId);
+  }
 
-    const indices = this._subtreeRequestMap.get(requestId);
-    if (!indices || indices.length === 0) {
-      this._activeRequestIds.delete(requestId);
-      return;
-    }
+  onSubtreeComplete(info) {
+    const { requestId, peerId } = info;
+    
+    // Decrement chunksInFlight - we count one per subtree request
+    this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
+    
+    // Cleanup request tracking
     this._subtreeRequestMap.delete(requestId);
     this._activeRequestIds.delete(requestId);
-
+    
     const peer = this.peerManager.getPeer(peerId);
     if (peer) {
       peer.activeRequests.delete(requestId);
     }
-
-    let off = 0;
-    let lastProcessed = startChunk - 1;
-    for (let i = startChunk; i < startChunk + chunkCount && i < this.totalChunks; i++) {
-      const ch = this.chunkStates.get(i);
-      if (!ch) {
-        break;
-      }
-      const len = ch.size;
-      if (off + len > data.length) {
-        break;
-      }
-      const slice = data.subarray(off, off + len);
-      off += len;
-
-      if (ch.state === ChunkState.VERIFIED) {
-        continue;
-      }
-
-      try {
-        const actualHash = await hashBuffer(slice);
-        if (actualHash !== ch.hash) {
-          throw new Error('Hash mismatch');
-        }
-        if (!this.outputFd) {
-          await this.openOutputFile();
-        }
-        const { bytesWritten } = await this.outputFd.write(slice, 0, slice.length, ch.offset);
-        if (bytesWritten !== slice.length) {
-          throw new Error(`Short write: expected=${slice.length} got=${bytesWritten}`);
-        }
-        ch.state = ChunkState.VERIFIED;
-        this.chunksVerified = Math.min(this.totalChunks, this.chunksVerified + 1);
-        this.bytesDownloaded = Math.min(this.fileSize, this.bytesDownloaded + slice.length);
-        this.ourBitfield.set(i);
-        this.peerManager.updatePeerStats(peerId, true, slice.length, Math.max(1, Date.now() - (ch.requestedAt || Date.now())));
-        lastProcessed = i;
-      } catch {
-        ch.state = ChunkState.FAILED;
-        ch.retryCount++;
-        this.peerManager.updatePeerStats(peerId, false);
-      } finally {
-        this.chunksInFlight = Math.max(0, this.chunksInFlight - 1);
-      }
-    }
-
-    for (let i = lastProcessed + 1; i < startChunk + chunkCount && i < this.totalChunks; i++) {
-      const ch = this.chunkStates.get(i);
-      if (!ch || ch.state === ChunkState.VERIFIED) {
-        continue
-      }
-
-      // Only fail chunks that were part of this subtree request.
-      if (ch.requestId !== requestId) {
-        continue
-      }
-
-      ch.state = ChunkState.FAILED
-      ch.retryCount++
-      this.chunksInFlight = Math.max(0, this.chunksInFlight - 1)
-    }
-
-    this.emit('progress', {
-      verified: this.chunksVerified,
-      total: this.totalChunks,
-      bytes: this.bytesDownloaded,
-      percentage: (this.chunksVerified / this.totalChunks) * 100
-    });
   }
 
   onPeerConnected(info) {
@@ -661,11 +748,48 @@ export class DownloadSession extends EventEmitter {
     }
     
     this.peerManager.addPeer(peerId, conn);
+    this._updateMaxConcurrentRequests();
+    
+    // Request peer's bitfield to learn what chunks they have
+    console.log(`[BITFIELD] Requesting bitfield from ${peerId.substring(0, 8)} for ${this.merkleRoot.substring(0, 8)}`);
+    this.protocol.requestBitfield(conn, peerId, this.merkleRoot);
+  }
+
+  onPeerBitfield(info) {
+    const { peerId, bitfield, merkleRoot } = info;
+    
+    console.log(`[BITFIELD] Received bitfield from ${peerId?.substring(0, 8)} merkleRoot=${merkleRoot?.substring(0, 8)} expected=${this.merkleRoot.substring(0, 8)}`);
+    
+    // Only process bitfield for our file
+    if (merkleRoot !== this.merkleRoot) {
+      console.log(`[BITFIELD] Ignoring bitfield - merkleRoot mismatch`);
+      return;
+    }
+    
+    this.peerManager.updatePeerBitfield(peerId, bitfield);
+    this._updateMaxConcurrentRequests();
+    console.log(`[BITFIELD] Updated peer availability for ${peerId.substring(0, 8)}`);
   }
 
   onPeerDisconnected(info) {
     const { peerId } = info;
     this.peerManager.removePeer(peerId);
+    this._updateMaxConcurrentRequests();
+    
+    // Mark chunks as failed but don't decrement chunksInFlight here
+    // onSubtreeTimeout will handle the decrement per-subtree
+    for (const [requestId, indices] of this._subtreeRequestMap.entries()) {
+      if (!Array.isArray(indices) || indices.length === 0) {
+        continue
+      }
+      const first = this.chunkStates.get(indices[0])
+      if (!first || first.requestedFrom !== peerId) {
+        continue
+      }
+      this.onSubtreeTimeout(requestId, peerId)
+    }
+    
+    // Handle any remaining chunks not in subtree requests (edge case)
     for (const [, ch] of this.chunkStates) {
       if (!ch || ch.state === ChunkState.VERIFIED) {
         continue
@@ -677,19 +801,8 @@ export class DownloadSession extends EventEmitter {
       if (ch.state === ChunkState.REQUESTED) {
         ch.state = ChunkState.FAILED
         ch.retryCount++
-        this.chunksInFlight = Math.max(0, this.chunksInFlight - 1)
+        // Don't decrement chunksInFlight here - handled by subtree timeout
       }
-    }
-
-    for (const [requestId, indices] of this._subtreeRequestMap.entries()) {
-      if (!Array.isArray(indices) || indices.length === 0) {
-        continue
-      }
-      const first = this.chunkStates.get(indices[0])
-      if (!first || first.requestedFrom !== peerId) {
-        continue
-      }
-      this.onSubtreeTimeout(requestId, peerId)
     }
   }
 
@@ -897,6 +1010,9 @@ export class DownloadSession extends EventEmitter {
     this.running = false;
 
     this._clearAllChunkTimeouts();
+    
+    // Close logger
+    this.logger?.close();
 
     // Cancel all outstanding protocol requests to avoid post-success timeouts.
     for (const requestId of this._activeRequestIds) {
@@ -987,14 +1103,32 @@ export class DownloadSession extends EventEmitter {
   }
 
   async waitForSlot() {
-    return new Promise(resolve => {
-      const handler = () => {
-        this.removeListener('progress', handler);
-        resolve();
-      };
-      this.once('progress', handler);
-      setTimeout(resolve, 5000);
-    });
+    // Poll for available slot instead of using event listeners.
+    // The old approach added a new 'progress' listener every call, causing
+    // EventEmitter memory leak warnings and memory accumulation.
+    const maxPolls = 100; // 100 * 50ms = 5 seconds max wait
+    for (let i = 0; i < maxPolls; i++) {
+      if (this.chunksInFlight < this.maxConcurrentRequests) {
+        return;
+      }
+      await this.sleep(50);
+    }
+  }
+
+  _updateMaxConcurrentRequests() {
+    const peerCount = this.peerManager.peers.size;
+    if (peerCount === this._lastPeerCount) {
+      return; // No change
+    }
+    this._lastPeerCount = peerCount;
+    
+    // Adaptive formula: min(50, max(4, peerCount * 8))
+    const oldMax = this.maxConcurrentRequests;
+    this.maxConcurrentRequests = Math.min(50, Math.max(4, peerCount * 8));
+    
+    if (oldMax !== this.maxConcurrentRequests) {
+      console.log(`📊 Adaptive concurrency: ${this.maxConcurrentRequests} requests (${peerCount} peers)`);
+    }
   }
 
   sleep(ms) {
