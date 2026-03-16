@@ -913,28 +913,31 @@ export class Protocol extends EventEmitter {
   async _serveSubtreeRequest(conn, peerId, payload) {
     const { requestId, merkleRoot, startChunk, chunkCount, topicKey } = payload || {}
     
+    console.log(`[SUBTREE] Request from ${peerId.substring(0, 8)} merkleRoot=${merkleRoot?.substring(0, 16)}...`)
+    
+    // Find ALL files with this merkle root (content-addressed, sharing doesn't matter)
+    const candidates = this.db.getFilesByMerkleRoot(merkleRoot)
+    if (!candidates || candidates.length === 0) {
+      console.log(`[SUBTREE] No files found with merkle root ${merkleRoot?.substring(0, 16)}...`)
+      this.sendError(conn, requestId, 'File not found')
+      return
+    }
+    
+    // Find first file that exists on disk
     let file = null
-    if (typeof topicKey === 'string' && topicKey.length > 0) {
-      const topic = this.db.getTopicByKey(topicKey)
-      if (topic) {
-        const share = this.db.getTopicShareByMerkleRoot(topic.id, merkleRoot)
-        if (share && share.share_type === 'file' && typeof share.share_path === 'string') {
-          const byPath = this.db.getFile(share.share_path)
-          if (byPath && byPath.file_modified_at > 0) {
-            file = byPath
-          }
-        }
+    for (const candidate of candidates) {
+      try {
+        fs.accessSync(candidate.path, fs.constants.R_OK)
+        file = candidate
+        console.log(`[SUBTREE] Found available file: ${candidate.path}`)
+        break
+      } catch {
+        console.log(`[SUBTREE] File not accessible, skipping: ${candidate.path}`)
       }
     }
-
+    
     if (!file) {
-      const byRoot = this.db.getFileByMerkleRoot(merkleRoot)
-      if (byRoot && byRoot.file_modified_at > 0) {
-        file = byRoot
-      }
-    }
-
-    if (!file) {
+      console.log(`[SUBTREE] No accessible files found for merkle root ${merkleRoot?.substring(0, 16)}...`)
       this.sendError(conn, requestId, 'File not found')
       return
     }
@@ -1287,7 +1290,19 @@ export class Protocol extends EventEmitter {
     
     // If we have the file, respond with a full bitfield (all chunks available)
     if (merkleRoot) {
-      const file = this.db.getFileByMerkleRoot(merkleRoot);
+      // Find any available file with this merkle root (content-addressed)
+      const candidates = this.db.getFilesByMerkleRoot(merkleRoot);
+      let file = null;
+      for (const candidate of candidates || []) {
+        try {
+          fs.accessSync(candidate.path, fs.constants.R_OK);
+          file = candidate;
+          break;
+        } catch {
+          // File not accessible, try next
+        }
+      }
+      
       if (file && file.chunk_count > 0) {
         // Create a bitfield with all chunks set (we have the complete file)
         const { BitField } = await import('./bitfield.js');
@@ -1303,7 +1318,7 @@ export class Protocol extends EventEmitter {
         });
         
         void this._enqueueWrite(conn, message);
-        console.log(`BITFIELD sent to ${peerId.substring(0, 8)}: ${file.chunk_count} chunks`);
+        console.log(`BITFIELD sent to ${peerId.substring(0, 8)}: ${file.chunk_count} chunks from ${file.path}`);
         return;
       }
     }

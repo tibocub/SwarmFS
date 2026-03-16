@@ -253,6 +253,14 @@ export class SwarmDB {
   }
 
   /**
+   * Get all files by merkle root (for finding any available copy)
+   */
+  getFilesByMerkleRoot(merkleRoot) {
+    const stmt = this.db.prepare('SELECT * FROM files WHERE merkle_root = ? AND file_modified_at > 0 ORDER BY added_at DESC');
+    return stmt.all(merkleRoot);
+  }
+
+  /**
    * Get file by ID
    */
   getFileById(id) {
