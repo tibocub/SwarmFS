@@ -435,7 +435,9 @@ export class DownloadSession extends EventEmitter {
     }
   }
 
-  async requestChunk(chunkIndex) {
+  // INVARIANT: chunksInFlight counts SUBTREE REQUESTS, not individual chunks
+// Requesting an 8-chunk subtree increments chunksInFlight by 1, not 8
+async requestChunk(chunkIndex) {
     const chunk = this.chunkStates.get(chunkIndex);
     
     if (chunk.state === ChunkState.REQUESTED && !this.scheduler.inEndgame) {
@@ -724,7 +726,8 @@ export class DownloadSession extends EventEmitter {
     this._subtreeTimeouts.delete(requestId);
   }
 
-  onSubtreeComplete(info) {
+  // INVARIANT: Decrement chunksInFlight by 1 (per-subtree, not per-chunk)
+onSubtreeComplete(info) {
     const { requestId, peerId } = info;
     
     // Decrement chunksInFlight - we count one per subtree request

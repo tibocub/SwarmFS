@@ -910,7 +910,9 @@ export class Protocol extends EventEmitter {
     }
   }
 
-  async _serveSubtreeRequest(conn, peerId, payload) {
+  // INVARIANT: Content-addressed serving - sharing status is NEVER checked here
+// Only merkle root matters. Find ALL files with matching root, serve first accessible.
+async _serveSubtreeRequest(conn, peerId, payload) {
     const { requestId, merkleRoot, startChunk, chunkCount, topicKey } = payload || {}
     
     console.log(`[SUBTREE] Request from ${peerId.substring(0, 8)} merkleRoot=${merkleRoot?.substring(0, 16)}...`)
@@ -1283,7 +1285,9 @@ export class Protocol extends EventEmitter {
   /**
    * BITFIELD_REQUEST: Peer requests our bitfield
    */
-  async handleBitfieldRequest(conn, peerId, payload) {
+  // INVARIANT: Content-addressed - find ANY file with matching merkle root that exists on disk
+// Sharing status is irrelevant, only merkle root + disk access matters
+async handleBitfieldRequest(conn, peerId, payload) {
     const { requestId, merkleRoot } = payload;
     
     console.log(`BITFIELD_REQUEST from ${peerId.substring(0, 8)} merkleRoot=${merkleRoot?.substring(0, 8)}`);
