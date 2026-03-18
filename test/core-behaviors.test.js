@@ -3,7 +3,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
-import Database from './database.js';
+import { SwarmDB } from '../src/database.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -29,7 +29,7 @@ test('getFilesByMerkleRoot returns all files with matching merkle root', async (
   const dbPath = path.join(tempDir, 'test.db');
   
   try {
-    const db = new Database(dbPath);
+    const db = new SwarmDB(dbPath);
     
     // Add two files with same merkle root (simulating copies)
     const merkleRoot = 'abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab';
@@ -57,7 +57,7 @@ test('getFilesByMerkleRoot only returns complete files (file_modified_at > 0)', 
   const dbPath = path.join(tempDir, 'test.db');
   
   try {
-    const db = new Database(dbPath);
+    const db = new SwarmDB(dbPath);
     
     const merkleRoot = 'abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab';
     const file1 = createTestFile(tempDir, 'file1.txt', 'test content');
@@ -85,7 +85,7 @@ test('getFilesByMerkleRoot distinguishes between different merkle roots', async 
   const dbPath = path.join(tempDir, 'test.db');
   
   try {
-    const db = new Database(dbPath);
+    const db = new SwarmDB(dbPath);
     
     const merkleRoot1 = 'aaaa1234567890abcdef1234567890abcdef1234567890abcdef1234567890aa';
     const merkleRoot2 = 'bbbb1234567890abcdef1234567890abcdef1234567890abcdef1234567890bb';
@@ -115,7 +115,7 @@ test('getFilesByMerkleRoot returns empty array for unknown merkle root', async (
   const dbPath = path.join(tempDir, 'test.db');
   
   try {
-    const db = new Database(dbPath);
+    const db = new SwarmDB(dbPath);
     
     const unknownRoot = 'unknown1234567890abcdef1234567890abcdef1234567890abcdef12345678';
     const files = db.getFilesByMerkleRoot(unknownRoot);
