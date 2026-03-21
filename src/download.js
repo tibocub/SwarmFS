@@ -4,34 +4,21 @@
 
 import { EventEmitter } from 'events'
 import fs from 'fs'
-// import crypto from 'crypto'
 import blake3 from 'blake3-bao/blake3'
 import { BitField } from './bitfield.js'
 import { PeerManager } from './peer-manager.js'
-import { ChunkScheduler, ChunkState } from './chunk-scheduler.js'
+import { ChunkScheduler } from './chunk-scheduler.js'
+import { ChunkState, ChunkMeta } from './download/chunk-state.js'
+import { SessionState } from './download/session-state.js'
+import { DiskWriter } from './download/disk-writer.js'
 import { getMerkleRoot, verifySubtreeProof } from './merkle.js'
 import { hashBuffer } from './hash.js'
 import { initLogger, getLogger } from './logger.js'
 
-export class ChunkMeta {
-  constructor(index, hash, offset, size) {
-    this.index = index;
-    this.hash = hash;
-    this.offset = offset;
-    this.size = size;
-    
-    this.state = ChunkState.MISSING;
-    this.requestedFrom = null;
-    this.requestedAt = null;
-    this.requestId = null;
-    this.retryCount = 0;
-    this.data = null;
-    this.timeout = null;
-    
-    this.endgameRequests = null;
-    this.endgameTimeouts = null;
-  }
-}
+// Re-export for backward compatibility
+export { ChunkState, ChunkMeta } from './download/chunk-state.js'
+export { SessionState } from './download/session-state.js'
+export { DiskWriter } from './download/disk-writer.js'
 
 export class DownloadSession extends EventEmitter {
   constructor(topicKey, merkleRoot, outputPath, metadata, protocol, db) {
@@ -71,14 +58,29 @@ export class DownloadSession extends EventEmitter {
     this.peerManager = new PeerManager(this);
     this.scheduler = new ChunkScheduler(this);
     
-    this.chunksVerified = 0;
-    this.chunksInFlight = 0;
-    this.bytesDownloaded = 0;
+    // Session state management (encapsulated)
+    this._sessionState = new SessionState(this.totalChunks, this.fileSize);
     
-    // Adaptive concurrent requests: scale with peer count
-    // Formula: min(50, max(4, peerCount * 8))
-    // Updated dynamically as peers connect/disconnect
-    this.maxConcurrentRequests = 4; // Start low, will increase as peers connect
+    // Expose for backward compatibility (delegates to state)
+    Object.defineProperty(this, 'chunksVerified', {
+      get: () => this._sessionState.chunksVerified,
+      set: (v) => { this._sessionState.chunksVerified = v }
+    });
+    Object.defineProperty(this, 'chunksInFlight', {
+      get: () => this._sessionState.chunksInFlight,
+      set: (v) => { this._sessionState.chunksInFlight = v }
+    });
+    Object.defineProperty(this, 'bytesDownloaded', {
+      get: () => this._sessionState.bytesDownloaded,
+      set: (v) => { this._sessionState.bytesDownloaded = v }
+    });
+    Object.defineProperty(this, 'maxConcurrentRequests', {
+      get: () => this._sessionState.maxConcurrentRequests,
+      set: (v) => { this._sessionState.maxConcurrentRequests = v }
+    });
+    
+    // Disk writer (encapsulated)
+    this._diskWriter = new DiskWriter(this.outputPath, this.fileSize, this.chunkSize, this.totalChunks);
     
     // Initialize logger for this download session
     const logDir = '/tmp/swarmfs-logs'
@@ -94,12 +96,7 @@ export class DownloadSession extends EventEmitter {
     // Track if we need to update maxConcurrentRequests
     this._lastPeerCount = 0;
 
-    this.outputFd = null;
-
-    this._activeRequestIds = new Set();
     this._protocolHandlers = null;
-
-    this._requestToChunkIndex = new Map();
 
     // Prefer large subtree batches for throughput on good links.
     // When Protomux streaming is enabled, the subtree payload can exceed the 16MiB atomic write limit.
@@ -115,12 +112,29 @@ export class DownloadSession extends EventEmitter {
 
     const cap = Math.max(1, Math.min(maxChunksByTarget, maxChunksLegacy));
     this.subtreeChunkCount = Math.max(1, 1 << Math.floor(Math.log2(cap)));
-    this._subtreeRequestMap = new Map(); // requestId -> number[] chunkIndices
-    this._subtreeTimeouts = new Map(); // requestId -> Timeout
-
-    // Subtree proof/data pairing (may arrive in either order)
-    this._pendingSubtreeProofs = new Map(); // requestId -> proofInfo
-    this._pendingSubtreeData = new Map(); // requestId -> dataInfo
+    
+    // Expose session state maps for backward compatibility
+    Object.defineProperty(this, '_activeRequestIds', {
+      get: () => this._sessionState.activeRequestIds
+    });
+    Object.defineProperty(this, '_subtreeRequestMap', {
+      get: () => this._sessionState.subtreeRequestMap
+    });
+    Object.defineProperty(this, '_subtreeTimeouts', {
+      get: () => this._sessionState.subtreeTimeouts
+    });
+    Object.defineProperty(this, '_requestToChunkIndex', {
+      get: () => this._sessionState.requestToChunkIndex
+    });
+    Object.defineProperty(this, '_pendingSubtreeProofs', {
+      get: () => this._sessionState.pendingSubtreeProofs
+    });
+    Object.defineProperty(this, '_pendingSubtreeData', {
+      get: () => this._sessionState.pendingSubtreeData
+    });
+    Object.defineProperty(this, '_partialChunks', {
+      get: () => this._sessionState.partialChunks
+    });
   }
 
   _clearAllChunkTimeouts() {
@@ -158,26 +172,11 @@ export class DownloadSession extends EventEmitter {
   }
 
   async openOutputFile() {
-    if (this.outputFd) {
-      return;
-    }
-    this.outputFd = await fs.promises.open(this.outputPath, 'r+');
+    await this._diskWriter.open()
   }
 
   async closeOutputFile() {
-    if (!this.outputFd) {
-      return;
-    }
-    try {
-      await this.outputFd.datasync();
-    } catch {
-      // ignore
-    }
-    try {
-      await this.outputFd.close();
-    } finally {
-      this.outputFd = null;
-    }
+    await this._diskWriter.close()
   }
 
   bootstrapExistingPeers() {
@@ -231,22 +230,12 @@ export class DownloadSession extends EventEmitter {
   }
 
   async initializeFile() {
-    if (fs.existsSync(this.outputPath)) {
-      const stats = fs.statSync(this.outputPath);
-      if (stats.size === this.fileSize) {
-        console.log(`   ℹ️  File already exists, resuming...`);
-        return;
-      }
+    const created = await this._diskWriter.initializeFile()
+    if (!created) {
+      console.log(`   ℹ️  File already exists, resuming...`)
+    } else {
+      console.log(`   ✓ Initialized file: ${this.outputPath}`)
     }
-    
-    const fd = fs.openSync(this.outputPath, 'w');
-    try {
-      fs.ftruncateSync(fd, this.fileSize);
-    } finally {
-      fs.closeSync(fd);
-    }
-    
-    console.log(`   ✓ Initialized file: ${this.outputPath}`);
   }
 
   async loadExistingChunks() {
@@ -258,33 +247,17 @@ export class DownloadSession extends EventEmitter {
     
     console.log(`   🔍 Verifying existing chunks...`);
     
-    const fd = await fs.promises.open(this.outputPath, 'r');
-
-    try {
-      for (const [index, chunk] of this.chunkStates) {
-        try {
-          const buffer = Buffer.allocUnsafe(chunk.size);
-          await fd.read(buffer, 0, chunk.size, chunk.offset);
-          
-          // const hash = crypto.createHash('sha256').update(buffer).digest('hex');
-          const hash = await hashBuffer(buffer)
-          
-          if (hash === chunk.hash) {
-            chunk.state = ChunkState.VERIFIED;
-            this.chunksVerified++;
-            this.bytesDownloaded += chunk.size;
-            this.ourBitfield.set(index);
-          }
-        } catch (err) {
-          console.error('Chunk verification failed: ', err)
-        }
+    const verified = await this._diskWriter.verifyExistingChunks(this.chunkStates, (index, size) => {
+      const chunk = this.chunkStates.get(index)
+      if (chunk) {
+        chunk.state = ChunkState.VERIFIED
+        this._sessionState.recordChunkVerified(size)
+        this.ourBitfield.set(index)
       }
-    } finally {
-      await fd.close();
-    }
+    })
     
-    if (this.chunksVerified > 0) {
-      console.log(`Resumed: ${this.chunksVerified}/${this.totalChunks} chunks already verified`);
+    if (verified > 0) {
+      console.log(`Resumed: ${verified}/${this.totalChunks} chunks already verified`);
     }
   }
 
@@ -622,9 +595,7 @@ async requestChunk(chunkIndex) {
       // For now, we need to accumulate data per chunk to verify hash
       // This is a limitation - we can't verify partial chunk hashes
       // Store partial data and verify when complete
-      if (!this._partialChunks) {
-        this._partialChunks = new Map();
-      }
+      // Note: _partialChunks is a getter to SessionState.partialChunks which is already initialized
       
       const chunkKey = `${requestId}:${chunkIndex}`;
       let partial = this._partialChunks.get(chunkKey);
@@ -645,27 +616,15 @@ async requestChunk(chunkIndex) {
             throw new Error('Hash mismatch');
           }
           
-          if (!this.outputFd) {
-            await this.openOutputFile();
-          }
-          const { bytesWritten } = await this.outputFd.write(partial.data, 0, ch.size, ch.offset);
-          if (bytesWritten !== ch.size) {
-            throw new Error(`Short write: expected=${ch.size} got=${bytesWritten}`);
-          }
+          await this._diskWriter.writeChunk(partial.data, ch.offset);
           
           ch.state = ChunkState.VERIFIED;
-          this.chunksVerified = Math.min(this.totalChunks, this.chunksVerified + 1);
-          this.bytesDownloaded = Math.min(this.fileSize, this.bytesDownloaded + ch.size);
+          this._sessionState.recordChunkVerified(ch.size);
           this.ourBitfield.set(chunkIndex);
           this.peerManager.updatePeerStats(peerId, true, ch.size, Math.max(1, Date.now() - (ch.requestedAt || Date.now())));
           // Note: chunksInFlight is decremented in onSubtreeComplete, not per-chunk
           
-          this.emit('progress', {
-            verified: this.chunksVerified,
-            total: this.totalChunks,
-            bytes: this.bytesDownloaded,
-            percentage: (this.chunksVerified / this.totalChunks) * 100
-          });
+          this.emit('progress', this._sessionState.getProgressInfo());
           
           this._partialChunks.delete(chunkKey);
         } catch (err) {

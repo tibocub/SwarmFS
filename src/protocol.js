@@ -308,6 +308,7 @@ export class Protocol extends EventEmitter {
     const subtreeBegin = channel.addMessage({
       encoding: c.string,
       onmessage: async (json) => {
+        console.log(`[MUX] Received BEGIN message from ${peerId.substring(0, 8)}`)
         try {
           const msg = JSON.parse(json)
           const { requestId, merkleRoot, startChunk, chunkCount, totalBytes } = msg || {}
@@ -347,6 +348,7 @@ export class Protocol extends EventEmitter {
     const subtreePart = channel.addMessage({
       encoding: c.binary,
       onmessage: async (buf) => {
+        console.log(`[MUX] Received PART message: ${buf?.length || 0} bytes from ${peerId.substring(0, 8)}`)
         // part format: [16 bytes requestId][payload]
         if (!Buffer.isBuffer(buf) || buf.length < 16) {
           return
@@ -703,6 +705,7 @@ export class Protocol extends EventEmitter {
       enqueueWrite: (c, data) => this._enqueueWrite(c, data),
       sendError: (c, requestId, error) => this.sendError(c, requestId, error)
     }
+    console.log(`[SUBTREE] handleSubtreeRequest: beginMsg=${!!context.beginMsg} partMsg=${!!context.partMsg} mux=${!!context.mux}`)
     await this._subtreeServer.handleRequest(conn, peerId, payload, context)
   }
 

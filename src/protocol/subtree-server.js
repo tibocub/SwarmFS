@@ -189,6 +189,7 @@ export class SubtreeServer {
     
     try {
       console.log(`[SUBTREE] Sending BEGIN for req=${requestId.substring(0, 8)} chunks=${slice.length} totalBytes=${total}`)
+      console.log(`[SUBTREE] beginMsg type: ${typeof beginMsg}, send: ${typeof beginMsg?.send}`)
       beginMsg.send(JSON.stringify({ requestId, merkleRoot, startChunk, chunkCount: slice.length, totalBytes: total }))
 
       const requestIdBytes = Buffer.from(requestId, 'hex')
