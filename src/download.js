@@ -13,7 +13,7 @@ import { SessionState } from './download/session-state.js'
 import { DiskWriter } from './download/disk-writer.js'
 import { getMerkleRoot, verifySubtreeProof } from './merkle.js'
 import { hashBuffer } from './hash.js'
-import { initLogger, getLogger } from './logger.js'
+import { initLogger, getLogger, debug } from './logger.js'
 
 // Re-export for backward compatibility
 export { ChunkState, ChunkMeta } from './download/chunk-state.js'
@@ -1033,34 +1033,42 @@ onSubtreeComplete(info) {
         const leafHash = await hashBuffer(actualBuf)
         leafHashes.push(leafHash)
       }
-      return await getMerkleRoot(leafHashes);
+      return await getMerkleRoot(leafHashes)
     } finally {
-      await fd.close();
+      try {
+        await fd.close()
+      } catch {
+        // Ignore close errors
+      }
     }
   }
 
   async findFirstChunkMismatch() {
-    const fd = await fs.promises.open(this.outputPath, 'r');
+    const fd = await fs.promises.open(this.outputPath, 'r')
     try {
       for (let i = 0; i < this.totalChunks; i++) {
-        const expected = this.chunkStates.get(i)?.hash;
+        const expected = this.chunkStates.get(i)?.hash
         if (!expected) {
-          continue;
+          continue
         }
 
-        const offset = i * this.chunkSize;
-        const len = Math.min(this.chunkSize, Math.max(0, this.fileSize - offset));
-        const buf = Buffer.allocUnsafe(len);
-        const { bytesRead } = await fd.read(buf, 0, len, offset);
-        const actualBuf = bytesRead < len ? buf.subarray(0, bytesRead) : buf;
-        const actual = await hashBuffer(actualBuf);
+        const offset = i * this.chunkSize
+        const len = Math.min(this.chunkSize, Math.max(0, this.fileSize - offset))
+        const buf = Buffer.allocUnsafe(len)
+        const { bytesRead } = await fd.read(buf, 0, len, offset)
+        const actualBuf = bytesRead < len ? buf.subarray(0, bytesRead) : buf
+        const actual = await hashBuffer(actualBuf)
         if (actual !== expected) {
-          return { index: i, expected, actual, offset, len: actualBuf.length };
+          return { index: i, expected, actual, offset, len: actualBuf.length }
         }
       }
-      return null;
+      return null
     } finally {
-      await fd.close();
+      try {
+        await fd.close()
+      } catch {
+        // Ignore close errors
+      }
     }
   }
 

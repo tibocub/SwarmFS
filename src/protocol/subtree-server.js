@@ -6,10 +6,9 @@
 import fs from 'fs'
 import { buildMerkleTree, generateSubtreeProofFromTree } from '../merkle.js'
 import { encodeMessage, MSG_TYPE } from './message-codec.js'
+import { PROTOCOL_CONFIG } from '../config.js'
+import { debug } from '../logger.js'
 
-const DEFAULT_MAX_CONCURRENT = 8
-const DEFAULT_MAX_QUEUE_SIZE = 100
-const BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024 // 4MB pending
 const CHUNK_SIZE = 1024 * 1024 // 1MB
 
 /**
@@ -19,8 +18,8 @@ export class SubtreeServer {
   constructor(db, merkleCache, options = {}) {
     this.db = db
     this.merkleCache = merkleCache
-    this.maxConcurrent = options.maxConcurrent || DEFAULT_MAX_CONCURRENT
-    this.maxQueueSize = options.maxQueueSize || DEFAULT_MAX_QUEUE_SIZE
+    this.maxConcurrent = options.maxConcurrent || PROTOCOL_CONFIG.MAX_CONCURRENT_SUBTREE_SERVES
+    this.maxQueueSize = options.maxQueueSize || PROTOCOL_CONFIG.MAX_SUBTREE_SERVE_QUEUE_SIZE
 
     // Backpressure state
     this._activeServes = 0
@@ -184,10 +183,11 @@ export class SubtreeServer {
       return
     }
 
+    // Use synchronous file operations - numeric file descriptors don't have GC issues
     const fd = fs.openSync(file.path, 'r')
-    console.log(`[SUBTREE] Serving ${slice.length} chunks from ${file.path} for req=${requestId.substring(0, 8)}`)
-    
     try {
+      console.log(`[SUBTREE] Serving ${slice.length} chunks from ${file.path} for req=${requestId.substring(0, 8)}`)
+      
       console.log(`[SUBTREE] Sending BEGIN for req=${requestId.substring(0, 8)} chunks=${slice.length} totalBytes=${total}`)
       console.log(`[SUBTREE] beginMsg type: ${typeof beginMsg}, send: ${typeof beginMsg?.send}`)
       beginMsg.send(JSON.stringify({ requestId, merkleRoot, startChunk, chunkCount: slice.length, totalBytes: total }))
@@ -211,10 +211,12 @@ export class SubtreeServer {
         let localOff = 0
         
         while (remaining > 0) {
-          // Backpressure check
-          if (backpressureState && backpressureState.pendingBytes >= BACKPRESSURE_THRESHOLD && stream?.writable !== false) {
+          // Backpressure check with timeout to prevent hanging forever
+          if (backpressureState && backpressureState.pendingBytes >= PROTOCOL_CONFIG.BACKPRESSURE_THRESHOLD && stream?.writable !== false) {
             console.log(`[SUBTREE] Backpressure wait: ${backpressureState.pendingBytes} bytes pending`)
-            await new Promise(resolve => { backpressureState.drainCallback = resolve })
+            const drainPromise = new Promise(resolve => { backpressureState.drainCallback = resolve })
+            const timeoutPromise = new Promise(resolve => setTimeout(resolve, 30000)) // 30s timeout
+            await Promise.race([drainPromise, timeoutPromise])
           }
           
           const toRead = Math.min(remaining, CHUNK_SIZE)

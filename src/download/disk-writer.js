@@ -3,7 +3,8 @@
  * Handles file operations, chunk writing, and verification
  */
 
-import fs from 'fs'
+import fs from 'fs/promises'
+import { existsSync, statSync } from 'fs'
 import { hashBuffer } from '../hash.js'
 
 /**
@@ -22,18 +23,18 @@ export class DiskWriter {
    * Initialize the output file (create/truncate)
    */
   async initializeFile() {
-    if (fs.existsSync(this.outputPath)) {
-      const stats = fs.statSync(this.outputPath)
+    if (existsSync(this.outputPath)) {
+      const stats = statSync(this.outputPath)
       if (stats.size === this.fileSize) {
         return false // File exists with correct size
       }
     }
     
-    const fd = fs.openSync(this.outputPath, 'w')
+    const fh = await fs.open(this.outputPath, 'w')
     try {
-      fs.ftruncateSync(fd, this.fileSize)
+      await fh.truncate(this.fileSize)
     } finally {
-      fs.closeSync(fd)
+      await fh.close()
     }
     
     return true // File was created
@@ -46,7 +47,7 @@ export class DiskWriter {
     if (this.outputFd) {
       return
     }
-    this.outputFd = await fs.promises.open(this.outputPath, 'r+')
+    this.outputFd = await fs.open(this.outputPath, 'r+')
   }
 
   /**
@@ -133,7 +134,7 @@ export class DiskWriter {
    * @returns {Promise<number>} Number of verified chunks
    */
   async verifyExistingChunks(chunkStates, onVerified) {
-    const fd = await fs.promises.open(this.outputPath, 'r')
+    const fd = await fs.open(this.outputPath, 'r')
     let verified = 0
     
     try {
@@ -169,7 +170,7 @@ export class DiskWriter {
    * @returns {Promise<{ valid: boolean, computed?: string, error?: Error }>}
    */
   async verifyFileMerkleRoot(expectedRoot, chunkHashes, getMerkleRootFn) {
-    const fd = await fs.promises.open(this.outputPath, 'r')
+    const fd = await fs.open(this.outputPath, 'r')
     try {
       const leafHashes = []
       for (let i = 0; i < this.totalChunks; i++) {
@@ -197,7 +198,7 @@ export class DiskWriter {
    * @returns {Promise<{ index: number, expected: string, actual: string, offset: number, len: number } | null>}
    */
   async findFirstChunkMismatch(chunkStates) {
-    const fd = await fs.promises.open(this.outputPath, 'r')
+    const fd = await fs.open(this.outputPath, 'r')
     try {
       for (const [i, chunk] of chunkStates) {
         const offset = i * this.chunkSize

@@ -16,13 +16,9 @@ import { PROTOCOL_VERSION, MSG_TYPE, encodeMessage, decodeMessage } from './prot
 import { MerkleTreeCache } from './protocol/merkle-cache.js'
 import { RequestTracker } from './protocol/request-tracker.js'
 import { SubtreeServer } from './protocol/subtree-server.js'
+import { debug } from './logger.js'
 
 const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true'
-const debug = (...args) => {
-  if (VERBOSE) {
-    console.log(...args)
-  }
-};
 
 // Re-export for backward compatibility
 export { PROTOCOL_VERSION, MSG_TYPE } from './protocol/message-codec.js'
@@ -190,24 +186,27 @@ export class Protocol extends EventEmitter {
     return null;
   }
 
-  _readChunkBytes(chunkLocation) {
+  async _readChunkBytes(chunkLocation) {
     let chunkData = Buffer.allocUnsafe(chunkLocation.chunk_size);
-    const fd = fs.openSync(chunkLocation.path, 'r');
+    const fh = await fs.promises.open(chunkLocation.path, 'r')
     try {
-      const bytesRead = fs.readSync(
-        fd,
+      const { bytesRead } = await fh.read(
         chunkData,
         0,
         chunkLocation.chunk_size,
         chunkLocation.chunk_offset
-      );
+      )
       if (bytesRead !== chunkLocation.chunk_size) {
-        chunkData = chunkData.subarray(0, bytesRead);
+        chunkData = chunkData.subarray(0, bytesRead)
       }
     } finally {
-      fs.closeSync(fd);
+      try {
+        await fh.close()
+      } catch {
+        // Ignore close errors
+      }
     }
-    return chunkData;
+    return chunkData
   }
   
   onPeerConnected(conn, peerId, topicKey) {

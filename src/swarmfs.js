@@ -156,17 +156,17 @@ export class SwarmFS {
         }
         console.warn(`Parallel processing failed: ${parallelError.message}, using fallback`);
         
-        // Force single-threaded processing
+        // Force single-threaded processing using async file operations
         chunkHashes = [];
         chunkEntries = [];
         let offset = 0;
-        const fd = fs.openSync(absolutePath, 'r');
+        const fh = await fs.promises.open(absolutePath, 'r');
 
         try {
           while (offset < fileSize) {
             const length = Math.min(chunkSize, fileSize - offset);
             let buffer = Buffer.allocUnsafe(length);
-            const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
+            const { bytesRead } = await fh.read(buffer, 0, length, offset);
 
             if (bytesRead !== length) {
               buffer = buffer.subarray(0, bytesRead);
@@ -183,7 +183,7 @@ export class SwarmFS {
             }
           }
         } finally {
-          fs.closeSync(fd);
+          await fh.close();
         }
 
         merkleRoot = await getMerkleRoot(chunkHashes);

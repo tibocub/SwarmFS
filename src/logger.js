@@ -6,6 +6,8 @@
 import fs from 'fs'
 import path from 'path'
 
+const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true'
+
 class Logger {
   constructor(logPath) {
     this.logPath = logPath
@@ -70,6 +72,21 @@ export function closeLogger() {
   if (globalLogger) {
     globalLogger.close()
     globalLogger = null
+  }
+}
+
+/**
+ * Debug logging - logs to file and optionally to console
+ * @param {string} category - Log category (e.g., 'MUX', 'SUBTREE', 'BITFIELD')
+ * @param {...any} args - Arguments to log
+ */
+export function debug(category, ...args) {
+  const logger = globalLogger
+  if (logger) {
+    logger.log(category, { message: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ') })
+  }
+  if (VERBOSE) {
+    console.log(`[${category}]`, ...args)
   }
 }
 
