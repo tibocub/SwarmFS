@@ -426,8 +426,7 @@ export class Protocol extends EventEmitter {
     
     const message = encodeMessage(MSG_TYPE.BITFIELD, {
       merkleRoot: session.merkleRoot,
-      bitfield: bitfield.buffer.toString('base64'),
-      chunkCount: session.totalChunks
+      bitfield: bitfield.buffer
     });
 
     void this._enqueueWrite(conn, message);
@@ -742,16 +741,16 @@ export class Protocol extends EventEmitter {
    * ERROR: Error response
    */
   handleError(peerId, payload) {
-    const { requestId, error } = payload;
-    console.error(`ERROR from ${peerId.substring(0, 8)}: ${error}`);
+    const { requestId, message } = payload;
+    console.error(`ERROR from ${peerId.substring(0, 8)}: ${message}`);
 
     const req = requestId ? this.activeRequests.get(requestId) : null
     if (req && req.chunkHash == null) {
-      this.emit('subtree:error', { requestId, error })
+      this.emit('subtree:error', { requestId, error: message })
       return
     }
 
-    this.emit('chunk:error', { requestId, error });
+    this.emit('chunk:error', { requestId, error: message });
   }
 
   /**
@@ -762,7 +761,9 @@ export class Protocol extends EventEmitter {
 
     console.log(`FILE_LIST_REQUEST from ${peerId.substring(0, 8)}...`);
 
-    const topic = this.db.getTopicByKey(topicKey);
+    // topicKey is a buffer from compact-encoding, convert to hex for DB lookup
+    const topicKeyHex = topicKey ? topicKey.toString('hex') : null;
+    const topic = this.db.getTopicByKey(topicKeyHex);
     if (!topic) {
       console.log(`Unknown topic key`);
       return;
@@ -782,8 +783,7 @@ export class Protocol extends EventEmitter {
           path: share.share_path,
           merkleRoot: share.merkle_root,
           size: file.size,
-          chunkSize: file.chunk_size,
-          chunkCount: file.chunk_count
+          chunks: file.chunk_count
         };
       })
       .filter(Boolean);
@@ -811,7 +811,9 @@ export class Protocol extends EventEmitter {
 
     console.log(`METADATA_REQUEST from ${peerId.substring(0, 8)}: ${merkleRoot.substring(0, 16)}...`);
 
-    const topic = this.db.getTopicByKey(topicKey);
+    // topicKey is a buffer from compact-encoding, convert to hex for DB lookup
+    const topicKeyHex = topicKey ? topicKey.toString('hex') : null;
+    const topic = this.db.getTopicByKey(topicKeyHex);
     if (!topic) {
       this.sendError(conn, requestId, 'Unknown topic');
       return;
@@ -884,13 +886,13 @@ export class Protocol extends EventEmitter {
    * BITFIELD: Peer sends their complete bitfield
    */
   handleBitfield(conn, peerId, payload) {
-    const { merkleRoot, bitfield, chunkCount } = payload;
+    const { merkleRoot, bitfield } = payload;
     
-    console.log(`BITFIELD from ${peerId.substring(0, 8)}: ${chunkCount} chunks`);
+    console.log(`BITFIELD from ${peerId.substring(0, 8)}: ${bitfield.length * 8} chunks`);
     
     // Import BitField
     import('./bitfield.js').then(({ BitField }) => {
-      const peerBitfield = BitField.fromBase64(bitfield, chunkCount);
+      const peerBitfield = BitField.fromBuffer(bitfield);
       
       // Emit event for download sessions
       this.emit('peer:bitfield', { peerId, bitfield: peerBitfield, merkleRoot });
@@ -932,8 +934,7 @@ async handleBitfieldRequest(conn, peerId, payload) {
         
         const message = encodeMessage(MSG_TYPE.BITFIELD, {
           merkleRoot,
-          bitfield: bitfield.buffer.toString('base64'),
-          chunkCount: file.chunk_count
+          bitfield: bitfield.buffer
         });
         
         void this._enqueueWrite(conn, message);
@@ -1062,7 +1063,7 @@ async handleBitfieldRequest(conn, peerId, payload) {
       merkleRoot,
       startChunk,
       chunkCount,
-      topicKey: topicKey.toString('hex')
+      topicKey
     });
 
     void this._enqueueWrite(conn, message);
@@ -1087,7 +1088,7 @@ async handleBitfieldRequest(conn, peerId, payload) {
 
     const message = encodeMessage(MSG_TYPE.FILE_LIST_REQUEST, {
       requestId,
-      topicKey: topicKeyHex
+      topicKey
     });
 
     this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
@@ -1219,7 +1220,7 @@ async handleBitfieldRequest(conn, peerId, payload) {
   sendError(conn, requestId, error) {
     const message = encodeMessage(MSG_TYPE.ERROR, {
       requestId,
-      error
+      message: error
     });
 
     void this._enqueueWrite(conn, message);

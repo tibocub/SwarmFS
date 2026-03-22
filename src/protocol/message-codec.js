@@ -1,7 +1,9 @@
 /**
  * Message codec for SwarmFS protocol
- * Handles encoding and decoding of protocol messages
+ * Uses compact-encoding for efficient binary serialization
  */
+
+import c from 'compact-encoding'
 
 // Protocol version
 export const PROTOCOL_VERSION = 1
@@ -26,97 +28,470 @@ export const MSG_TYPE = {
   SUBTREE_PROOF: 0x10
 }
 
+// ============================================================================
+// Compact-encoding schemas
+// ============================================================================
+
+// Fixed-size 16-byte hex string (requestId)
+const hex16 = {
+  preencode(state, val) {
+    state.end += 16
+  },
+  encode(state, val) {
+    const buf = Buffer.from(val, 'hex')
+    buf.copy(state.buffer, state.start)
+    state.start += 16
+  },
+  decode(state) {
+    const hex = state.buffer.subarray(state.start, state.start + 16).toString('hex')
+    state.start += 16
+    return hex
+  }
+}
+
+// Fixed-size 32-byte hex string (hash/merkleRoot)
+const hex32 = {
+  preencode(state, val) {
+    state.end += 32
+  },
+  encode(state, val) {
+    const buf = Buffer.from(val, 'hex')
+    buf.copy(state.buffer, state.start)
+    state.start += 32
+  },
+  decode(state) {
+    const hex = state.buffer.subarray(state.start, state.start + 32).toString('hex')
+    state.start += 32
+    return hex
+  }
+}
+
+// 32-byte raw buffer (topicKey)
+const raw32 = {
+  preencode(state, val) {
+    state.end += 32
+  },
+  encode(state, val) {
+    val.copy(state.buffer, state.start)
+    state.start += 32
+  },
+  decode(state) {
+    const buf = state.buffer.subarray(state.start, state.start + 32)
+    state.start += 32
+    return buf
+  }
+}
+
+// Variable-length string
+const string = c.string
+
+// Variable-length buffer
+const buffer = c.buffer
+
+// uint32
+const uint32 = c.uint32
+
+// uint16
+const uint16 = c.uint16
+
+// uint8
+const uint8 = c.uint8
+
+// ============================================================================
+// Message schemas
+// ============================================================================
+
+// REQUEST: requestId, chunkHash
+const requestSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+    hex32.preencode(state, val.chunkHash)
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+    hex32.encode(state, val.chunkHash)
+  },
+  decode(state) {
+    return {
+      requestId: hex16.decode(state),
+      chunkHash: hex32.decode(state)
+    }
+  }
+}
+
+// OFFER: requestId, chunkHash, chunkSize
+const offerSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+    hex32.preencode(state, val.chunkHash)
+    uint32.preencode(state, val.chunkSize)
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+    hex32.encode(state, val.chunkHash)
+    uint32.encode(state, val.chunkSize)
+  },
+  decode(state) {
+    return {
+      requestId: hex16.decode(state),
+      chunkHash: hex32.decode(state),
+      chunkSize: uint32.decode(state)
+    }
+  }
+}
+
+// DOWNLOAD: requestId, chunkHash
+const downloadSchema = requestSchema
+
+// CANCEL: requestId
+const cancelSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+  },
+  decode(state) {
+    return {
+      requestId: hex16.decode(state)
+    }
+  }
+}
+
+// ERROR: requestId, message
+const errorSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+    string.preencode(state, val.message || '')
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+    string.encode(state, val.message || '')
+  },
+  decode(state) {
+    return {
+      requestId: hex16.decode(state),
+      message: string.decode(state)
+    }
+  }
+}
+
+// FILE_LIST_REQUEST: requestId, topicKey (optional)
+const fileListRequestSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+    uint8.preencode(state, 0) // flag byte
+    if (val?.topicKey) raw32.preencode(state, val.topicKey)
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+    if (val?.topicKey) {
+      uint8.encode(state, 1)
+      raw32.encode(state, val.topicKey)
+    } else {
+      uint8.encode(state, 0)
+    }
+  },
+  decode(state) {
+    const requestId = hex16.decode(state)
+    const hasTopicKey = uint8.decode(state)
+    return {
+      requestId,
+      topicKey: hasTopicKey ? raw32.decode(state) : null
+    }
+  }
+}
+
+// File entry for FILE_LIST_RESPONSE
+const fileEntrySchema = {
+  preencode(state, val) {
+    string.preencode(state, val.name)
+    string.preencode(state, val.path)
+    hex32.preencode(state, val.merkleRoot)
+    uint32.preencode(state, val.size)
+    uint32.preencode(state, val.chunks)
+  },
+  encode(state, val) {
+    string.encode(state, val.name)
+    string.encode(state, val.path)
+    hex32.encode(state, val.merkleRoot)
+    uint32.encode(state, val.size)
+    uint32.encode(state, val.chunks)
+  },
+  decode(state) {
+    return {
+      name: string.decode(state),
+      path: string.decode(state),
+      merkleRoot: hex32.decode(state),
+      size: uint32.decode(state),
+      chunks: uint32.decode(state)
+    }
+  }
+}
+
+// FILE_LIST_RESPONSE: requestId, files[]
+const fileListResponseSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+    uint32.preencode(state, val.files?.length || 0)
+    for (const file of (val.files || [])) {
+      fileEntrySchema.preencode(state, file)
+    }
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+    uint32.encode(state, val.files?.length || 0)
+    for (const file of (val.files || [])) {
+      fileEntrySchema.encode(state, file)
+    }
+  },
+  decode(state) {
+    const requestId = hex16.decode(state)
+    const count = uint32.decode(state)
+    const files = []
+    for (let i = 0; i < count; i++) {
+      files.push(fileEntrySchema.decode(state))
+    }
+    return { requestId, files }
+  }
+}
+
+// METADATA_REQUEST: merkleRoot
+const metadataRequestSchema = {
+  preencode(state, val) {
+    hex32.preencode(state, val.merkleRoot)
+  },
+  encode(state, val) {
+    hex32.encode(state, val.merkleRoot)
+  },
+  decode(state) {
+    return {
+      merkleRoot: hex32.decode(state)
+    }
+  }
+}
+
+// METADATA_RESPONSE: merkleRoot, size, chunks, chunkSize
+const metadataResponseSchema = {
+  preencode(state, val) {
+    hex32.preencode(state, val.merkleRoot)
+    uint32.preencode(state, val.size)
+    uint32.preencode(state, val.chunks)
+    uint32.preencode(state, val.chunkSize)
+  },
+  encode(state, val) {
+    hex32.encode(state, val.merkleRoot)
+    uint32.encode(state, val.size)
+    uint32.encode(state, val.chunks)
+    uint32.encode(state, val.chunkSize)
+  },
+  decode(state) {
+    return {
+      merkleRoot: hex32.decode(state),
+      size: uint32.decode(state),
+      chunks: uint32.decode(state),
+      chunkSize: uint32.decode(state)
+    }
+  }
+}
+
+// HAVE: merkleRoot, chunkIndex
+const haveSchema = {
+  preencode(state, val) {
+    hex32.preencode(state, val.merkleRoot)
+    uint32.preencode(state, val.chunkIndex)
+  },
+  encode(state, val) {
+    hex32.encode(state, val.merkleRoot)
+    uint32.encode(state, val.chunkIndex)
+  },
+  decode(state) {
+    return {
+      merkleRoot: hex32.decode(state),
+      chunkIndex: uint32.decode(state)
+    }
+  }
+}
+
+// BITFIELD: merkleRoot, bitfield (buffer)
+const bitfieldSchema = {
+  preencode(state, val) {
+    hex32.preencode(state, val.merkleRoot)
+    buffer.preencode(state, val.bitfield)
+  },
+  encode(state, val) {
+    hex32.encode(state, val.merkleRoot)
+    buffer.encode(state, val.bitfield)
+  },
+  decode(state) {
+    return {
+      merkleRoot: hex32.decode(state),
+      bitfield: buffer.decode(state)
+    }
+  }
+}
+
+// BITFIELD_REQUEST: merkleRoot
+const bitfieldRequestSchema = metadataRequestSchema
+
+// SUBTREE_REQUEST: requestId, merkleRoot, startChunk, chunkCount, topicKey
+const subtreeRequestSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+    hex32.preencode(state, val.merkleRoot)
+    uint32.preencode(state, val.startChunk)
+    uint16.preencode(state, val.chunkCount)
+    uint8.preencode(state, 0) // flag byte for topicKey
+    if (val.topicKey) raw32.preencode(state, val.topicKey)
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+    hex32.encode(state, val.merkleRoot)
+    uint32.encode(state, val.startChunk)
+    uint16.encode(state, val.chunkCount)
+    if (val.topicKey) {
+      uint8.encode(state, 1)
+      raw32.encode(state, val.topicKey)
+    } else {
+      uint8.encode(state, 0)
+    }
+  },
+  decode(state) {
+    const requestId = hex16.decode(state)
+    const merkleRoot = hex32.decode(state)
+    const startChunk = uint32.decode(state)
+    const chunkCount = uint16.decode(state)
+    const hasTopicKey = uint8.decode(state)
+    return {
+      requestId,
+      merkleRoot,
+      startChunk,
+      chunkCount,
+      topicKey: hasTopicKey ? raw32.decode(state) : null
+    }
+  }
+}
+
+// SUBTREE_PROOF: requestId, merkleRoot, startChunk, chunkCount, level, index, node, proof[]
+// Each proof step is { hash, isLeft }
+const subtreeProofSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+    hex32.preencode(state, val.merkleRoot)
+    uint32.preencode(state, val.startChunk)
+    uint16.preencode(state, val.chunkCount)
+    uint8.preencode(state, val.level)
+    uint32.preencode(state, val.index)
+    hex32.preencode(state, val.node)
+    uint8.preencode(state, val.proof?.length || 0)
+    for (const p of (val.proof || [])) {
+      hex32.preencode(state, p.hash || p)
+      uint8.preencode(state, p.isLeft ? 1 : 0)
+    }
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+    hex32.encode(state, val.merkleRoot)
+    uint32.encode(state, val.startChunk)
+    uint16.encode(state, val.chunkCount)
+    uint8.encode(state, val.level)
+    uint32.encode(state, val.index)
+    hex32.encode(state, val.node)
+    uint8.encode(state, val.proof?.length || 0)
+    for (const p of (val.proof || [])) {
+      hex32.encode(state, p.hash || p)
+      uint8.encode(state, p.isLeft ? 1 : 0)
+    }
+  },
+  decode(state) {
+    const requestId = hex16.decode(state)
+    const merkleRoot = hex32.decode(state)
+    const startChunk = uint32.decode(state)
+    const chunkCount = uint16.decode(state)
+    const level = uint8.decode(state)
+    const index = uint32.decode(state)
+    const node = hex32.decode(state)
+    const proofLen = uint8.decode(state)
+    const proof = []
+    for (let i = 0; i < proofLen; i++) {
+      const hash = hex32.decode(state)
+      const isLeft = uint8.decode(state) === 1
+      proof.push({ hash, isLeft })
+    }
+    return {
+      requestId,
+      merkleRoot,
+      startChunk,
+      chunkCount,
+      level,
+      index,
+      node,
+      proof
+    }
+  }
+}
+
+// Schema map by message type
+const schemas = {
+  [MSG_TYPE.REQUEST]: requestSchema,
+  [MSG_TYPE.OFFER]: offerSchema,
+  [MSG_TYPE.DOWNLOAD]: downloadSchema,
+  [MSG_TYPE.CANCEL]: cancelSchema,
+  [MSG_TYPE.ERROR]: errorSchema,
+  [MSG_TYPE.FILE_LIST_REQUEST]: fileListRequestSchema,
+  [MSG_TYPE.FILE_LIST_RESPONSE]: fileListResponseSchema,
+  [MSG_TYPE.METADATA_REQUEST]: metadataRequestSchema,
+  [MSG_TYPE.METADATA_RESPONSE]: metadataResponseSchema,
+  [MSG_TYPE.HAVE]: haveSchema,
+  [MSG_TYPE.BITFIELD]: bitfieldSchema,
+  [MSG_TYPE.BITFIELD_REQUEST]: bitfieldRequestSchema,
+  [MSG_TYPE.SUBTREE_REQUEST]: subtreeRequestSchema,
+  [MSG_TYPE.SUBTREE_PROOF]: subtreeProofSchema
+}
+
+// ============================================================================
+// Encode/Decode functions
+// ============================================================================
+
 /**
- * Encode a message to binary
+ * Encode a message to binary using compact-encoding
  * @param {number} type - Message type from MSG_TYPE
  * @param {object} payload - Message payload
  * @returns {Buffer} Encoded message
  */
 export function encodeMessage(type, payload) {
+  // CHUNK_DATA and SUBTREE_DATA use custom binary format (already optimized)
   if (type === MSG_TYPE.CHUNK_DATA) {
-    const { requestId, chunkHash, chunkData } = payload || {}
-    if (typeof requestId !== 'string' || typeof chunkHash !== 'string' || !Buffer.isBuffer(chunkData)) {
-      throw new TypeError('CHUNK_DATA payload must be { requestId: string, chunkHash: string, chunkData: Buffer }')
-    }
-
-    const requestIdBytes = Buffer.from(requestId, 'hex')
-    const chunkHashBytes = Buffer.from(chunkHash, 'hex')
-    if (requestIdBytes.length !== 16) {
-      throw new Error(`Invalid requestId hex length: expected 16 bytes, got ${requestIdBytes.length}`)
-    }
-    if (chunkHashBytes.length !== 32) {
-      throw new Error(`Invalid chunkHash hex length: expected 32 bytes, got ${chunkHashBytes.length}`)
-    }
-
-    const payloadLen = 1 + 16 + 32 + 4 + chunkData.length
-    const message = Buffer.allocUnsafe(6 + payloadLen)
-    message.writeUInt8(PROTOCOL_VERSION, 0)
-    message.writeUInt8(type, 1)
-    message.writeUInt32BE(payloadLen, 2)
-
-    let off = 6
-    message.writeUInt8(0x01, off)
-    off += 1
-    requestIdBytes.copy(message, off)
-    off += 16
-    chunkHashBytes.copy(message, off)
-    off += 32
-    message.writeUInt32BE(chunkData.length, off)
-    off += 4
-    chunkData.copy(message, off)
-    return message
+    return encodeChunkData(payload)
   }
-
   if (type === MSG_TYPE.SUBTREE_DATA) {
-    const { requestId, merkleRoot, startChunk, chunkCount, data } = payload || {}
-    if (typeof requestId !== 'string' || typeof merkleRoot !== 'string' || !Number.isInteger(startChunk) || !Number.isInteger(chunkCount) || !Buffer.isBuffer(data)) {
-      throw new TypeError('SUBTREE_DATA payload must be { requestId: string, merkleRoot: string, startChunk: number, chunkCount: number, data: Buffer }')
-    }
+    return encodeSubtreeData(payload)
+  }
 
-    const requestIdBytes = Buffer.from(requestId, 'hex')
-    const merkleRootBytes = Buffer.from(merkleRoot, 'hex')
-    if (requestIdBytes.length !== 16) {
-      throw new Error(`Invalid requestId hex length: expected 16 bytes, got ${requestIdBytes.length}`)
-    }
-    if (merkleRootBytes.length !== 32) {
-      throw new Error(`Invalid merkleRoot hex length: expected 32 bytes, got ${merkleRootBytes.length}`)
-    }
-
-    const payloadLen = 1 + 16 + 32 + 4 + 2 + 4 + data.length
-    const message = Buffer.allocUnsafe(6 + payloadLen)
+  const schema = schemas[type]
+  if (!schema) {
+    // Fallback to JSON for unknown types
+    const payloadJson = JSON.stringify(payload)
+    const payloadBuffer = Buffer.from(payloadJson, 'utf8')
+    const message = Buffer.allocUnsafe(6 + payloadBuffer.length)
     message.writeUInt8(PROTOCOL_VERSION, 0)
     message.writeUInt8(type, 1)
-    message.writeUInt32BE(payloadLen, 2)
-
-    let off = 6
-    message.writeUInt8(0x01, off)
-    off += 1
-    requestIdBytes.copy(message, off)
-    off += 16
-    merkleRootBytes.copy(message, off)
-    off += 32
-    message.writeUInt32BE(startChunk >>> 0, off)
-    off += 4
-    message.writeUInt16BE(chunkCount & 0xffff, off)
-    off += 2
-    message.writeUInt32BE(data.length >>> 0, off)
-    off += 4
-    data.copy(message, off)
+    message.writeUInt32BE(payloadBuffer.length, 2)
+    payloadBuffer.copy(message, 6)
     return message
   }
 
-  // Default: JSON-encoded payload
-  const payloadJson = JSON.stringify(payload);
-  const payloadBuffer = Buffer.from(payloadJson, 'utf8');
+  // Use compact-encoding
+  const state = { start: 6, end: 6, buffer: null }
+  schema.preencode(state, payload)
   
-  // Message format: [version:1][type:1][length:4][payload:n]
-  const message = Buffer.allocUnsafe(6 + payloadBuffer.length);
-  message.writeUInt8(PROTOCOL_VERSION, 0);
-  message.writeUInt8(type, 1);
-  message.writeUInt32BE(payloadBuffer.length, 2);
-  payloadBuffer.copy(message, 6);
+  state.buffer = Buffer.allocUnsafe(state.end)
+  state.buffer.writeUInt8(PROTOCOL_VERSION, 0)
+  state.buffer.writeUInt8(type, 1)
+  state.buffer.writeUInt32BE(state.end - 6, 2)
   
-  return message;
+  schema.encode(state, payload)
+  return state.buffer
 }
 
 /**
@@ -126,82 +501,175 @@ export function encodeMessage(type, payload) {
  */
 export function decodeMessage(buffer) {
   if (buffer.length < 6) {
-    throw new Error('Message too short');
+    throw new Error('Message too short')
   }
   
-  const version = buffer.readUInt8(0);
-  const type = buffer.readUInt8(1);
-  const length = buffer.readUInt32BE(2);
+  const version = buffer.readUInt8(0)
+  const type = buffer.readUInt8(1)
+  const length = buffer.readUInt32BE(2)
   
   if (buffer.length < 6 + length) {
-    throw new Error('Incomplete message');
+    throw new Error('Incomplete message')
   }
-  
-  const payloadBuffer = buffer.subarray(6, 6 + length);
 
+  // CHUNK_DATA and SUBTREE_DATA use custom binary format
   if (type === MSG_TYPE.CHUNK_DATA) {
-    // Alpha: CHUNK_DATA is always binary with a magic byte 0x01.
-    if (payloadBuffer.length < 1 + 16 + 32 + 4) {
-      throw new Error('Invalid CHUNK_DATA payload (too short)')
-    }
-    if (payloadBuffer[0] !== 0x01) {
-      throw new Error('Invalid CHUNK_DATA payload (missing magic byte)')
-    }
-
-    const requestId = payloadBuffer.subarray(1, 17).toString('hex')
-    const chunkHash = payloadBuffer.subarray(17, 49).toString('hex')
-    const dataLen = payloadBuffer.readUInt32BE(49)
-    const expected = 1 + 16 + 32 + 4 + dataLen
-    if (payloadBuffer.length !== expected) {
-      throw new Error(`Invalid CHUNK_DATA payload length: expected ${expected}, got ${payloadBuffer.length}`)
-    }
-    const chunkData = payloadBuffer.subarray(53, 53 + dataLen)
-
-    return {
-      version,
-      type,
-      payload: {
-        requestId,
-        chunkHash,
-        chunkData
-      }
-    }
+    return decodeChunkData(buffer, version, type, length)
   }
-
   if (type === MSG_TYPE.SUBTREE_DATA) {
-    if (payloadBuffer.length < 1 + 16 + 32 + 4 + 2 + 4) {
-      throw new Error('Invalid SUBTREE_DATA payload (too short)')
-    }
-    if (payloadBuffer[0] !== 0x01) {
-      throw new Error('Invalid SUBTREE_DATA payload (missing magic byte)')
-    }
-
-    const requestId = payloadBuffer.subarray(1, 17).toString('hex')
-    const merkleRoot = payloadBuffer.subarray(17, 49).toString('hex')
-    const startChunk = payloadBuffer.readUInt32BE(49)
-    const chunkCount = payloadBuffer.readUInt16BE(53)
-    const dataLen = payloadBuffer.readUInt32BE(55)
-    const expected = 1 + 16 + 32 + 4 + 2 + 4 + dataLen
-    if (payloadBuffer.length !== expected) {
-      throw new Error(`Invalid SUBTREE_DATA payload length: expected ${expected}, got ${payloadBuffer.length}`)
-    }
-    const data = payloadBuffer.subarray(59, 59 + dataLen)
-
-    return {
-      version,
-      type,
-      payload: {
-        requestId,
-        merkleRoot,
-        startChunk,
-        chunkCount,
-        data
-      }
-    }
+    return decodeSubtreeData(buffer, version, type, length)
   }
 
-  // Default: JSON-encoded payload
-  const payload = JSON.parse(payloadBuffer.toString('utf8'));
+  const schema = schemas[type]
+  if (!schema) {
+    // Fallback to JSON for unknown types
+    const payloadBuffer = buffer.subarray(6, 6 + length)
+    const payload = JSON.parse(payloadBuffer.toString('utf8'))
+    return { version, type, payload }
+  }
+
+  // Use compact-encoding
+  const state = { start: 6, end: 6 + length, buffer }
+  const payload = schema.decode(state)
+  return { version, type, payload }
+}
+
+// ============================================================================
+// Custom binary encoders for CHUNK_DATA and SUBTREE_DATA
+// ============================================================================
+
+function encodeChunkData(payload) {
+  const { requestId, chunkHash, chunkData } = payload || {}
+  if (typeof requestId !== 'string' || typeof chunkHash !== 'string' || !Buffer.isBuffer(chunkData)) {
+    throw new TypeError('CHUNK_DATA payload must be { requestId: string, chunkHash: string, chunkData: Buffer }')
+  }
+
+  const requestIdBytes = Buffer.from(requestId, 'hex')
+  const chunkHashBytes = Buffer.from(chunkHash, 'hex')
+  if (requestIdBytes.length !== 16) {
+    throw new Error(`Invalid requestId hex length: expected 16 bytes, got ${requestIdBytes.length}`)
+  }
+  if (chunkHashBytes.length !== 32) {
+    throw new Error(`Invalid chunkHash hex length: expected 32 bytes, got ${chunkHashBytes.length}`)
+  }
+
+  const payloadLen = 1 + 16 + 32 + 4 + chunkData.length
+  const message = Buffer.allocUnsafe(6 + payloadLen)
+  message.writeUInt8(PROTOCOL_VERSION, 0)
+  message.writeUInt8(MSG_TYPE.CHUNK_DATA, 1)
+  message.writeUInt32BE(payloadLen, 2)
+
+  let off = 6
+  message.writeUInt8(0x01, off)
+  off += 1
+  requestIdBytes.copy(message, off)
+  off += 16
+  chunkHashBytes.copy(message, off)
+  off += 32
+  message.writeUInt32BE(chunkData.length, off)
+  off += 4
+  chunkData.copy(message, off)
+  return message
+}
+
+function decodeChunkData(buffer, version, type, length) {
+  const payloadBuffer = buffer.subarray(6, 6 + length)
   
-  return { version, type, payload };
+  if (payloadBuffer.length < 1 + 16 + 32 + 4) {
+    throw new Error('Invalid CHUNK_DATA payload (too short)')
+  }
+  if (payloadBuffer[0] !== 0x01) {
+    throw new Error('Invalid CHUNK_DATA payload (missing magic byte)')
+  }
+
+  const requestId = payloadBuffer.subarray(1, 17).toString('hex')
+  const chunkHash = payloadBuffer.subarray(17, 49).toString('hex')
+  const dataLen = payloadBuffer.readUInt32BE(49)
+  const expected = 1 + 16 + 32 + 4 + dataLen
+  if (payloadBuffer.length !== expected) {
+    throw new Error(`Invalid CHUNK_DATA payload length: expected ${expected}, got ${payloadBuffer.length}`)
+  }
+  const chunkData = payloadBuffer.subarray(53, 53 + dataLen)
+
+  return {
+    version,
+    type,
+    payload: {
+      requestId,
+      chunkHash,
+      chunkData
+    }
+  }
+}
+
+function encodeSubtreeData(payload) {
+  const { requestId, merkleRoot, startChunk, chunkCount, data } = payload || {}
+  if (typeof requestId !== 'string' || typeof merkleRoot !== 'string' || !Number.isInteger(startChunk) || !Number.isInteger(chunkCount) || !Buffer.isBuffer(data)) {
+    throw new TypeError('SUBTREE_DATA payload must be { requestId: string, merkleRoot: string, startChunk: number, chunkCount: number, data: Buffer }')
+  }
+
+  const requestIdBytes = Buffer.from(requestId, 'hex')
+  const merkleRootBytes = Buffer.from(merkleRoot, 'hex')
+  if (requestIdBytes.length !== 16) {
+    throw new Error(`Invalid requestId hex length: expected 16 bytes, got ${requestIdBytes.length}`)
+  }
+  if (merkleRootBytes.length !== 32) {
+    throw new Error(`Invalid merkleRoot hex length: expected 32 bytes, got ${merkleRootBytes.length}`)
+  }
+
+  const payloadLen = 1 + 16 + 32 + 4 + 2 + 4 + data.length
+  const message = Buffer.allocUnsafe(6 + payloadLen)
+  message.writeUInt8(PROTOCOL_VERSION, 0)
+  message.writeUInt8(MSG_TYPE.SUBTREE_DATA, 1)
+  message.writeUInt32BE(payloadLen, 2)
+
+  let off = 6
+  message.writeUInt8(0x01, off)
+  off += 1
+  requestIdBytes.copy(message, off)
+  off += 16
+  merkleRootBytes.copy(message, off)
+  off += 32
+  message.writeUInt32BE(startChunk >>> 0, off)
+  off += 4
+  message.writeUInt16BE(chunkCount & 0xffff, off)
+  off += 2
+  message.writeUInt32BE(data.length >>> 0, off)
+  off += 4
+  data.copy(message, off)
+  return message
+}
+
+function decodeSubtreeData(buffer, version, type, length) {
+  const payloadBuffer = buffer.subarray(6, 6 + length)
+  
+  if (payloadBuffer.length < 1 + 16 + 32 + 4 + 2 + 4) {
+    throw new Error('Invalid SUBTREE_DATA payload (too short)')
+  }
+  if (payloadBuffer[0] !== 0x01) {
+    throw new Error('Invalid SUBTREE_DATA payload (missing magic byte)')
+  }
+
+  const requestId = payloadBuffer.subarray(1, 17).toString('hex')
+  const merkleRoot = payloadBuffer.subarray(17, 49).toString('hex')
+  const startChunk = payloadBuffer.readUInt32BE(49)
+  const chunkCount = payloadBuffer.readUInt16BE(53)
+  const dataLen = payloadBuffer.readUInt32BE(55)
+  const expected = 1 + 16 + 32 + 4 + 2 + 4 + dataLen
+  if (payloadBuffer.length !== expected) {
+    throw new Error(`Invalid SUBTREE_DATA payload length: expected ${expected}, got ${payloadBuffer.length}`)
+  }
+  const data = payloadBuffer.subarray(59, 59 + dataLen)
+
+  return {
+    version,
+    type,
+    payload: {
+      requestId,
+      merkleRoot,
+      startChunk,
+      chunkCount,
+      data
+    }
+  }
 }

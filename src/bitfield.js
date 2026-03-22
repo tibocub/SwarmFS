@@ -73,6 +73,13 @@ export class BitField {
     return bitfield;
   }
 
+  static fromBuffer(buffer) {
+    const size = buffer.length * 8;
+    const bitfield = new BitField(size);
+    buffer.copy(bitfield.buffer);
+    return bitfield;
+  }
+
   toBase64() {
     return this.buffer.toString('base64');
   }
