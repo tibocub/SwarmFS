@@ -165,9 +165,34 @@ export async function buildFileMerkleTree(path, chunkSize = 256 * 1024) {
   if (nativeBinding) {
     return nativeBinding.buildFileMerkleTree(path, chunkSize);
   }
-  // Fallback
-  const { buildFileMerkleTreeParallel } = await import('../src/merkle-tree-parallel.js');
-  return buildFileMerkleTreeParallel(path, chunkSize);
+  // Fallback: simple streaming implementation
+  const fs = await import('fs');
+  const { hashBuffer } = await import('./hash.js');
+  const { getMerkleRoot } = await import('../src/merkle.js');
+  
+  const fd = await fs.promises.open(path, 'r');
+  const stats = await fd.stat();
+  const fileSize = stats.size;
+  const totalChunks = Math.ceil(fileSize / chunkSize);
+  
+  const leafHashes = [];
+  let offset = 0;
+  
+  try {
+    while (offset < fileSize) {
+      const len = Math.min(chunkSize, fileSize - offset);
+      const buf = Buffer.allocUnsafe(len);
+      await fd.read(buf, 0, len, offset);
+      const hash = await hashBuffer(buf);
+      leafHashes.push(hash);
+      offset += len;
+    }
+  } finally {
+    await fd.close();
+  }
+  
+  const root = await getMerkleRoot(leafHashes);
+  return { root, leafCount: totalChunks };
 }
 
 // ============================================================================

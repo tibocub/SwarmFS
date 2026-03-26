@@ -11,7 +11,6 @@ import { SwarmDB } from './database.js'
 import { DEFAULT_CHUNK_SIZE } from './chunk.js'
 import { hashBuffer } from './hash.js'
 import { getMerkleRoot, buildMerkleTree, printMerkleTree } from './merkle.js'
-import { buildFileMerkleTreeParallel, buildMultipleFileMerkleTrees } from './merkle-tree-parallel.js'
 
 export class SwarmFS {
   constructor(dataDir) {
@@ -76,15 +75,13 @@ export class SwarmFS {
   }
 
   /**
-   * Add a file to SwarmFS using parallel merkle tree building
+   * Add a file to SwarmFS
    * @param {string} filePath - Path to file
    * @param {number} chunkSize - Chunk size in bytes
-   * @param {object} options - Options { useParallel, workerCount, onProgress }
+   * @param {object} options - Options { onProgress }
    */
   async addFile(filePath, chunkSize = null, options = {}) {
     const {
-      useParallel = false, //    <-- Not efficent enought (worst than single-threaded)
-      workerCount = null,
       onProgress = null
     } = options;
 
@@ -108,108 +105,29 @@ export class SwarmFS {
     // This simplifies streaming and ensures predictable memory footprint
     chunkSize = DEFAULT_CHUNK_SIZE;
 
-    // Decide whether to use parallel or single-threaded approach
-    const shouldUseParallel = useParallel && (fileSize > 1024 * 1024); // Use parallel for files > 1MB
-
     let chunkHashes;
     let chunkEntries;
     let merkleRoot;
 
-    if (shouldUseParallel) {
-      // Use parallel merkle tree builder
-      try {
-        const tree = await buildFileMerkleTreeParallel(
-          absolutePath,
-          chunkSize,
-          {
-            workerCount,
-            debug: true, // Enable debug logging
-            onProgress: (status) => {
-              if (onProgress && status.phase === 'hashing') {
-                const percent = (status.completed / status.total * 100).toFixed(1);
-                onProgress(`Hashing chunks: ${percent}%`);
-              }
-            }
-          }
-        );
+    // Use single-threaded streaming approach
+    chunkHashes = [];
+    chunkEntries = [];
+    let offset = 0
 
-        // Verify tree structure
-        if (!tree || !tree.levels || !Array.isArray(tree.levels[0]) || tree.levels[0].length === 0) {
-          throw new Error('Invalid merkle tree structure returned');
-        }
+    for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
+      const hash = await hashBuffer(buffer)
+      chunkHashes.push(hash)
+      chunkEntries.push({ hash, offset, size: buffer.length })
+      offset += buffer.length
 
-        // Extract chunk hashes from tree levels (level 0 = leaf hashes)
-        chunkHashes = tree.levels[0];
-        merkleRoot = tree.root;
-
-        // Build chunk entries with offset and size info
-        chunkEntries = chunkHashes.map((hash, index) => {
-          const offset = index * chunkSize;
-          const size = Math.min(chunkSize, fileSize - offset);
-          return { hash, offset, size };
-        });
-
-      } catch (parallelError) {
-        // Fallback to single-threaded if parallel fails
-        if (onProgress) {
-          onProgress('Parallel processing failed, falling back to single-threaded...');
-        }
-        console.warn(`Parallel processing failed: ${parallelError.message}, using fallback`);
-        
-        // Force single-threaded processing using async file operations
-        chunkHashes = [];
-        chunkEntries = [];
-        let offset = 0;
-        const fh = await fs.promises.open(absolutePath, 'r');
-
-        try {
-          while (offset < fileSize) {
-            const length = Math.min(chunkSize, fileSize - offset);
-            let buffer = Buffer.allocUnsafe(length);
-            const { bytesRead } = await fh.read(buffer, 0, length, offset);
-
-            if (bytesRead !== length) {
-              buffer = buffer.subarray(0, bytesRead);
-            }
-
-            const hash = await hashBuffer(buffer);
-            chunkHashes.push(hash);
-            chunkEntries.push({ hash, offset, size: buffer.length });
-            offset += buffer.length;
-
-            if (onProgress && chunkEntries.length % 100 === 0) {
-              const percent = (offset / fileSize * 100).toFixed(1);
-              onProgress(`Hashing chunks: ${percent}%`);
-            }
-          }
-        } finally {
-          await fh.close();
-        }
-
-        merkleRoot = await getMerkleRoot(chunkHashes);
+      if (onProgress && chunkEntries.length % 100 === 0) {
+        const percent = (offset / fileSize * 100).toFixed(1)
+        onProgress(`Hashing chunks: ${percent}%`)
       }
-
-    } else {
-      // Use single-threaded approach (original implementation)
-      chunkHashes = [];
-      chunkEntries = [];
-      let offset = 0
-
-      for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
-        const hash = await hashBuffer(buffer)
-        chunkHashes.push(hash)
-        chunkEntries.push({ hash, offset, size: buffer.length })
-        offset += buffer.length
-
-        if (onProgress && chunkEntries.length % 100 === 0) {
-          const percent = (offset / fileSize * 100).toFixed(1)
-          onProgress(`Hashing chunks: ${percent}%`)
-        }
-      }
-
-      // Build Merkle tree
-      merkleRoot = await getMerkleRoot(chunkHashes);
     }
+
+    // Build Merkle tree
+    merkleRoot = await getMerkleRoot(chunkHashes);
 
     // Add file to database
     const fileId = this.db.addFile(
@@ -392,10 +310,9 @@ export class SwarmFS {
   }
 
   /**
-   * Verify a file's integrity using parallel merkle tree building
+   * Verify a file's integrity
    */
-  async verifyFile(filePath, options = {}) {
-    const { useParallel = false, workerCount = null } = options;
+  async verifyFile(filePath) {
     const absolutePath = path.resolve(filePath);
     const fileInfo = this.getFileInfo(absolutePath);
 
@@ -422,33 +339,15 @@ export class SwarmFS {
     }
 
     // Rebuild merkle tree and compare
-    let currentRoot;
-    let currentHashes;
-
-    if (useParallel && stats.size > 1024 * 1024) {
-      // Use parallel verification
-      const tree = await buildFileMerkleTreeParallel(
-        absolutePath,
-        fileInfo.chunk_size,
-        { workerCount }
-      );
-      currentRoot = tree.root;
-      currentHashes = tree.levels[0];
-    } else {
-      // Use streaming verification to handle files >2GB
-      // (fs.readFileSync fails with ERR_FS_FILE_TOO_LARGE for large files)
-      currentHashes = [];
-      const chunkSize = fileInfo.chunk_size;
-      let offset = 0;
-      
-      for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
-        const hash = await hashBuffer(buffer);
-        currentHashes.push(hash);
-        offset += buffer.length;
-      }
-      
-      currentRoot = await getMerkleRoot(currentHashes);
+    const currentHashes = [];
+    const chunkSize = fileInfo.chunk_size;
+    
+    for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
+      const hash = await hashBuffer(buffer);
+      currentHashes.push(hash);
     }
+    
+    const currentRoot = await getMerkleRoot(currentHashes);
 
     // Compare Merkle roots
     if (currentRoot !== fileInfo.merkle_root) {
