@@ -8,6 +8,10 @@ tui-rs/**/*.rs.bk
 tui-rs/*.pdb
 tui-rs/**/mutants.out*/
 
+# Native modules devdeps
+swarmfs-native/target
+swarmfs-native/node_modules
+
 # SwarmFS data dir
 swarmfs-data
 

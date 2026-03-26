@@ -1,8 +1,10 @@
 /**
  * Hashing utilities for SwarmFS
  * Provides BLAKE3 hashing for chunks and content addressing
+ * Uses native Rust implementation when available, falls back to JS
  */
 import blake3 from "blake3-bao/blake3"
+import * as native from "swarmfs-native"
 
 // Initialize SIMD once at module load
 let initPromise = null
@@ -55,6 +57,14 @@ export async function hashBuffer(buffer) {
   if (!Buffer.isBuffer(buffer)) {
     throw new TypeError('Input must be a Buffer')
   }
+  
+  // Use native implementation if available
+  if (native.isNativeAvailable()) {
+    const hash = await native.hashBuffer(buffer)
+    return hash.toString('hex')
+  }
+  
+  // Fallback to JS implementation
   await ensureSimd()
   const uint8 = bufferToAlignedUint8Array(buffer)
   return blake3.hashHex(uint8)
@@ -66,6 +76,13 @@ export async function hashBuffer(buffer) {
  * @returns {Promise<string>} Hex-encoded BLAKE3 hash
  */
 export async function hashBuffers(buffers) {
+  // Use native implementation if available
+  if (native.isNativeAvailable()) {
+    const hash = await native.hashBuffers(buffers)
+    return hash.toString('hex')
+  }
+  
+  // Fallback to JS implementation
   await ensureSimd()
   const hasher = new blake3.Hasher()
   
@@ -87,6 +104,16 @@ export async function hashBuffers(buffers) {
  * @returns {Promise<string>} Combined hash
  */
 export async function combineHashes(hash1, hash2) {
+  // Use native implementation if available
+  if (native.isNativeAvailable()) {
+    const buffer1 = Buffer.from(hash1, 'hex')
+    const buffer2 = Buffer.from(hash2, 'hex')
+    const hash = await native.combineHashes(buffer1, buffer2)
+    return hash.toString('hex')
+  }
+  
+  // Fallback to JS implementation
   const buffer1 = Buffer.from(hash1, 'hex')
   const buffer2 = Buffer.from(hash2, 'hex')
-  return await hashBuffers([buffer1, buffer2])}
+  return await hashBuffers([buffer1, buffer2])
+}

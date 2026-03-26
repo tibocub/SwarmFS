@@ -1,0 +1,22 @@
+[package]
+name = "swarmfs-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust addon for SwarmFS performance-critical operations"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", features = ["async", "napi6"] }
+napi-derive = "2"
+blake3 = "1"
+rayon = "1"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

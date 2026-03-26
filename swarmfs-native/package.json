@@ -1,0 +1,32 @@
+{
+  "name": "swarmfs-native",
+  "version": "0.1.0",
+  "description": "Native Rust addon for SwarmFS performance-critical operations",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm"
+  },
+  "napi": {
+    "name": "swarmfs_native",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ]
+    }
+  },
+  "keywords": ["napi", "napi-rs", "merkle-tree", "blake3", "p2p"],
+  "license": "MIT",
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0",
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">= 16"
+  }
+}

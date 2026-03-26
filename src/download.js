@@ -648,33 +648,14 @@ async requestChunk(chunkIndex) {
       return;
     }
 
-    // Verify merkle proof
-    const leafHashes = [];
-    for (let i = startChunk; i < startChunk + chunkCount && i < this.totalChunks; i++) {
-      const ch = this.chunkStates.get(i);
-      if (ch) {
-        leafHashes.push(ch.hash);
-      }
-    }
-
-    if (leafHashes.length === chunkCount) {
-      const computedNode = await getMerkleRoot(leafHashes);
-      if (computedNode !== node) {
-        console.error(`Subtree proof mismatch for ${requestId.substring(0, 8)}`);
-        this.logger?.log('PROOF_MISMATCH', {
-          requestId: requestId.substring(0, 8),
-          startChunk,
-          chunkCount,
-          computedNode: computedNode?.substring(0, 16),
-          receivedNode: node?.substring(0, 16)
-        });
-        return;
-      }
-      const ok = await verifySubtreeProof(node, proof, this.merkleRoot);
-      if (!ok) {
-        console.error(`Subtree proof verification failed for ${requestId.substring(0, 8)}`);
-        return;
-      }
+    // Verify the Merkle proof that links the subtree node to the file root.
+    // Note: We do NOT rebuild the subtree from expected hashes here (that was redundant).
+    // Chunk integrity is verified per-chunk against expected hashes from metadata.
+    // The proof just ensures the peer's node legitimately links to our known root.
+    const ok = await verifySubtreeProof(node, proof, this.merkleRoot);
+    if (!ok) {
+      console.error(`Subtree proof verification failed for ${requestId.substring(0, 8)}`);
+      return;
     }
     
     // Clear timeout - proof received

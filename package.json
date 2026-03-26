@@ -4,8 +4,10 @@
   "type": "module",
   "main": "cli.js",
   "private": true,
+  "workspaces": ["swarmfs-native"],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "build:native": "npm run build -w swarmfs-native"
   },
   "dependencies": {
     "@webbuf/blake3": "^3.5.0",
@@ -14,6 +16,7 @@
     "compact-encoding": "^2.19.1",
     "hyperswarm": "^4.16.0",
     "protomux": "^3.10.1",
+    "swarmfs-native": "file:swarmfs-native",
     "terminal-kit": "^3.1.2"
   },
   "optionalDependencies": {

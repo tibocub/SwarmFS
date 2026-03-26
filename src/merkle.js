@@ -1,9 +1,11 @@
 /**
  * Merkle Tree implementation for SwarmFS
  * Builds binary Merkle trees for file verification and content addressing
+ * Uses native Rust implementation when available, falls back to JS
  */
 
 import { combineHashes, hashBuffers } from './hash.js'
+import * as native from 'swarmfs-native'
 
 /**
  * Build a Merkle tree from an array of leaf hashes
@@ -15,6 +17,38 @@ export async function buildMerkleTree(leafHashes) {
     throw new Error('leafHashes must be a non-empty array')
   }
 
+  // Use native implementation if available
+  if (native.isNativeAvailable()) {
+    const result = await native.buildMerkleTree(leafHashes)
+    // Convert native result to match JS tree structure
+    const buffers = leafHashes.map(h => Buffer.from(h, 'hex'))
+    const levels = [leafHashes]
+    let currentLevel = leafHashes
+    
+    // Rebuild levels for proof generation
+    while (currentLevel.length > 1) {
+      const nextLevel = []
+      for (let i = 0; i < currentLevel.length; i += 2) {
+        if (i + 1 < currentLevel.length) {
+          const combined = await combineHashes(currentLevel[i], currentLevel[i + 1])
+          nextLevel.push(combined)
+        } else {
+          const combined = await combineHashes(currentLevel[i], currentLevel[i])
+          nextLevel.push(combined)
+        }
+      }
+      levels.push(nextLevel)
+      currentLevel = nextLevel
+    }
+    
+    return {
+      root: result.root.toString('hex'),
+      levels: levels,
+      leafCount: result.leafCount
+    }
+  }
+
+  // Fallback to JS implementation
   // Store all levels of the tree (bottom-up)
   const levels = [leafHashes]
   let currentLevel = leafHashes
@@ -211,6 +245,12 @@ export function generateSubtreeProofFromTree(tree, level, index) {
  * Verify a proof for an internal node (subtree root) to the Merkle root.
  */
 export async function verifySubtreeProof(nodeHash, proof, expectedRoot) {
+  // Use native implementation if available
+  if (native.isNativeAvailable()) {
+    return native.verifySubtreeProof(nodeHash, proof, expectedRoot)
+  }
+  
+  // Fallback to JS implementation
   let currentHash = nodeHash
   for (const step of proof) {
     if (step.isLeft) {
