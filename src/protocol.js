@@ -804,7 +804,7 @@ export class Protocol extends EventEmitter {
   }
 
   /**
-   * METADATA_REQUEST: Peer requests metadata for a file
+   * METADATA_REQUEST: Peer requests metadata for a file or vdir
    */
   async handleMetadataRequest(conn, peerId, payload) {
     const { requestId, merkleRoot, topicKey } = payload;
@@ -819,9 +819,25 @@ export class Protocol extends EventEmitter {
       return;
     }
 
+    // First, check if this is a vdir
+    const vdir = this.db.getVdirByMerkleRoot(merkleRoot);
+    if (vdir) {
+      // Return vdir metadata
+      const children = this.db.getVdirChildren(vdir.id);
+      const metadata = {
+        merkleRoot,
+        type: 'vdir',
+        suggestedName: vdir.name,
+        children
+      };
+      this.sendMetadataResponse(conn, requestId, metadata);
+      return;
+    }
+
+    // Fall back to file handling
     const share = this.db.getTopicShareByMerkleRoot(topic.id, merkleRoot);
     if (!share) {
-      this.sendError(conn, requestId, 'File not shared in topic');
+      this.sendError(conn, requestId, 'Content not found in topic');
       return;
     }
 
@@ -834,8 +850,8 @@ export class Protocol extends EventEmitter {
     const chunks = this.db.getFileChunks(file.id);
     const metadata = {
       merkleRoot,
-      name: path.basename(share.share_path),
-      path: share.share_path,
+      type: 'file',
+      suggestedName: path.basename(share.share_path),
       size: file.size,
       chunkSize: file.chunk_size,
       chunkCount: file.chunk_count,
@@ -866,8 +882,14 @@ export class Protocol extends EventEmitter {
     }
     this.activeMetadataRequests.delete(requestId);
 
-    console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${metadata.chunkCount} chunks)`);
-    this.emit('metadata:response', { requestId, peerId, metadata });
+    // Handle both file and vdir responses
+    if (metadata.type === 'vdir') {
+      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (vdir: ${metadata.children?.length || 0} children)`);
+      this.emit('vdir:metadata', { requestId, peerId, metadata });
+    } else {
+      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${metadata.chunkCount} chunks)`);
+      this.emit('metadata:response', { requestId, peerId, metadata });
+    }
   }
 
  /**
@@ -1208,7 +1230,7 @@ async handleBitfieldRequest(conn, peerId, payload) {
   sendMetadataResponse(conn, requestId, metadata) {
     const message = encodeMessage(MSG_TYPE.METADATA_RESPONSE, {
       requestId,
-      metadata
+      ...metadata
     });
 
     void this._enqueueWrite(conn, message);

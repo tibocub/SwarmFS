@@ -466,6 +466,16 @@ vdirCmd
   .option('--name <name>', 'Suggested display name (does not affect hashing)')
   .action(wrapCommand(cmd.vdirAddCommand));
 
+vdirCmd
+  .command('share [vfsPath]')
+  .description('Output the merkle root of a vdir for sharing')
+  .action(wrapCommand(cmd.vdirShareCommand));
+
+vdirCmd
+  .command('info [vfsPath]')
+  .description('Show vdir info including merkle root')
+  .action(wrapCommand(cmd.vdirInfoCommand));
+
 
 // ============================================================================
 // TUI

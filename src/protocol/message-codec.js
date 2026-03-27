@@ -271,26 +271,110 @@ const metadataRequestSchema = {
   }
 }
 
-// METADATA_RESPONSE: merkleRoot, size, chunks, chunkSize
-const metadataResponseSchema = {
+// Vdir child entry schema (for METADATA_RESPONSE children array)
+const vdirChildSchema = {
   preencode(state, val) {
     hex32.preencode(state, val.merkleRoot)
-    uint32.preencode(state, val.size)
-    uint32.preencode(state, val.chunks)
-    uint32.preencode(state, val.chunkSize)
+    uint8.preencode(state, val.type === 'vdir' ? 1 : 0) // 0=file, 1=vdir
+    string.preencode(state, val.suggestedName || '')
+    // For files: size (uint32)
+    // For vdirs: hasChildren flag (uint8)
+    if (val.type === 'vdir') {
+      uint8.preencode(state, val.hasChildren ? 1 : 0)
+    } else {
+      uint32.preencode(state, val.size || 0)
+    }
   },
   encode(state, val) {
     hex32.encode(state, val.merkleRoot)
-    uint32.encode(state, val.size)
-    uint32.encode(state, val.chunks)
-    uint32.encode(state, val.chunkSize)
+    uint8.encode(state, val.type === 'vdir' ? 1 : 0)
+    string.encode(state, val.suggestedName || '')
+    if (val.type === 'vdir') {
+      uint8.encode(state, val.hasChildren ? 1 : 0)
+    } else {
+      uint32.encode(state, val.size || 0)
+    }
   },
   decode(state) {
-    return {
-      merkleRoot: hex32.decode(state),
-      size: uint32.decode(state),
-      chunks: uint32.decode(state),
-      chunkSize: uint32.decode(state)
+    const merkleRoot = hex32.decode(state)
+    const typeNum = uint8.decode(state)
+    const type = typeNum === 1 ? 'vdir' : 'file'
+    const suggestedName = string.decode(state) || null
+    
+    if (type === 'vdir') {
+      const hasChildren = uint8.decode(state) === 1
+      return { merkleRoot, type, suggestedName, hasChildren }
+    } else {
+      const size = uint32.decode(state)
+      return { merkleRoot, type, suggestedName, size }
+    }
+  }
+}
+
+// METADATA_RESPONSE: Extended to support both files and vdirs
+// Fields:
+//   - requestId (required)
+//   - merkleRoot (required)
+//   - type: 'file' | 'vdir' (default 'file' for backward compat)
+//   - suggestedName: string (optional)
+//   - For files: size, chunks, chunkSize
+//   - For vdirs: children[] (shallow, depth=1)
+const metadataResponseSchema = {
+  preencode(state, val) {
+    hex16.preencode(state, val.requestId)
+    hex32.preencode(state, val.merkleRoot)
+    uint8.preencode(state, val.type === 'vdir' ? 1 : 0) // type flag
+    string.preencode(state, val.suggestedName || '')
+    
+    if (val.type === 'vdir') {
+      // Vdir: children array
+      uint32.preencode(state, val.children?.length || 0)
+      for (const child of (val.children || [])) {
+        vdirChildSchema.preencode(state, child)
+      }
+    } else {
+      // File: size, chunks, chunkSize (existing fields)
+      uint32.preencode(state, val.size || 0)
+      uint32.preencode(state, val.chunks || 0)
+      uint32.preencode(state, val.chunkSize || 0)
+    }
+  },
+  encode(state, val) {
+    hex16.encode(state, val.requestId)
+    hex32.encode(state, val.merkleRoot)
+    uint8.encode(state, val.type === 'vdir' ? 1 : 0)
+    string.encode(state, val.suggestedName || '')
+    
+    if (val.type === 'vdir') {
+      uint32.encode(state, val.children?.length || 0)
+      for (const child of (val.children || [])) {
+        vdirChildSchema.encode(state, child)
+      }
+    } else {
+      uint32.encode(state, val.size || 0)
+      uint32.encode(state, val.chunks || 0)
+      uint32.encode(state, val.chunkSize || 0)
+    }
+  },
+  decode(state) {
+    const requestId = hex16.decode(state)
+    const merkleRoot = hex32.decode(state)
+    const typeNum = uint8.decode(state)
+    const type = typeNum === 1 ? 'vdir' : 'file'
+    const suggestedName = string.decode(state) || null
+    
+    if (type === 'vdir') {
+      const childCount = uint32.decode(state)
+      const children = []
+      for (let i = 0; i < childCount; i++) {
+        children.push(vdirChildSchema.decode(state))
+      }
+      return { requestId, merkleRoot, type, suggestedName, children }
+    } else {
+      const size = uint32.decode(state)
+      const chunks = uint32.decode(state)
+      const chunkSize = uint32.decode(state)
+      return { requestId, merkleRoot, type: 'file', suggestedName, size, chunks, chunkSize }
     }
   }
 }

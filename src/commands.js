@@ -206,7 +206,7 @@ export async function vdirAddCommand(swarmfs, ...args) {
       continue;
     }
 
-    const result = vfs.addLocalFile(vfsDirPath, absoluteLocal, suggestedName);
+    const result = await vfs.addFile(vfsDirPath, absoluteLocal, suggestedName);
     if (result?.file?.merkle_root) {
       console.log(result.file.merkle_root);
     }
@@ -214,6 +214,70 @@ export async function vdirAddCommand(swarmfs, ...args) {
   }
 
   return results.length === 1 ? results[0] : results;
+}
+
+/**
+ * Share a vdir - outputs the merkle root for sharing
+ */
+export async function vdirShareCommand(swarmfs, vfsPath) {
+  swarmfs.open();
+  const vfs = getVfs(swarmfs);
+  
+  const vdir = vfs.resolvePath(vfsPath || '/');
+  if (!vdir) {
+    throw new Error(`Vdir not found: ${vfsPath}`);
+  }
+
+  // Ensure merkle root is calculated
+  if (!vdir.merkle_root) {
+    await vfs.updateVdirMerkleRoot(vdir.id);
+    // Re-fetch to get updated merkle_root
+    const updated = vfs.db.getVdirById(vdir.id);
+    if (updated) {
+      vdir.merkle_root = updated.merkle_root;
+    }
+  }
+
+  if (!vdir.merkle_root) {
+    throw new Error('Vdir is empty - add files before sharing');
+  }
+
+  // Output the merkle root (this is what users share with others)
+  console.log(vdir.merkle_root);
+  return vdir;
+}
+
+/**
+ * Show vdir info including merkle root and children
+ */
+export async function vdirInfoCommand(swarmfs, vfsPath) {
+  swarmfs.open();
+  const vfs = getVfs(swarmfs);
+  
+  const vdir = vfs.resolvePath(vfsPath || '/');
+  if (!vdir) {
+    throw new Error(`Vdir not found: ${vfsPath}`);
+  }
+
+  // Ensure merkle root is calculated
+  if (!vdir.merkle_root) {
+    await vfs.updateVdirMerkleRoot(vdir.id);
+    const updated = vfs.db.getVdirById(vdir.id);
+    if (updated) {
+      vdir.merkle_root = updated.merkle_root;
+    }
+  }
+
+  console.log(`Name: ${vdir.name}`);
+  console.log(`UUID: ${vdir.id}`);
+  console.log(`Merkle Root: ${vdir.merkle_root || '(empty)'}`);
+  console.log(`Parent: ${vdir.parent_id || '(root)'}`);
+  
+  const { dirs, entries } = vfs.ls(vfsPath || '/');
+  console.log(`Subdirectories: ${dirs?.length || 0}`);
+  console.log(`Files: ${entries?.length || 0}`);
+
+  return vdir;
 }
 
 
@@ -522,14 +586,40 @@ export async function statusCommand(swarmfs) {
     return;
   }
 
-  console.log(`\nTracked Files (${files.length}):\n`);
-  
+  // Group files by merkle_root
+  const byMerkleRoot = new Map();
   for (const file of files) {
-    console.log(`  ${file.path}`);
-    console.log(`    Size: ${formatBytes(file.size)}`);
-    console.log(`    Chunks: ${file.chunk_count}`);
-    console.log(`    Added: ${formatDate(file.added_at)}`);
-    console.log(`    Merkle Root: ${file.merkle_root.substring(0, 16)}...`);
+    const root = file.merkle_root;
+    if (!byMerkleRoot.has(root)) {
+      byMerkleRoot.set(root, []);
+    }
+    byMerkleRoot.get(root).push(file);
+  }
+
+  const uniqueContent = byMerkleRoot.size;
+  console.log(`\nTracked Content (${uniqueContent} unique, ${files.length} paths):\n`);
+  
+  // Sort by first added date of each group
+  const sortedRoots = [...byMerkleRoot.entries()].sort((a, b) => {
+    const aFirst = Math.min(...a[1].map(f => f.added_at));
+    const bFirst = Math.min(...b[1].map(f => f.added_at));
+    return bFirst - aFirst;
+  });
+  
+  for (const [merkleRoot, paths] of sortedRoots) {
+    const representative = paths[0];
+    console.log(`  Merkle Root: ${merkleRoot.substring(0, 16)}...`);
+    console.log(`    Size: ${formatBytes(representative.size)}`);
+    console.log(`    Chunks: ${representative.chunk_count}`);
+    
+    if (paths.length === 1) {
+      console.log(`    Path: ${paths[0].path}`);
+    } else {
+      console.log(`    Paths (${paths.length}):`);
+      for (const p of paths) {
+        console.log(`      - ${p.path}`);
+      }
+    }
     console.log('');
   }
 }
@@ -1204,6 +1294,8 @@ export const commands = {
   'vdir.mkdir': vdirMkdirCommand,
   'vdir.ls': vdirLsCommand,
   'vdir.add': vdirAddCommand,
+  'vdir.share': vdirShareCommand,
+  'vdir.info': vdirInfoCommand,
 
   // Top-level share
   share: shareCommand

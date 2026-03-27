@@ -82,7 +82,8 @@ export class SwarmFS {
    */
   async addFile(filePath, chunkSize = null, options = {}) {
     const {
-      onProgress = null
+      onProgress = null,
+      force = false // Force re-hash even if already tracked
     } = options;
 
     // Resolve to absolute path
@@ -97,6 +98,25 @@ export class SwarmFS {
     
     if (!stats.isFile()) {
       throw new Error(`Not a file: ${absolutePath}`);
+    }
+
+    // Check if already tracked (unless force)
+    const existing = this.db.getFile(absolutePath);
+    if (existing && !force) {
+      // Check if file modified since last track
+      const lastModified = Math.floor(stats.mtimeMs);
+      if (existing.file_modified_at >= lastModified) {
+        // Already tracked and not modified - return existing entry
+        return {
+          fileId: existing.id,
+          path: absolutePath,
+          size: existing.size,
+          chunks: existing.chunk_count,
+          merkleRoot: existing.merkle_root,
+          chunkHashes: null, // Not re-computed
+          skipped: true
+        };
+      }
     }
 
     const fileSize = stats.size;
@@ -129,7 +149,31 @@ export class SwarmFS {
     // Build Merkle tree
     merkleRoot = await getMerkleRoot(chunkHashes);
 
-    // Add file to database
+    // Check if this content already exists (same merkle_root at different path)
+    const existingContent = this.db.getFileByMerkleRoot(merkleRoot);
+    if (existingContent) {
+      // Content already tracked - just add new path entry, skip chunks
+      const fileId = this.db.addFile(
+        absolutePath,
+        merkleRoot,
+        fileSize,
+        chunkSize,
+        chunkEntries.length,
+        Math.floor(stats.mtimeMs)
+      );
+      
+      return {
+        fileId,
+        path: absolutePath,
+        size: fileSize,
+        chunks: chunkEntries.length,
+        merkleRoot,
+        chunkHashes,
+        duplicateContent: true
+      };
+    }
+
+    // New content - add file and chunks
     const fileId = this.db.addFile(
       absolutePath,
       merkleRoot,
