@@ -1167,7 +1167,7 @@ export async function requestCommand(swarmfs, topicName, chunkHash, options = {}
 }
 
 /**
- * Download a complete file by requesting all chunks
+ * Download a file or vdir by merkle root
  */
 export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath, options = {}) {
   swarmfs.open();
@@ -1179,9 +1179,44 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
-  console.log(`\nDownloading file from topic "${topicName}"...`);
+  console.log(`\nDownloading from topic "${topicName}"...`);
   console.log(`Merkle Root: ${merkleRoot}`);
   console.log(`Output: ${outputPath}\n`);
+
+  // First, request metadata to determine type
+  const metadata = await swarmfs.requestMetadata(topicName, merkleRoot);
+
+  if (metadata.type === 'vdir') {
+    // Download vdir recursively
+    console.log(`Type: Virtual Directory (${metadata.children?.length || 0} children)\n`);
+
+    const result = await swarmfs.downloadVdir(topicName, merkleRoot, outputPath, {
+      onItemStart: (info) => {
+        if (info.type === 'file') {
+          console.log(`  Downloading: ${info.name} (${formatBytes(info.size)})`);
+        } else {
+          console.log(`\n📁 ${info.name}/`);
+        }
+      },
+      onItemComplete: (info) => {
+        if (info.type === 'file') {
+          console.log(`  ✓ ${info.name} (${formatBytes(info.size)})`);
+        }
+      }
+    });
+
+    console.log(`\n✅ Vdir downloaded successfully!`);
+    console.log(`  Path: ${result.path}`);
+    console.log(`  Files: ${result.files}`);
+    console.log(`  Subdirectories: ${result.vdirs}`);
+    console.log(`  Total Size: ${formatBytes(result.totalSize)}`);
+    console.log(`  Total Chunks: ${result.totalChunks}`);
+
+    return result;
+  }
+
+  // Download single file
+  console.log(`Type: File\n`);
 
   const enableProgressBar = process.stdout.isTTY && process.env.SWARMFS_REPL !== '1';
   let progressBar = null;

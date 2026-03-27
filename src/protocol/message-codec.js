@@ -295,17 +295,32 @@ const fileListResponseSchema = {
   }
 }
 
-// METADATA_REQUEST: merkleRoot
+// METADATA_REQUEST: requestId, merkleRoot, topicKey (optional)
 const metadataRequestSchema = {
   preencode(state, val) {
+    hex16.preencode(state, val.requestId)
     hex32.preencode(state, val.merkleRoot)
+    uint8.preencode(state, val.topicKey ? 1 : 0)
+    if (val.topicKey) raw32.preencode(state, val.topicKey)
   },
   encode(state, val) {
+    hex16.encode(state, val.requestId)
     hex32.encode(state, val.merkleRoot)
+    if (val.topicKey) {
+      uint8.encode(state, 1)
+      raw32.encode(state, val.topicKey)
+    } else {
+      uint8.encode(state, 0)
+    }
   },
   decode(state) {
+    const requestId = hex16.decode(state)
+    const merkleRoot = hex32.decode(state)
+    const hasTopicKey = uint8.decode(state)
     return {
-      merkleRoot: hex32.decode(state)
+      requestId,
+      merkleRoot,
+      topicKey: hasTopicKey ? raw32.decode(state) : null
     }
   }
 }

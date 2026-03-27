@@ -889,14 +889,15 @@ export class Protocol extends EventEmitter {
   }
 
   handleMetadataResponse(conn, peerId, payload) {
-    const { requestId, metadata } = payload;
+    // Schema returns flat fields: requestId, merkleRoot, type, suggestedName, ...
+    const { requestId, merkleRoot, type, suggestedName, children, size, chunks, chunkSize } = payload;
 
     const request = this.activeMetadataRequests.get(requestId);
     if (!request) {
       return;
     }
 
-    if (metadata.merkleRoot !== request.merkleRoot) {
+    if (merkleRoot !== request.merkleRoot) {
       return;
     }
 
@@ -905,12 +906,22 @@ export class Protocol extends EventEmitter {
     }
     this.activeMetadataRequests.delete(requestId);
 
+    // Build metadata object for event
+    const metadata = { merkleRoot, type, suggestedName };
+    if (type === 'vdir') {
+      metadata.children = children;
+    } else {
+      metadata.size = size;
+      metadata.chunks = chunks;
+      metadata.chunkSize = chunkSize;
+    }
+
     // Handle both file and vdir responses
-    if (metadata.type === 'vdir') {
-      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (vdir: ${metadata.children?.length || 0} children)`);
+    if (type === 'vdir') {
+      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (vdir: ${children?.length || 0} children)`);
       this.emit('vdir:metadata', { requestId, peerId, metadata });
     } else {
-      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${metadata.chunkCount} chunks)`);
+      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${chunks} chunks)`);
       this.emit('metadata:response', { requestId, peerId, metadata });
     }
   }
@@ -1186,7 +1197,7 @@ async handleBitfieldRequest(conn, peerId, payload) {
     const message = encodeMessage(MSG_TYPE.METADATA_REQUEST, {
       requestId,
       merkleRoot,
-      topicKey: topicKeyHex
+      topicKey // Pass as Buffer, not hex string
     });
 
     this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));

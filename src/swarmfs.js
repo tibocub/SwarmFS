@@ -764,7 +764,7 @@ export class SwarmFS {
   }
 
   /**
-   * Request metadata for a file by merkle root
+   * Request metadata for a file or vdir by merkle root
    */
   async requestMetadata(topicName, merkleRoot, timeout = 10000) {
     const topic = this.db.getTopic(topicName);
@@ -780,7 +780,15 @@ export class SwarmFS {
     const requestId = this.protocol.requestMetadata(topicKey, merkleRoot, timeout);
 
     return new Promise((resolve, reject) => {
-      const onMetadata = (info) => {
+      const onFileMetadata = (info) => {
+        if (info.requestId !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(info.metadata);
+      };
+
+      const onVdirMetadata = (info) => {
         if (info.requestId !== requestId) {
           return;
         }
@@ -797,11 +805,13 @@ export class SwarmFS {
       };
 
       const cleanup = () => {
-        this.protocol.removeListener('metadata:response', onMetadata);
+        this.protocol.removeListener('metadata:response', onFileMetadata);
+        this.protocol.removeListener('vdir:metadata', onVdirMetadata);
         this.protocol.removeListener('metadata:timeout', onTimeout);
       };
 
-      this.protocol.on('metadata:response', onMetadata);
+      this.protocol.on('metadata:response', onFileMetadata);
+      this.protocol.on('vdir:metadata', onVdirMetadata);
       this.protocol.on('metadata:timeout', onTimeout);
     });
   }
@@ -933,6 +943,83 @@ export class SwarmFS {
       reject(error);
     });
   });
+}
+
+/**
+ * Download a vdir recursively - downloads all files and sub-vdirs
+ * @param {string} topicName - Topic name
+ * @param {string} merkleRoot - Vdir merkle root
+ * @param {string} outputPath - Local path to recreate the vdir
+ * @param {object} options - Options { onProgress, onItemStart, onItemComplete }
+ */
+async downloadVdir(topicName, merkleRoot, outputPath, options = {}) {
+  if (!this.protocol) {
+    throw new Error('Not connected to network. Join a topic first.');
+  }
+
+  const absoluteOutputPath = path.resolve(outputPath);
+  const results = { files: [], vdirs: [], totalSize: 0, totalChunks: 0 };
+
+  // Recursive download function
+  const downloadRecursive = async (vdirMerkleRoot, currentPath) => {
+    // Request vdir metadata
+    const metadata = await this.requestMetadata(topicName, vdirMerkleRoot);
+    
+    if (metadata.type !== 'vdir') {
+      throw new Error(`Expected vdir, got ${metadata.type}`);
+    }
+
+    // Ensure directory exists
+    if (!fs.existsSync(currentPath)) {
+      fs.mkdirSync(currentPath, { recursive: true });
+    }
+
+    if (options.onItemStart) {
+      options.onItemStart({ type: 'vdir', path: currentPath, name: metadata.suggestedName });
+    }
+
+    // Process children
+    for (const child of metadata.children || []) {
+      const childPath = path.join(currentPath, child.suggestedName);
+
+      if (child.type === 'vdir') {
+        // Recursively download sub-vdir
+        await downloadRecursive(child.merkleRoot, childPath);
+        results.vdirs.push({ merkleRoot: child.merkleRoot, path: childPath });
+      } else if (child.type === 'file') {
+        // Download file
+        if (options.onItemStart) {
+          options.onItemStart({ type: 'file', path: childPath, name: child.suggestedName, size: child.size });
+        }
+
+        const fileResult = await this.downloadFile(topicName, child.merkleRoot, childPath, {
+          onProgress: options.onFileProgress
+        });
+
+        results.files.push({ merkleRoot: child.merkleRoot, path: childPath, size: fileResult.size });
+        results.totalSize += fileResult.size;
+        results.totalChunks += fileResult.totalChunks;
+
+        if (options.onItemComplete) {
+          options.onItemComplete({ type: 'file', path: childPath, size: fileResult.size });
+        }
+      }
+    }
+
+    if (options.onItemComplete) {
+      options.onItemComplete({ type: 'vdir', path: currentPath });
+    }
+  };
+
+  await downloadRecursive(merkleRoot, absoluteOutputPath);
+
+  return {
+    path: absoluteOutputPath,
+    files: results.files.length,
+    vdirs: results.vdirs.length,
+    totalSize: results.totalSize,
+    totalChunks: results.totalChunks
+  };
 }
 }
 
