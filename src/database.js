@@ -339,6 +339,33 @@ export class SwarmDB {
   }
 
   /**
+   * Update a vdir entry's child_merkle_root (used when child vdir gets its merkle root)
+   * @param {string} parentVdirId - Parent vdir UUID
+   * @param {string} oldRoot - Old value (UUID placeholder or old merkle root)
+   * @param {string} newRoot - New merkle root
+   */
+  updateVdirEntryMerkleRoot(parentVdirId, oldRoot, newRoot) {
+    const stmt = this.db.prepare(`
+      UPDATE vdir_entries 
+      SET child_merkle_root = ?
+      WHERE parent_vdir_id = ? AND child_merkle_root = ?
+    `);
+    return stmt.run(newRoot, parentVdirId, oldRoot);
+  }
+
+  /**
+   * Find all vdir_entries that reference a vdir by its UUID (as child_merkle_root placeholder)
+   * @param {string} vdirId - The vdir UUID to find references to
+   * @returns {Array} - Array of entries with parent_vdir_id
+   */
+  findVdirEntriesByChildId(vdirId) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM vdir_entries WHERE child_merkle_root = ?
+    `);
+    return stmt.all(vdirId);
+  }
+
+  /**
    * Update a vdir's merkle root
    */
   updateVdirMerkleRoot(vdirId, merkleRoot) {

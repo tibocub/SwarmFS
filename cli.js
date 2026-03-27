@@ -467,14 +467,19 @@ vdirCmd
   .action(wrapCommand(cmd.vdirAddCommand));
 
 vdirCmd
-  .command('share [vfsPath]')
-  .description('Output the merkle root of a vdir for sharing')
+  .command('share <topic> [vfsPath]')
+  .description('Share a vdir in a topic (outputs merkle root)')
   .action(wrapCommand(cmd.vdirShareCommand));
 
 vdirCmd
   .command('info [vfsPath]')
   .description('Show vdir info including merkle root')
   .action(wrapCommand(cmd.vdirInfoCommand));
+
+vdirCmd
+  .command('repair')
+  .description('Repair vdir entries for vdirs created before the fix')
+  .action(wrapCommand(cmd.vdirRepairCommand));
 
 
 // ============================================================================

@@ -86,6 +86,12 @@ export class VFS {
         const id = newUuid()
         this.db.addVdir(id, part, current.id)
         next = this.db.getVdirById(id)
+        
+        // Add entry to parent's vdir_entries so merkle calculation works
+        // Use the child's UUID as placeholder (will be replaced with merkle root when child has content)
+        if (!current.is_root) {
+          this.db.addVdirEntry(current.id, VDIR_CHILD_TYPE.VDIR, id, part)
+        }
       }
       current = next
     }
@@ -148,12 +154,28 @@ export class VFS {
       return null // Empty vdir
     }
 
-    // Sort by child_merkle_root (lexicographic)
-    children.sort((a, b) => a.child_merkle_root.localeCompare(b.child_merkle_root))
+    // Resolve any UUID placeholders to actual merkle roots
+    const resolvedChildren = children.map(c => {
+      let childRoot = c.child_merkle_root
+      
+      // If child is a vdir and the root looks like a UUID (36 chars with dashes),
+      // try to resolve it to the actual merkle root
+      if (c.child_type === VDIR_CHILD_TYPE.VDIR && childRoot.length === 36 && childRoot.includes('-')) {
+        const childVdir = this.db.getVdirById(childRoot)
+        if (childVdir?.merkle_root) {
+          childRoot = childVdir.merkle_root
+        }
+      }
+      
+      return { ...c, resolved_merkle_root: childRoot }
+    })
+
+    // Sort by resolved merkle_root (lexicographic)
+    resolvedChildren.sort((a, b) => a.resolved_merkle_root.localeCompare(b.resolved_merkle_root))
 
     // Concatenate: merkle_root + type_flag for each child
-    const buffers = children.map(c => {
-      const merkleBuf = Buffer.from(c.child_merkle_root, 'hex')
+    const buffers = resolvedChildren.map(c => {
+      const merkleBuf = Buffer.from(c.resolved_merkle_root, 'hex')
       const typeFlag = Buffer.from([c.child_type]) // 0x00 for file, 0x01 for vdir
       return Buffer.concat([merkleBuf, typeFlag])
     })
@@ -163,13 +185,26 @@ export class VFS {
   }
 
   /**
-   * Update a vdir's merkle root and recursively update all ancestors
+   * Update a vdir's merkle root and propagate to parent entries
    * @param {string} vdirId - The vdir UUID to update
-   * @returns {Promise<void>}
+   * @returns {Promise<string|null>} - The new merkle root
    */
   async updateVdirMerkleRoot(vdirId) {
     const newRoot = await this.calculateVdirMerkleRoot(vdirId)
+    
+    // Update the vdir's own merkle root
     this.db.updateVdirMerkleRoot(vdirId, newRoot)
+    
+    // Find any parent entries that reference this vdir by UUID and update them
+    const parentEntries = this.db.findVdirEntriesByChildId(vdirId)
+    for (const entry of parentEntries) {
+      if (newRoot) {
+        // Update the entry to use the actual merkle root
+        this.db.updateVdirEntryMerkleRoot(entry.parent_vdir_id, vdirId, newRoot)
+      }
+    }
+    
+    return newRoot
   }
 
   /**
@@ -251,5 +286,51 @@ export class VFS {
   async removeEntry(vdirId, childMerkleRoot) {
     this.db.removeVdirEntry(vdirId, childMerkleRoot)
     await this.updateAncestorMerkleRoots(vdirId)
+  }
+
+  /**
+   * Repair vdir_entries for existing vdirs that were created before the fix
+   * Creates missing entries based on parent_id relationships
+   */
+  repairVdirEntries() {
+    // Get all vdirs (except root)
+    const allVdirs = this.db.listVdirsByParent(null)
+    const root = this.db.getVfsRoot()
+    
+    // Recursively collect all vdirs
+    const collect = (parentId) => {
+      const children = this.db.listVdirsByParent(parentId)
+      let result = [...children]
+      for (const child of children) {
+        result = result.concat(collect(child.id))
+      }
+      return result
+    }
+    
+    const all = collect(root?.id || null)
+    
+    let repaired = 0
+    for (const vdir of all) {
+      if (!vdir.parent_id) continue
+      
+      // Check if entry already exists in parent
+      const existingEntries = this.db.listVdirEntries(vdir.parent_id)
+      const hasEntry = existingEntries.some(e => 
+        e.child_merkle_root === vdir.id || e.child_merkle_root === vdir.merkle_root
+      )
+      
+      if (!hasEntry) {
+        // Create missing entry
+        this.db.addVdirEntry(
+          vdir.parent_id,
+          VDIR_CHILD_TYPE.VDIR,
+          vdir.merkle_root || vdir.id,
+          vdir.name
+        )
+        repaired++
+      }
+    }
+    
+    return repaired
   }
 }

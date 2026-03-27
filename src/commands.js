@@ -217,11 +217,17 @@ export async function vdirAddCommand(swarmfs, ...args) {
 }
 
 /**
- * Share a vdir - outputs the merkle root for sharing
+ * Share a vdir in a topic - outputs the merkle root for sharing
  */
-export async function vdirShareCommand(swarmfs, vfsPath) {
+export async function vdirShareCommand(swarmfs, topicName, vfsPath) {
   swarmfs.open();
   const vfs = getVfs(swarmfs);
+  
+  // Check topic exists
+  const topic = swarmfs.db.getTopic(topicName);
+  if (!topic) {
+    throw new Error(`Topic "${topicName}" not found. Create it first with "topic create ${topicName}"`);
+  }
   
   const vdir = vfs.resolvePath(vfsPath || '/');
   if (!vdir) {
@@ -242,8 +248,14 @@ export async function vdirShareCommand(swarmfs, vfsPath) {
     throw new Error('Vdir is empty - add files before sharing');
   }
 
-  // Output the merkle root (this is what users share with others)
-  console.log(vdir.merkle_root);
+  // Add to topic_shares
+  swarmfs.db.addTopicShare(topic.id, 'vdir', vdir.id, vdir.merkle_root);
+
+  console.log('✓ Vdir shared successfully');
+  console.log(`  Topic: ${topicName}`);
+  console.log(`  VFS Path: ${vfsPath || '/'}`);
+  console.log(`  Merkle Root: ${vdir.merkle_root}`);
+  
   return vdir;
 }
 
@@ -278,6 +290,25 @@ export async function vdirInfoCommand(swarmfs, vfsPath) {
   console.log(`Files: ${entries?.length || 0}`);
 
   return vdir;
+}
+
+/**
+ * Repair vdir entries for existing vdirs created before the fix
+ */
+export async function vdirRepairCommand(swarmfs) {
+  swarmfs.open();
+  const vfs = getVfs(swarmfs);
+  
+  const repaired = vfs.repairVdirEntries();
+  
+  if (repaired > 0) {
+    console.log(`Repaired ${repaired} missing vdir entries.`);
+    console.log('Run "vdir share" again to calculate merkle roots.');
+  } else {
+    console.log('No repairs needed - all vdir entries are correct.');
+  }
+  
+  return repaired;
 }
 
 
@@ -429,7 +460,7 @@ export function formatBytes(bytes) {
 }
 
 /**
- * Browse shared files in a topic
+ * Browse shared files and vdirs in a topic
  */
 export async function browseCommand(swarmfs, topicName, options = {}) {
   swarmfs.open();
@@ -441,22 +472,49 @@ export async function browseCommand(swarmfs, topicName, options = {}) {
   }
 
   console.log(`\nBrowsing topic "${topicName}"...`);
-  const files = await swarmfs.browseTopic(topicName, options.timeout || 5000);
+  const items = await swarmfs.browseTopic(topicName, options.timeout || 5000);
 
-  if (files.length === 0) {
-    console.log('No shared files found.');
-    return files;
+  if (items.length === 0) {
+    console.log('No shared content found.');
+    return items;
   }
 
-  console.log(`\nShared Files (${files.length}):\n`);
-  files.forEach((file) => {
-    console.log(`  ${file.name}`);
-    console.log(`    Size: ${formatBytes(file.size)}`);
-    console.log(`    Merkle Root: ${file.merkleRoot}`);
-    console.log('');
-  });
+  // Separate by type
+  const files = items.filter(i => i.type === 'file');
+  const vdirs = items.filter(i => i.type === 'vdir');
+  const dirs = items.filter(i => i.type === 'directory');
 
-  return files;
+  if (vdirs.length > 0) {
+    console.log(`\nVirtual Directories (${vdirs.length}):\n`);
+    vdirs.forEach((vdir) => {
+      console.log(`  ${vdir.name}/`);
+      console.log(`    Merkle Root: ${vdir.merkleRoot}`);
+      console.log(`    Children: ${vdir.childCount}`);
+      console.log('');
+    });
+  }
+
+  if (dirs.length > 0) {
+    console.log(`\nDirectories (${dirs.length}):\n`);
+    dirs.forEach((dir) => {
+      console.log(`  ${dir.name}/`);
+      console.log(`    Merkle Root: ${dir.merkleRoot}`);
+      console.log(`    Size: ${formatBytes(dir.size)}`);
+      console.log('');
+    });
+  }
+
+  if (files.length > 0) {
+    console.log(`\nFiles (${files.length}):\n`);
+    files.forEach((file) => {
+      console.log(`  ${file.name}`);
+      console.log(`    Size: ${formatBytes(file.size)}`);
+      console.log(`    Merkle Root: ${file.merkleRoot}`);
+      console.log('');
+    });
+  }
+
+  return items;
 }
 
 export function formatDate(timestamp) {
@@ -1296,6 +1354,7 @@ export const commands = {
   'vdir.add': vdirAddCommand,
   'vdir.share': vdirShareCommand,
   'vdir.info': vdirInfoCommand,
+  'vdir.repair': vdirRepairCommand,
 
   // Top-level share
   share: shareCommand

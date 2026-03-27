@@ -202,29 +202,68 @@ const fileListRequestSchema = {
   }
 }
 
-// File entry for FILE_LIST_RESPONSE
+// Shared item entry for FILE_LIST_RESPONSE (files, vdirs, directories)
 const fileEntrySchema = {
   preencode(state, val) {
     string.preencode(state, val.name)
     string.preencode(state, val.path)
     hex32.preencode(state, val.merkleRoot)
-    uint32.preencode(state, val.size)
-    uint32.preencode(state, val.chunks)
+    // Type: 0=file, 1=vdir, 2=directory
+    const typeNum = val.type === 'vdir' ? 1 : (val.type === 'directory' ? 2 : 0)
+    uint8.preencode(state, typeNum)
+    
+    // Type-specific fields
+    if (typeNum === 0) {
+      // File: size, chunks
+      uint32.preencode(state, val.size || 0)
+      uint32.preencode(state, val.chunks || 0)
+    } else if (typeNum === 1) {
+      // Vdir: childCount
+      uint32.preencode(state, val.childCount || 0)
+    } else {
+      // Directory: size
+      uint32.preencode(state, val.size || 0)
+    }
   },
   encode(state, val) {
     string.encode(state, val.name)
     string.encode(state, val.path)
     hex32.encode(state, val.merkleRoot)
-    uint32.encode(state, val.size)
-    uint32.encode(state, val.chunks)
+    const typeNum = val.type === 'vdir' ? 1 : (val.type === 'directory' ? 2 : 0)
+    uint8.encode(state, typeNum)
+    
+    if (typeNum === 0) {
+      uint32.encode(state, val.size || 0)
+      uint32.encode(state, val.chunks || 0)
+    } else if (typeNum === 1) {
+      uint32.encode(state, val.childCount || 0)
+    } else {
+      uint32.encode(state, val.size || 0)
+    }
   },
   decode(state) {
-    return {
-      name: string.decode(state),
-      path: string.decode(state),
-      merkleRoot: hex32.decode(state),
-      size: uint32.decode(state),
-      chunks: uint32.decode(state)
+    const name = string.decode(state)
+    const path = string.decode(state)
+    const merkleRoot = hex32.decode(state)
+    const typeNum = uint8.decode(state)
+    const type = typeNum === 1 ? 'vdir' : (typeNum === 2 ? 'directory' : 'file')
+    
+    if (typeNum === 0) {
+      return {
+        name, path, merkleRoot, type,
+        size: uint32.decode(state),
+        chunks: uint32.decode(state)
+      }
+    } else if (typeNum === 1) {
+      return {
+        name, path, merkleRoot, type,
+        childCount: uint32.decode(state)
+      }
+    } else {
+      return {
+        name, path, merkleRoot, type,
+        size: uint32.decode(state)
+      }
     }
   }
 }

@@ -754,7 +754,7 @@ export class Protocol extends EventEmitter {
   }
 
   /**
-   * FILE_LIST_REQUEST: Peer requests list of shared files in topic
+   * FILE_LIST_REQUEST: Peer requests list of shared files and vdirs in topic
    */
   async handleFileListRequest(conn, peerId, payload) {
     const { requestId, topicKey } = payload;
@@ -770,25 +770,48 @@ export class Protocol extends EventEmitter {
     }
 
     const shares = this.db.getTopicShares(topic.id);
-    const files = shares
-      .filter((share) => share.share_type === 'file')
-      .map((share) => {
+    const items = [];
+
+    for (const share of shares) {
+      if (share.share_type === 'file') {
         const file = this.db.getFile(share.share_path);
-        if (!file || file.file_modified_at <= 0) {
-          return null;
+        if (file && file.file_modified_at > 0) {
+          items.push({
+            name: path.basename(share.share_path),
+            path: share.share_path,
+            merkleRoot: share.merkle_root,
+            type: 'file',
+            size: file.size,
+            chunks: file.chunk_count
+          });
         }
+      } else if (share.share_type === 'vdir') {
+        const vdir = this.db.getVdirById(share.share_path);
+        if (vdir && vdir.merkle_root) {
+          const children = this.db.getVdirChildren(vdir.id);
+          items.push({
+            name: vdir.name,
+            path: share.share_path,
+            merkleRoot: vdir.merkle_root,
+            type: 'vdir',
+            childCount: children.length
+          });
+        }
+      } else if (share.share_type === 'directory') {
+        const dir = this.db.getDirectory(share.share_path);
+        if (dir && dir.merkle_root) {
+          items.push({
+            name: path.basename(share.share_path),
+            path: share.share_path,
+            merkleRoot: share.merkle_root,
+            type: 'directory',
+            size: dir.size
+          });
+        }
+      }
+    }
 
-        return {
-          name: path.basename(share.share_path),
-          path: share.share_path,
-          merkleRoot: share.merkle_root,
-          size: file.size,
-          chunks: file.chunk_count
-        };
-      })
-      .filter(Boolean);
-
-    this.sendFileListResponse(conn, requestId, topicKey, files);
+    this.sendFileListResponse(conn, requestId, topicKey, items);
   }
 
   handleFileListResponse(conn, peerId, payload) {
