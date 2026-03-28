@@ -142,11 +142,12 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
 
 ### Final tweaks to make sure the alpha is usable (now)
 
-- [ ] Multi-file bundles (download directories in single requests)
+- [x] Multi-file bundles (download entire directories in a single request using VFS)
 - [ ] Selective downloads (select and rename files when downloading a directory)
-- [ ] Improve TUI UX (don't force users to use the REPL anymore, provide keys-based controls, basic mouse support and tabs to switch views between browse, downloads, topics, local files, etc)
-- [ ] Improve browsing UX (search, filters, danger warning in public topics)
+- [x] Improve TUI UX (don't force users to use the REPL anymore, provide keys-based controls, basic mouse support and tabs to switch views between browse, downloads, topics, local files, etc)
+- [In progress] Improve browsing UX (search, filters, danger warning in public topics)
 - [ ] Better sharing controls (per-topic files allowlist/denylist and/or per-file topics allowlist/denylist, share entire virtual directories)
+- [ ] Minimal ID system (required to develop other features such as multi-user directories, actually secure private topics, etc)
 
 ### Planned
 
@@ -169,9 +170,9 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
 
 ### Known issues / drawbacks
 
-- Hyperswarm holepunching is one of the greatest but isn’t perfect; some networks may reduce connectivity
+- Hyperswarm holepunching is great but not perfect; some networks may reduce connectivity
 - Content discovery is still evolving (topic-scoped browsing protocol is temporary and donwloading unknown shared files public topics is dangerous)
-- Performance is bad but right now we're focussing on making things work as reliably as possible
+- Performance is bad, but right now SwarmFS is just a proof of concept. We're focussing on making things work as reliably as possible and don't focus too much on speed unless it's tied to a core design problem
 
 
 ### Performance TODOs (ideas to evaluate)
@@ -198,7 +199,7 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
     - One peer: sequential streaming (torrent-style).
 - [ ] **Proof caching / reuse**
     - Cache proof fragments per file to avoid recomputing siblings repeatedly.
-- [ ] **Compact encodings for protocol metadata**
+- [x] **Compact encodings for protocol metadata**
     - Replace JSON with compact encodings for smaller wire format.
     - Hash dedup in proofs, optional compression for proof blocks.
 
