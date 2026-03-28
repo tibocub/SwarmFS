@@ -462,10 +462,15 @@ export class SwarmFS {
     if (this.db) {
       this.db.close();
     }
+    if (this.userdb) {
+      await this.userdb.close();
+    }
 
     this.protocol = null;
     this.network = null;
     this.db = null;
+    this.userdb = null;
+    this.identity = null;
   }
 
   // ============================================================================

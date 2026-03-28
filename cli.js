@@ -137,6 +137,30 @@ program
   .action(wrapCommand(cmd.statsCommand));
 
 // ============================================================================
+// IDENTITY COMMANDS
+// ============================================================================
+
+program
+  .command('login [mnemonic] [device-name]')
+  .description('Login with existing identity or create new one')
+  .action(wrapCommand(cmd.loginCommand));
+
+program
+  .command('logout')
+  .description('Clear identity from memory')
+  .action(wrapCommand(cmd.logoutCommand));
+
+program
+  .command('devices')
+  .description('List registered devices')
+  .action(wrapCommand(cmd.devicesCommand));
+
+program
+  .command('whoami')
+  .description('Show current identity info')
+  .action(wrapCommand(cmd.whoamiCommand));
+
+// ============================================================================
 // TOPIC COMMANDS
 // ============================================================================
 

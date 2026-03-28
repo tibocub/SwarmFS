@@ -95,3 +95,25 @@ export function getIgnorePatterns() {
   const config = loadConfig();
   return config.ignorePatterns || [];
 }
+
+/**
+ * Get identity directory path
+ * Uses SWARMFS_IDENTITY env var if set, otherwise uses dataDir/identity
+ */
+export function getIdentityDir() {
+  if (process.env.SWARMFS_IDENTITY) {
+    return process.env.SWARMFS_IDENTITY;
+  }
+  return path.join(getDataDir(), 'identity');
+}
+
+/**
+ * Get userdb directory path
+ * Uses SWARMFS_USERDB env var if set, otherwise uses dataDir/userdb
+ */
+export function getUserdbDir() {
+  if (process.env.SWARMFS_USERDB) {
+    return process.env.SWARMFS_USERDB;
+  }
+  return path.join(getDataDir(), 'userdb');
+}

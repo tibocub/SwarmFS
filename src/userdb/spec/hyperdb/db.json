@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "offset": 0,
+  "schema": [
+    {
+      "name": "device",
+      "namespace": "userdb",
+      "id": 0,
+      "type": 1,
+      "version": 1,
+      "versionField": null,
+      "indexes": [
+        "@userdb/device-by-user"
+      ],
+      "schema": "@userdb/device",
+      "derived": false,
+      "key": [
+        "deviceId"
+      ],
+      "trigger": null
+    },
+    {
+      "name": "device-by-user",
+      "namespace": "userdb",
+      "id": 1,
+      "type": 2,
+      "version": 1,
+      "collection": "@userdb/device",
+      "unique": false,
+      "deprecated": false,
+      "key": [
+        "userIdentity",
+        "deviceId"
+      ]
+    },
+    {
+      "name": "friend",
+      "namespace": "userdb",
+      "id": 2,
+      "type": 1,
+      "version": 1,
+      "versionField": null,
+      "indexes": [],
+      "schema": "@userdb/friend",
+      "derived": false,
+      "key": [
+        "identityKey"
+      ],
+      "trigger": null
+    },
+    {
+      "name": "setting",
+      "namespace": "userdb",
+      "id": 3,
+      "type": 1,
+      "version": 1,
+      "versionField": null,
+      "indexes": [],
+      "schema": "@userdb/setting",
+      "derived": false,
+      "key": [
+        "key"
+      ],
+      "trigger": null
+    }
+  ]
+}

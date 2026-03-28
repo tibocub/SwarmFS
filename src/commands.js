@@ -5,8 +5,13 @@
 
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 import terminalKit from 'terminal-kit'
+import readline from 'readline'
 import { VFS } from './vfs.js'
+import { IdentityManager } from './identity/index.js'
+import { UserDatabase } from './userdb/index.js'
+import { getIdentityDir, getUserdbDir } from './config.js'
 
 const term = terminalKit.terminal;
 
@@ -57,6 +62,78 @@ function getVfs(swarmfs) {
 
 function isInteractivePromptAvailable() {
   return !!(process.stdin?.isTTY && process.stdout?.isTTY && typeof term.inputField === 'function');
+}
+
+/**
+ * Prompt for password - uses readline in REPL mode, terminal-kit in CLI mode
+ * This avoids terminal-kit escape code issues when running in the REPL
+ */
+async function promptPassword(promptText) {
+  if (process.env.SWARMFS_REPL === '1') {
+    // In REPL mode, we need to work with the existing readline
+    // The REPL's readline interface is controlling stdin, so we need to pause it
+    return new Promise((resolve) => {
+      process.stdout.write(promptText);
+      
+      // Store current raw mode state
+      const wasRaw = process.stdin.isRaw;
+      
+      // Pause any existing readline to release stdin
+      process.stdin.pause();
+      
+      // Enable raw mode for hidden input
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+      }
+      
+      let input = '';
+      
+      const onData = (char) => {
+        const c = char.toString('utf8');
+        if (c === '\n' || c === '\r' || c === '\u0004') {
+          // Done - restore state
+          process.stdin.off('data', onData);
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(wasRaw || false);
+          }
+          process.stdout.write('\n');
+          process.stdin.resume();
+          resolve(input);
+        } else if (c === '\u0003') {
+          // Ctrl-C
+          process.stdin.off('data', onData);
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(wasRaw || false);
+          }
+          process.stdout.write('\n');
+          process.exit();
+        } else if (c === '\u007f' || c === '\b') {
+          // Backspace
+          if (input.length > 0) {
+            input = input.slice(0, -1);
+            process.stdout.write('\b \b');
+          }
+        } else if (c.charCodeAt(0) >= 32) {
+          // Printable characters only
+          input += c;
+          process.stdout.write('*');
+        }
+      };
+      
+      process.stdin.on('data', onData);
+      process.stdin.resume();
+    });
+  } else {
+    // Use terminal-kit in CLI mode
+    return new Promise((resolve) => {
+      term(promptText);
+      term.inputField({ echo: false }, (err, input) => {
+        term('\n');
+        restoreTerminal();
+        resolve(input || '');
+      });
+    });
+  }
 }
 
 async function promptTrackMissingFile(localPath) {
@@ -1352,10 +1429,273 @@ export async function networkCommand(swarmfs) {
 }
 
 // ============================================================================
+// IDENTITY COMMANDS
+// ============================================================================
+
+/**
+ * Login command - Initialize or load user identity
+ * @param {Object} swarmfs - SwarmFS instance
+ * @param {string|null} mnemonic - Optional mnemonic for existing user
+ * @param {string|null} deviceName - Optional device name
+ */
+export async function loginCommand(swarmfs, mnemonic = null, deviceName = null) {
+  // In REPL mode, login is handled at startup
+  if (process.env.SWARMFS_REPL === '1') {
+    if (swarmfs.identity && swarmfs.identity.hasUserIdentity()) {
+      console.log('Already logged in.');
+      console.log(`  User ID: ${swarmfs.identity.getUserId()}`);
+      console.log(`  Device: ${swarmfs.identity.deviceName}`);
+      return swarmfs.identity;
+    }
+    console.log('No identity loaded. Restart the REPL to login.');
+    return null;
+  }
+  
+  const identityDir = getIdentityDir();
+  const userdbPath = getUserdbDir();
+  
+  // Check if already logged in
+  if (swarmfs.identity && swarmfs.identity.hasUserIdentity()) {
+    console.log('Already logged in.');
+    console.log(`  User ID: ${swarmfs.identity.getUserId()}`);
+    console.log(`  Device: ${swarmfs.identity.deviceName}`);
+    return swarmfs.identity;
+  }
+
+  // Create identity manager
+  const identity = new IdentityManager({ identityDir });
+
+  // Check for existing identity
+  const hasExisting = identity.hasUserIdentity();
+
+  if (hasExisting && !mnemonic) {
+    // Need password to decrypt existing identity
+    console.log('Existing identity found.');
+    
+    const password = await promptPassword('Enter password: ');
+
+    try {
+      await identity.initUser(null, password);
+    } catch (err) {
+      console.error('Failed to decrypt identity. Wrong password?');
+      restoreTerminal();
+      throw err;
+    }
+  } else if (mnemonic) {
+    // Login with mnemonic
+    console.log('Logging in with mnemonic...');
+    
+    const password = await promptPassword('Create password for this device: ');
+
+    await identity.initUser(mnemonic, password);
+  } else {
+    // Create new identity
+    console.log('Creating new identity...');
+    
+    let password, passwordConfirm;
+    do {
+      password = await promptPassword('Create password: ');
+      passwordConfirm = await promptPassword('Confirm password: ');
+
+      if (password !== passwordConfirm) {
+        console.log('Passwords do not match. Try again.');
+      }
+    } while (password !== passwordConfirm);
+
+    await identity.initUser(null, password);
+    
+    console.log('\n⚠️  Save this mnemonic to recover your identity:');
+    console.log(`    ${identity.mnemonic}\n`);
+  }
+
+  // Initialize device
+  const deviceInfo = await identity.initDevice(deviceName);
+  console.log(`Device: ${deviceInfo.deviceName} ${deviceInfo.isNew ? '(new)' : '(existing)'}`);
+
+  // Initialize user database (ReadyResource pattern)
+  const userdb = new UserDatabase({
+    storagePath: userdbPath,
+    identity
+  });
+  await userdb.ready();
+
+  console.log(`Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
+
+  // Join user topic for device replication (only in REPL/shell mode)
+  // One-off CLI commands don't maintain connections
+  if (process.env.SWARMFS_REPL === '1') {
+    try {
+      await swarmfs.network.joinUserTopic(identity, userdb);
+      console.log(`User swarm topic joined - other devices can sync`);
+    } catch (err) {
+      console.warn(`Could not join user swarm: ${err.message}`);
+    }
+  }
+
+  // Store on swarmfs instance
+  swarmfs.identity = identity;
+  swarmfs.userdb = userdb;
+
+  restoreTerminal();
+
+  console.log('\n✅ Logged in successfully!');
+  console.log(`  User ID: ${identity.getUserId()}`);
+  console.log(`  Device ID: ${identity.getDeviceId()}`);
+
+  return identity;
+}
+
+/**
+ * Logout command - Clear identity from memory
+ * @param {Object} swarmfs - SwarmFS instance
+ */
+export async function logoutCommand(swarmfs) {
+  if (!swarmfs.identity) {
+    console.log('Not logged in.');
+    return;
+  }
+
+  // Clear sensitive data
+  swarmfs.identity.clear();
+
+  // Close user database
+  if (swarmfs.userdb) {
+    await swarmfs.userdb.close();
+  }
+
+  swarmfs.identity = null;
+  swarmfs.userdb = null;
+
+  console.log('Logged out.');
+}
+
+/**
+ * Helper to auto-load identity if it exists on disk
+ * Used by commands that need identity but may not have it in memory
+ */
+async function autoLoadIdentity(swarmfs) {
+  if (swarmfs.identity && swarmfs.identity.hasUserIdentity()) {
+    return true
+  }
+
+  const identityDir = getIdentityDir()
+  const userdbPath = getUserdbDir()
+  
+  // Check if identity exists on disk
+  const identity = new IdentityManager({ identityDir })
+  if (!identity.hasUserIdentity()) {
+    return false
+  }
+
+  // Need password to decrypt
+  console.log('Existing identity found. Enter password to continue.')
+  const password = await promptPassword('Enter password: ')
+
+  try {
+    await identity.initUser(null, password)
+    const deviceInfo = await identity.initDevice()
+    
+    // Initialize user database
+    const userdb = new UserDatabase({
+      storagePath: userdbPath,
+      identity
+    })
+    await userdb.ready()
+
+    // Join user topic for replication (only in REPL/shell mode)
+    if (process.env.SWARMFS_REPL === '1') {
+      try {
+        await swarmfs.network.joinUserTopic(identity, userdb)
+      } catch (err) {
+        console.warn('Could not join user swarm:', err.message)
+      }
+    }
+
+    swarmfs.identity = identity
+    swarmfs.userdb = userdb
+    return true
+  } catch (err) {
+    console.error('Failed to decrypt identity:', err.message)
+    return false
+  }
+}
+
+/**
+ * Devices command - List registered devices
+ * @param {Object} swarmfs - SwarmFS instance
+ */
+export async function devicesCommand(swarmfs) {
+  const loaded = await autoLoadIdentity(swarmfs)
+  if (!loaded) {
+    console.log('Not logged in. Use "login" first.')
+    return []
+  }
+
+  console.log('\n📱 Registered Devices:\n');
+
+  const devices = await swarmfs.userdb.getAllDevices();
+
+  if (devices.length === 0) {
+    console.log('  No devices registered yet.');
+    return [];
+  }
+
+  const currentDeviceId = swarmfs.identity.getDeviceId();
+
+  for (const device of devices) {
+    const isCurrent = device.deviceId === currentDeviceId;
+    const marker = isCurrent ? ' ← current' : '';
+    const lastSeen = device.lastSeen ? new Date(device.lastSeen).toLocaleString() : 'never';
+    
+    console.log(`  ${device.name}${marker}`);
+    console.log(`    ID: ${device.deviceId}`);
+    console.log(`    Last seen: ${lastSeen}`);
+    console.log('');
+  }
+
+  console.log(`Total: ${devices.length} device(s)`);
+
+  return devices;
+}
+
+/**
+ * Whoami command - Show current identity info
+ * @param {Object} swarmfs - SwarmFS instance
+ */
+export async function whoamiCommand(swarmfs) {
+  const loaded = await autoLoadIdentity(swarmfs)
+  if (!loaded) {
+    console.log('Not logged in. Use "login" first.')
+    return null
+  }
+
+  const status = swarmfs.identity.getStatus();
+
+  console.log('\n👤 Current Identity:\n');
+  console.log(`  User ID:    ${status.userId}`);
+  console.log(`  Device:     ${status.deviceName}`);
+  console.log(`  Device ID:  ${status.deviceId}`);
+
+  if (swarmfs.userdb) {
+    const dbStatus = swarmfs.userdb.getStatus();
+    console.log(`  DB Key:     ${dbStatus.key?.substring(0, 16)}...`);
+    console.log(`  Is Indexer: ${dbStatus.isIndexer}`);
+  }
+
+  return status;
+}
+
+// ============================================================================
 // COMMAND REGISTRY
 // ============================================================================
 
 export const commands = {
+  // Identity commands
+  login: loginCommand,
+  logout: logoutCommand,
+  devices: devicesCommand,
+  whoami: whoamiCommand,
+  
   // File commands
   add: addCommand,
   rm: rmCommand,

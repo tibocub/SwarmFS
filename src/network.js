@@ -4,6 +4,7 @@
  */
 
 import Hyperswarm from 'hyperswarm';
+import crypto from 'hypercore-crypto';
 import { EventEmitter } from 'events';
 
 const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true';
@@ -12,6 +13,9 @@ const debug = (...args) => {
     console.log(...args);
   }
 };
+
+// Namespace for user topic derivation
+const USER_TOPIC_NAMESPACE = Buffer.from('swarmfs-user-v1');
 
 export class SwarmNetwork extends EventEmitter {
   constructor(config = {}) {
@@ -37,6 +41,10 @@ export class SwarmNetwork extends EventEmitter {
     this.topics = new Map();
     // peerConnections: peerId -> { conn, topics: Set<topicKeyHex> }
     this.peerConnections = new Map();
+    
+    // User topic for identity/database sync
+    this.userTopic = null;
+    this.userDatabase = null;
 
     this.setupSwarmHandlers();
     
@@ -158,6 +166,15 @@ export class SwarmNetwork extends EventEmitter {
         debug('[NETWORK]    No joined topics yet; connection will not be attributed to a topic');
       }
 
+      // Check if this is a user topic connection for replication
+      const isUserTopic = this.userTopic && attributedTopicKeys.some(t => t.toString('hex') === this.userTopic);
+      
+      if (isUserTopic && this.userDatabase) {
+        debug(`[NETWORK]    Setting up replication for user topic`);
+        // Replicate the user database's corestore
+        this.userDatabase.store.replicate(conn, { keepAlive: true });
+      }
+
       if (!this.peerConnections.has(peerId)) {
         this.peerConnections.set(peerId, { conn, topics: new Set() });
       }
@@ -187,7 +204,11 @@ export class SwarmNetwork extends EventEmitter {
         this.emit('peer:connect', { conn, peerId, topicKey: null });
       }
 
-      this.setupConnectionHandlers(conn, peerId);
+      // Only set up data handlers for non-user-topic connections
+      // User topic replication is handled by corestore
+      if (!isUserTopic) {
+        this.setupConnectionHandlers(conn, peerId);
+      }
     });
   }
 
@@ -314,5 +335,73 @@ export class SwarmNetwork extends EventEmitter {
     this.peerConnections.clear();
 
     debug('[NETWORK] ✓ Network closed');
+  }
+
+  /**
+   * Derive a deterministic topic from user identity
+   * All devices of the same user will use the same topic
+   * @param {Buffer} identityPublicKey - User's identity public key
+   * @returns {Buffer} Topic key
+   */
+  deriveUserTopic(identityPublicKey) {
+    const combined = Buffer.concat([USER_TOPIC_NAMESPACE, identityPublicKey]);
+    return crypto.hash(combined);
+  }
+
+  /**
+   * Join the user topic for database replication
+   * Uses the private topic derived from mnemonic (via identity.deriveUserSwarmTopic())
+   * @param {Object} identity - IdentityManager instance
+   * @param {Object} userDatabase - UserDatabase instance to replicate
+   */
+  async joinUserTopic(identity, userDatabase) {
+    // Get the private topic key derived from mnemonic
+    const topicKey = identity.deriveUserSwarmTopic();
+    const topicKeyHex = topicKey.toString('hex');
+
+    debug(`[NETWORK] Joining user swarm topic: ${topicKeyHex.substring(0, 16)}...`);
+
+    this.userDatabase = userDatabase;
+    this.identity = identity;
+
+    // Join the topic with a special name
+    await this.joinTopic('user-swarm', topicKey);
+
+    this.userTopic = topicKeyHex;
+    this.emit('user:topic:joined', topicKeyHex);
+
+    return topicKey;
+  }
+
+  /**
+   * Leave the user topic
+   */
+  async leaveUserTopic() {
+    if (!this.userTopic) {
+      return;
+    }
+
+    const topicKey = Buffer.from(this.userTopic, 'hex');
+    await this.leaveTopic('user-sync', topicKey);
+
+    this.userTopic = null;
+    this.userDatabase = null;
+    this.emit('user:topic:left');
+  }
+
+  /**
+   * Get user topic key if joined
+   * @returns {Buffer|null}
+   */
+  getUserTopicKey() {
+    return this.userTopic ? Buffer.from(this.userTopic, 'hex') : null;
+  }
+
+  /**
+   * Check if connected to user topic
+   * @returns {boolean}
+   */
+  isUserTopicJoined() {
+    return this.userTopic !== null;
   }
 }
