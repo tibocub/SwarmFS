@@ -142,8 +142,15 @@ export class UserDatabase extends ReadyResource {
     this.store = new Corestore(this.storagePath)
     await this.store.ready()
 
-    // Create Autobase with Db view
-    this.autobase = new Autobase(this.store, null, {
+    // Derive the autobase bootstrap key from the user identity
+    // ALL devices with the same user identity MUST use the same bootstrap key
+    // This is the system core key that makes them part of the same autobase
+    const bootstrapKey = this.identity.deriveUserSwarmTopic()
+
+    // Create Autobase with shared bootstrap key
+    // Each device writes to its own hypercore (managed by autobase internally)
+    // but they all share the same system core via the bootstrap key
+    this.autobase = new Autobase(this.store, bootstrapKey, {
       open: (store) => {
         const viewCore = store.get('view')
         return new Db(viewCore, { extension: false })
@@ -154,9 +161,16 @@ export class UserDatabase extends ReadyResource {
         for (const node of nodes) {
           const value = node.value
 
-          // Handle add-writer operation (buffer key)
-          if (value && Buffer.isBuffer(value.addWriter)) {
-            await base.addWriter(value.addWriter, { indexer: true })
+          // Handle add-writer operation
+          if (value && value.addWriter) {
+            let writerKey = value.addWriter
+            // Convert hex string to buffer if needed
+            if (typeof writerKey === 'string') {
+              writerKey = Buffer.from(writerKey, 'hex')
+            }
+            if (Buffer.isBuffer(writerKey)) {
+              await base.addWriter(writerKey, { indexer: true })
+            }
             continue
           }
 
@@ -261,6 +275,7 @@ export class UserDatabase extends ReadyResource {
 
   /**
    * Register this device in the database
+   * This also adds the device as a writer to enable multi-writer sync
    */
   async _registerThisDevice() {
     const deviceId = this._hashKey(this.identity.deviceKeyPair.publicKey)
@@ -268,11 +283,20 @@ export class UserDatabase extends ReadyResource {
     // Check if already registered
     const existing = await this.view.getDevice(deviceId)
     if (existing) {
+      // Already registered, but ensure we're a writer
+      // This is safe to call even if already a writer
+      if (this.autobase.isIndexer) {
+        // We're the indexer, add ourselves as a writer if not already
+        await this.autobase.append({ addWriter: this.identity.deviceKeyPair.publicKey })
+      }
       return
     }
 
-    // Append register-device operation as JSON string
-    // (autobase uses compact-encoding which can't handle nested buffers)
+    // First, add this device as a writer to the autobase
+    // This enables multi-writer replication
+    await this.autobase.append({ addWriter: this.identity.deviceKeyPair.publicKey })
+
+    // Then register the device metadata
     const op = JSON.stringify({
       type: 'register-device',
       deviceId,
