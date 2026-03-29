@@ -143,21 +143,12 @@ export class UserDatabase extends ReadyResource {
     this.store = new Corestore(this.storagePath)
     await this.store.ready()
 
-    // Check if we already have an autobase key stored (from previous session)
-    const keyPath = path.join(this.storagePath, 'autobase-key')
-    let bootstrapKey = null
-    
-    try {
-      if (fs.existsSync(keyPath)) {
-        const keyData = fs.readFileSync(keyPath, 'utf8')
-        bootstrapKey = Buffer.from(keyData, 'hex')
-      }
-    } catch {
-      // Ignore - will create new autobase
-    }
+    // Derive bootstrap key from user identity
+    // All devices with same mnemonic will derive the same key
+    // This ensures they all join the SAME autobase
+    const bootstrapKey = this.identity.deriveUserSwarmTopic()
 
-    // Create Autobase
-    // bootstrap=null creates a new autobase, bootstrap=key joins existing
+    // Create Autobase with shared bootstrap key
     // autostart: true automatically starts the autobase (enables writing)
     this.autobase = new Autobase(this.store, bootstrapKey, {
       autostart: true,
@@ -343,6 +334,8 @@ export class UserDatabase extends ReadyResource {
    */
   async getAllDevices() {
     if (!this.opened) await this.ready()
+    // Sync remote data before reading
+    await this.autobase.update()
     const devices = []
     for await (const device of this.view.findDevices()) {
       devices.push(device)
