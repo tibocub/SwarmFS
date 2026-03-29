@@ -221,7 +221,6 @@ export class UserDatabase extends ReadyResource {
     console.log(`  isIndexer: ${this.autobase.isIndexer}`)
     console.log(`  length: ${this.autobase.length}`)
     console.log(`  key: ${this.autobase.key?.toString('hex').slice(0, 16)}...`)
-    console.log(`  isNew: ${isNewAutobase}`)
 
     // Save the autobase key for future sessions
     if (this.autobase.key) {
