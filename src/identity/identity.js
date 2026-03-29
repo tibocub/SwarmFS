@@ -262,6 +262,26 @@ export class IdentityManager {
   }
 
   /**
+   * Derive the autobase bootstrap key from user identity
+   * All devices with the same mnemonic will derive the same key
+   * This ensures they all join the same autobase
+   * @returns {Buffer} 32-byte autobase bootstrap key
+   */
+  deriveAutobaseKey() {
+    if (!this.mnemonic) {
+      throw new Error('User identity not initialized')
+    }
+    
+    // Derive a deterministic key from the mnemonic
+    // Different namespace from user-swarm-topic to get a different key
+    const namespace = Buffer.from('swarmfs-autobase-bootstrap-v1')
+    const mnemonicBuffer = Buffer.from(this.mnemonic, 'utf8')
+    const combined = Buffer.concat([namespace, mnemonicBuffer])
+    
+    return crypto.hash(combined)
+  }
+
+  /**
    * Verify a device proof
    * @param {*} proof - Proof to verify
    * @returns {Object|null} Verified info or null if invalid

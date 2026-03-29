@@ -171,8 +171,9 @@ export class SwarmNetwork extends EventEmitter {
       
       if (isUserTopic && this.userDatabase) {
         debug(`[NETWORK]    Setting up replication for user topic`);
-        // Use autobase.replicate() for proper Autobase replication (workshop pattern)
-        this.userDatabase.autobase.replicate(conn);
+        // Use workshop pattern: key exchange + store.replicate
+        const isIndexer = this.userDatabase.autobase.isIndexer;
+        this._handleUserTopicConnection(conn, peerId, isIndexer);
       }
 
       if (!this.peerConnections.has(peerId)) {
@@ -350,32 +351,77 @@ export class SwarmNetwork extends EventEmitter {
 
   /**
    * Join the user topic for database replication
-   * Uses the autobase key as the swarm topic for discovery
+   * Uses identity-derived discovery topic so all devices with same mnemonic find each other
+   * Implements workshop pattern for key exchange and replication
    * @param {Object} identity - IdentityManager instance
    * @param {Object} userDatabase - UserDatabase instance to replicate
    */
   async joinUserTopic(identity, userDatabase) {
-    // Use the autobase key as the swarm topic
-    // This ensures all devices join the same discovery topic
-    const autobaseKey = userDatabase.autobaseKey;
-    if (!autobaseKey) {
-      throw new Error('UserDatabase must be ready before joining network');
-    }
+    // Use identity-derived topic for discovery (same for all devices with same mnemonic)
+    const discoveryTopic = identity.deriveUserSwarmTopic();
     
-    const topicKeyHex = autobaseKey.toString('hex');
-
-    debug(`[NETWORK] Joining user swarm topic (autobase key): ${topicKeyHex.substring(0, 16)}...`);
+    debug(`[NETWORK] Joining user discovery topic: ${discoveryTopic.toString('hex').substring(0, 16)}...`);
 
     this.userDatabase = userDatabase;
     this.identity = identity;
 
-    // Join the topic with a special name
-    await this.joinTopic('user-swarm', autobaseKey);
+    // Join the discovery topic for key exchange
+    await this.joinTopic('user-swarm', discoveryTopic);
 
-    this.userTopic = topicKeyHex;
-    this.emit('user:topic:joined', topicKeyHex);
+    this.userTopic = discoveryTopic.toString('hex');
+    this.emit('user:topic:joined', this.userTopic);
 
-    return autobaseKey;
+    return discoveryTopic;
+  }
+  
+  /**
+   * Handle user topic connection - key exchange and replication
+   * Workshop pattern: indexer sends key, new devices request to be added as writer
+   */
+  _handleUserTopicConnection(conn, peerId, isIndexer) {
+    const autobase = this.userDatabase.autobase;
+    
+    // Set up corestore replication (workshop pattern)
+    this.userDatabase.store.replicate(conn);
+    
+    // Key exchange protocol
+    conn.on('data', (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        
+        // New device receives autobase key from indexer
+        if (msg.type === 'autobase-key' && !isIndexer) {
+          console.log(`[NETWORK] Received autobase key: ${msg.key.slice(0, 16)}...`);
+          this.emit('user:autobase-key-received', { key: Buffer.from(msg.key, 'hex'), peerId });
+          
+          // Send writer request immediately
+          const writerMsg = JSON.stringify({ 
+            type: 'writer-key', 
+            key: autobase.local.key.toString('hex') 
+          });
+          conn.write(writerMsg);
+          console.log(`[NETWORK] Sent writer request: ${autobase.local.key.toString('hex').slice(0, 16)}...`);
+        }
+        
+        // Indexer receives writer key request from new device
+        if (msg.type === 'writer-key' && isIndexer) {
+          console.log(`[NETWORK] Writer request: ${msg.key.slice(0, 16)}...`);
+          this.emit('user:writer-request', { key: Buffer.from(msg.key, 'hex'), peerId });
+        }
+      } catch {
+        // Not JSON, ignore (replication data)
+      }
+    });
+    
+    // If we're an indexer, send our autobase key
+    if (isIndexer) {
+      const keyMsg = JSON.stringify({ 
+        type: 'autobase-key', 
+        key: autobase.key.toString('hex') 
+      });
+      conn.write(keyMsg);
+      console.log(`[NETWORK] Sent autobase key to peer`);
+    }
   }
 
   /**
@@ -392,6 +438,66 @@ export class SwarmNetwork extends EventEmitter {
     this.userTopic = null;
     this.userDatabase = null;
     this.emit('user:topic:left');
+  }
+
+  /**
+   * Set up connection for user topic - handles key exchange and replication
+   * Pattern: indexers broadcast their autobase key, new devices receive and rejoin
+   */
+  _setupUserTopicConnection(conn, peerId) {
+    const autobase = this.userDatabase.autobase;
+    const isIndexer = autobase.isIndexer;
+    
+    // Set up replication first
+    autobase.replicate(conn);
+    
+    // Key exchange protocol
+    conn.on('data', (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        
+        // New device receives autobase key from indexer
+        if (msg.type === 'autobase-key' && !isIndexer) {
+          console.log(`[NETWORK] Received autobase key from indexer: ${msg.key.slice(0, 16)}...`);
+          
+          // Check if we need to rejoin with this key
+          const currentKey = autobase.key?.toString('hex');
+          if (currentKey !== msg.key) {
+            console.log(`[NETWORK] Different autobase key, need to rejoin`);
+            // Emit event so UserDatabase can handle rejoin
+            this.emit('user:autobase-key-received', { key: Buffer.from(msg.key, 'hex'), peerId });
+          }
+        }
+        
+        // Indexer receives writer key request from new device
+        if (msg.type === 'writer-key' && isIndexer) {
+          console.log(`[NETWORK] New device wants to join: ${msg.key.slice(0, 16)}...`);
+          // Emit event so we can add them as writer
+          this.emit('user:writer-request', { key: Buffer.from(msg.key, 'hex'), peerId });
+        }
+      } catch {
+        // Not JSON, ignore (replication data)
+      }
+    });
+    
+    // If we're an indexer, broadcast our key
+    if (isIndexer) {
+      // Send our autobase key to the peer
+      const keyMsg = JSON.stringify({ 
+        type: 'autobase-key', 
+        key: autobase.key.toString('hex') 
+      });
+      conn.write(keyMsg);
+      console.log(`[NETWORK] Sent autobase key to peer`);
+    } else {
+      // We're not an indexer, send our local key to request being added
+      const writerMsg = JSON.stringify({ 
+        type: 'writer-key', 
+        key: autobase.local.key.toString('hex') 
+      });
+      conn.write(writerMsg);
+      console.log(`[NETWORK] Sent writer key request to indexer`);
+    }
   }
 
   /**

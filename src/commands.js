@@ -1606,6 +1606,27 @@ async function autoLoadIdentity(swarmfs) {
     if (process.env.SWARMFS_REPL === '1') {
       try {
         await swarmfs.network.joinUserTopic(identity, userdb)
+        
+        // Handle writer requests from new devices (indexer adds them automatically)
+        swarmfs.network.on('user:writer-request', async ({ key, peerId }) => {
+          console.log(`\n[NETWORK] New device requesting to join: ${key.toString('hex').slice(0, 16)}...`)
+          try {
+            await userdb.addWriter(key)
+            console.log(`[NETWORK] ✓ Added writer: ${key.toString('hex').slice(0, 16)}...`)
+          } catch (err) {
+            console.log(`[NETWORK] ✗ Failed to add writer: ${err.message}`)
+          }
+        })
+        
+        // Handle receiving autobase key from indexer (new device rejoins)
+        swarmfs.network.on('user:autobase-key-received', async ({ key, peerId }) => {
+          console.log(`\n[NETWORK] Received autobase key from indexer`)
+          // Save the key and rejoin
+          const keyPath = path.join(userdbPath, 'autobase-key')
+          fs.writeFileSync(keyPath, key.toString('hex'))
+          console.log(`[NETWORK] Saved autobase key, restart to join the autobase`)
+          console.log(`[NETWORK] Run 'login' again to rejoin with the new key`)
+        })
       } catch (err) {
         console.warn('Could not join user swarm:', err.message)
       }

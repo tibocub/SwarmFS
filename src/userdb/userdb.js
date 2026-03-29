@@ -149,18 +149,16 @@ export class UserDatabase extends ReadyResource {
 
     // Bootstrap key strategy:
     // 1. Check local storage for existing key (from previous session on this device)
-    // 2. If no local key, create new autobase (first device ever)
+    // 2. If no local key, create new autobase (first device on this machine)
     // 3. The key is shared via network discovery topic for other devices
     const keyPath = path.join(this.storagePath, 'autobase-key')
     let bootstrapKey = null
-    let isNewAutobase = true
     
     try {
       if (fs.existsSync(keyPath)) {
         const keyData = fs.readFileSync(keyPath, 'utf8').trim()
         if (keyData.length === 64) {
           bootstrapKey = Buffer.from(keyData, 'hex')
-          isNewAutobase = false
           console.log(`[USERDB] Rejoining autobase: ${keyData.slice(0, 16)}...`)
         }
       }
@@ -451,6 +449,76 @@ export class UserDatabase extends ReadyResource {
     // Use 'add' property for autobase pattern
     const keyHex = Buffer.isBuffer(publicKey) ? publicKey.toString('hex') : publicKey
     await this.autobase.append({ add: keyHex })
+  }
+
+  /**
+   * Rejoin autobase with a different key (received from indexer)
+   * Called when a new device receives the indexer's autobase key
+   */
+  async rejoinWithKey(bootstrapKey) {
+    console.log(`[USERDB] Rejoining with key: ${bootstrapKey.toString('hex').slice(0, 16)}...`)
+    
+    // Close current autobase
+    if (this.autobase) {
+      await this.autobase.close()
+    }
+    
+    // Save the key for future sessions
+    const keyPath = path.join(this.storagePath, 'autobase-key')
+    fs.writeFileSync(keyPath, bootstrapKey.toString('hex'))
+    
+    // Create new autobase with the received key
+    this.autobase = new Autobase(this.store, bootstrapKey, {
+      valueEncoding: 'json',
+      open: (store) => {
+        const viewCore = store.get('view')
+        return new Db(viewCore, { extension: false })
+      },
+      apply: async (nodes, view, base) => {
+        if (!view.opened) await view.ready()
+        console.log(`[USERDB] Apply ${nodes.length} nodes`)
+
+        for (const node of nodes) {
+          const value = node.value
+
+          // Handle add-writer operation (workshop pattern: indexer: true)
+          if (value && value.add) {
+            console.log(`[USERDB] Adding writer: ${value.add.slice(0, 16)}...`)
+            await base.addWriter(Buffer.from(value.add, 'hex'), { indexer: true })
+            continue
+          }
+
+          if (value === null || value === undefined) {
+            continue
+          }
+
+          let op = value
+          if (typeof value === 'string') {
+            try {
+              op = JSON.parse(value)
+            } catch {
+              console.warn('Failed to parse operation:', value)
+              continue
+            }
+          }
+
+          await this._applyOperation(op, view)
+        }
+      },
+      close: async (view) => {
+        await view.close()
+      }
+    })
+    
+    await this.autobase.ready()
+    await this.view.ready()
+    
+    console.log(`[USERDB] Rejoined autobase:`)
+    console.log(`  writable: ${this.autobase.writable}`)
+    console.log(`  isIndexer: ${this.autobase.isIndexer}`)
+    
+    // Try to register again
+    await this._registerThisDevice()
   }
 
   /**
