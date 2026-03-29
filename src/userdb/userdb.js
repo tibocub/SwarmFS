@@ -147,17 +147,31 @@ export class UserDatabase extends ReadyResource {
     this.store = new Corestore(this.storagePath)
     await this.store.ready()
 
-    // Derive bootstrap key from user identity
-    // All devices with same mnemonic will derive the same key
-    // This ensures they all join the SAME autobase
-    const bootstrapKey = this.identity.deriveUserSwarmTopic()
-    console.log(`[USERDB] Bootstrap key: ${bootstrapKey.toString('hex').slice(0, 16)}...`)
+    // Bootstrap key strategy:
+    // 1. Check local storage for existing key (from previous session on this device)
+    // 2. If no local key, create new autobase (first device ever)
+    // 3. The key is shared via network discovery topic for other devices
+    const keyPath = path.join(this.storagePath, 'autobase-key')
+    let bootstrapKey = null
+    let isNewAutobase = true
+    
+    try {
+      if (fs.existsSync(keyPath)) {
+        const keyData = fs.readFileSync(keyPath, 'utf8').trim()
+        if (keyData.length === 64) {
+          bootstrapKey = Buffer.from(keyData, 'hex')
+          isNewAutobase = false
+          console.log(`[USERDB] Rejoining autobase: ${keyData.slice(0, 16)}...`)
+        }
+      }
+    } catch {
+      // Ignore - will create new autobase
+    }
 
-    // Create Autobase with shared bootstrap key
-    // optimistic=true allows appending before being a writer
+    // Create Autobase (matching hyperdb-autobase-workshop pattern)
+    // bootstrap=null creates a new autobase (first device) -> becomes indexer
+    // bootstrap=key joins existing autobase -> needs to be added as writer by indexer
     this.autobase = new Autobase(this.store, bootstrapKey, {
-      autostart: true,
-      optimistic: true,
       valueEncoding: 'json',
       open: (store) => {
         const viewCore = store.get('view')
@@ -170,14 +184,11 @@ export class UserDatabase extends ReadyResource {
         for (const node of nodes) {
           const value = node.value
 
-          // Handle add-writer operation (pattern from autobase examples)
+          // Handle add-writer operation (workshop pattern: indexer: true)
           if (value && value.add) {
             console.log(`[USERDB] Adding writer: ${value.add.slice(0, 16)}...`)
-            await base.addWriter(Buffer.from(value.add, 'hex'))
-            // In optimistic mode, acknowledge the writer
-            if (base.ackWriter) {
-              await base.ackWriter(node.from.key)
-            }
+            // { indexer: true } allows the new writer to also become an indexer
+            await base.addWriter(Buffer.from(value.add, 'hex'), { indexer: true })
             continue
           }
 
@@ -212,6 +223,7 @@ export class UserDatabase extends ReadyResource {
     console.log(`  isIndexer: ${this.autobase.isIndexer}`)
     console.log(`  length: ${this.autobase.length}`)
     console.log(`  key: ${this.autobase.key?.toString('hex').slice(0, 16)}...`)
+    console.log(`  isNew: ${isNewAutobase}`)
 
     // Save the autobase key for future sessions
     if (this.autobase.key) {
@@ -284,7 +296,9 @@ export class UserDatabase extends ReadyResource {
 
   /**
    * Register this device in the database
-   * This also adds the device as a writer to enable multi-writer sync
+   * Following hyperdb-autobase-workshop pattern:
+   * - If this is the first device (isIndexer), add self and register
+   * - If joining existing autobase, wait to be added by indexer
    */
   async _registerThisDevice() {
     const deviceId = this._hashKey(this.identity.deviceKeyPair.publicKey)
@@ -297,10 +311,20 @@ export class UserDatabase extends ReadyResource {
       return // Already registered
     }
 
-    // In optimistic mode, we can append even when not a writer
-    // Add ourselves as a writer
-    console.log(`[USERDB] Appending add-writer operation`)
-    await this.autobase.append({ add: this.identity.deviceKeyPair.publicKey.toString('hex') }, { optimistic: true })
+    // Check if we are an indexer (can write)
+    if (!this.autobase.writable) {
+      console.log(`[USERDB] Not writable yet (isIndexer: ${this.autobase.isIndexer})`)
+      console.log('[USERDB] Waiting to be added as writer by existing indexer...')
+      console.log('[USERDB] Run this command on an existing device:')
+      console.log(`  swarmfs add-writer ${this.identity.deviceKeyPair.publicKey.toString('hex')}`)
+      return
+    }
+
+    // We are an indexer, add ourselves and register
+    console.log(`[USERDB] We are an indexer, registering device...`)
+    
+    // First add self as writer (so the operation is recorded)
+    await this.autobase.append({ add: this.identity.deviceKeyPair.publicKey.toString('hex') })
 
     // Then register the device metadata
     const op = JSON.stringify({
@@ -313,7 +337,7 @@ export class UserDatabase extends ReadyResource {
       addedAt: Date.now()
     })
     console.log(`[USERDB] Appending register-device operation`)
-    await this.autobase.append(op, { optimistic: true })
+    await this.autobase.append(op)
     console.log(`[USERDB] Device registered`)
   }
 

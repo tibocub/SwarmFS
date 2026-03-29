@@ -171,8 +171,8 @@ export class SwarmNetwork extends EventEmitter {
       
       if (isUserTopic && this.userDatabase) {
         debug(`[NETWORK]    Setting up replication for user topic`);
-        // Replicate the user database's corestore
-        this.userDatabase.store.replicate(conn, { keepAlive: true });
+        // Use autobase.replicate() for proper Autobase replication (workshop pattern)
+        this.userDatabase.autobase.replicate(conn);
       }
 
       if (!this.peerConnections.has(peerId)) {
