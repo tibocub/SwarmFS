@@ -350,27 +350,32 @@ export class SwarmNetwork extends EventEmitter {
 
   /**
    * Join the user topic for database replication
-   * Uses the private topic derived from mnemonic (via identity.deriveUserSwarmTopic())
+   * Uses the autobase key as the swarm topic for discovery
    * @param {Object} identity - IdentityManager instance
    * @param {Object} userDatabase - UserDatabase instance to replicate
    */
   async joinUserTopic(identity, userDatabase) {
-    // Get the private topic key derived from mnemonic
-    const topicKey = identity.deriveUserSwarmTopic();
-    const topicKeyHex = topicKey.toString('hex');
+    // Use the autobase key as the swarm topic
+    // This ensures all devices join the same discovery topic
+    const autobaseKey = userDatabase.autobaseKey;
+    if (!autobaseKey) {
+      throw new Error('UserDatabase must be ready before joining network');
+    }
+    
+    const topicKeyHex = autobaseKey.toString('hex');
 
-    debug(`[NETWORK] Joining user swarm topic: ${topicKeyHex.substring(0, 16)}...`);
+    debug(`[NETWORK] Joining user swarm topic (autobase key): ${topicKeyHex.substring(0, 16)}...`);
 
     this.userDatabase = userDatabase;
     this.identity = identity;
 
     // Join the topic with a special name
-    await this.joinTopic('user-swarm', topicKey);
+    await this.joinTopic('user-swarm', autobaseKey);
 
     this.userTopic = topicKeyHex;
     this.emit('user:topic:joined', topicKeyHex);
 
-    return topicKey;
+    return autobaseKey;
   }
 
   /**

@@ -128,6 +128,10 @@ export class UserDatabase extends ReadyResource {
     return this.autobase.view
   }
 
+  get autobaseKey() {
+    return this.autobase?.key
+  }
+
   get key() {
     return this.autobase?.key
   }
@@ -147,11 +151,13 @@ export class UserDatabase extends ReadyResource {
     // All devices with same mnemonic will derive the same key
     // This ensures they all join the SAME autobase
     const bootstrapKey = this.identity.deriveUserSwarmTopic()
+    console.log(`[USERDB] Bootstrap key: ${bootstrapKey.toString('hex').slice(0, 16)}...`)
 
     // Create Autobase with shared bootstrap key
-    // autostart: true automatically starts the autobase (enables writing)
+    // optimistic=true allows appending before being a writer
     this.autobase = new Autobase(this.store, bootstrapKey, {
       autostart: true,
+      optimistic: true,
       valueEncoding: 'json',
       open: (store) => {
         const viewCore = store.get('view')
@@ -159,13 +165,19 @@ export class UserDatabase extends ReadyResource {
       },
       apply: async (nodes, view, base) => {
         if (!view.opened) await view.ready()
+        console.log(`[USERDB] Apply ${nodes.length} nodes`)
 
         for (const node of nodes) {
           const value = node.value
 
           // Handle add-writer operation (pattern from autobase examples)
           if (value && value.add) {
+            console.log(`[USERDB] Adding writer: ${value.add.slice(0, 16)}...`)
             await base.addWriter(Buffer.from(value.add, 'hex'))
+            // In optimistic mode, acknowledge the writer
+            if (base.ackWriter) {
+              await base.ackWriter(node.from.key)
+            }
             continue
           }
 
@@ -276,27 +288,19 @@ export class UserDatabase extends ReadyResource {
    */
   async _registerThisDevice() {
     const deviceId = this._hashKey(this.identity.deviceKeyPair.publicKey)
+    console.log(`[USERDB] Registering device: ${deviceId}`)
 
     // Check if already registered in the view
     const existing = await this.view.getDevice(deviceId)
     if (existing) {
+      console.log(`[USERDB] Device already registered`)
       return // Already registered
     }
 
-    // Check if we can write
-    if (!this.autobase.writable) {
-      // We're not a writer yet - this happens when joining an existing autobase
-      // We need to wait for an indexer to add us as a writer
-      // For now, just register locally and wait for sync
-      console.log('Note: Not a writer yet. Waiting to be added by existing device...')
-      console.log('Run this command on an existing device to add this one:')
-      console.log(`  swarmfs add-writer ${this.identity.deviceKeyPair.publicKey.toString('hex')}`)
-      return
-    }
-
-    // We're a writer, add ourselves and register
-    // Use 'add' property for autobase pattern
-    await this.autobase.append({ add: this.identity.deviceKeyPair.publicKey.toString('hex') })
+    // In optimistic mode, we can append even when not a writer
+    // Add ourselves as a writer
+    console.log(`[USERDB] Appending add-writer operation`)
+    await this.autobase.append({ add: this.identity.deviceKeyPair.publicKey.toString('hex') }, { optimistic: true })
 
     // Then register the device metadata
     const op = JSON.stringify({
@@ -308,7 +312,9 @@ export class UserDatabase extends ReadyResource {
       proof: this.identity.deviceProof.toString('hex'),
       addedAt: Date.now()
     })
-    await this.autobase.append(op)
+    console.log(`[USERDB] Appending register-device operation`)
+    await this.autobase.append(op, { optimistic: true })
+    console.log(`[USERDB] Device registered`)
   }
 
   /**
