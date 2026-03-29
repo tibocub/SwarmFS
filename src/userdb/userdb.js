@@ -8,6 +8,7 @@
  */
 
 import path from 'path'
+import fs from 'fs'
 import Corestore from 'corestore'
 import HyperDB from 'hyperdb'
 import Autobase from 'autobase'
@@ -142,15 +143,25 @@ export class UserDatabase extends ReadyResource {
     this.store = new Corestore(this.storagePath)
     await this.store.ready()
 
-    // Derive the autobase bootstrap key from the user identity
-    // ALL devices with the same user identity MUST use the same bootstrap key
-    // This is the system core key that makes them part of the same autobase
-    const bootstrapKey = this.identity.deriveUserSwarmTopic()
+    // Check if we already have an autobase key stored (from previous session)
+    const keyPath = path.join(this.storagePath, 'autobase-key')
+    let bootstrapKey = null
+    
+    try {
+      if (fs.existsSync(keyPath)) {
+        const keyData = fs.readFileSync(keyPath, 'utf8')
+        bootstrapKey = Buffer.from(keyData, 'hex')
+      }
+    } catch {
+      // Ignore - will create new autobase
+    }
 
-    // Create Autobase with shared bootstrap key
-    // Each device writes to its own hypercore (managed by autobase internally)
-    // but they all share the same system core via the bootstrap key
+    // Create Autobase
+    // bootstrap=null creates a new autobase, bootstrap=key joins existing
+    // autostart: true automatically starts the autobase (enables writing)
     this.autobase = new Autobase(this.store, bootstrapKey, {
+      autostart: true,
+      valueEncoding: 'json',
       open: (store) => {
         const viewCore = store.get('view')
         return new Db(viewCore, { extension: false })
@@ -161,25 +172,16 @@ export class UserDatabase extends ReadyResource {
         for (const node of nodes) {
           const value = node.value
 
-          // Handle add-writer operation
-          if (value && value.addWriter) {
-            let writerKey = value.addWriter
-            // Convert hex string to buffer if needed
-            if (typeof writerKey === 'string') {
-              writerKey = Buffer.from(writerKey, 'hex')
-            }
-            if (Buffer.isBuffer(writerKey)) {
-              await base.addWriter(writerKey, { indexer: true })
-            }
+          // Handle add-writer operation (pattern from autobase examples)
+          if (value && value.add) {
+            await base.addWriter(Buffer.from(value.add, 'hex'))
             continue
           }
 
-          // Skip null values (used for initialization)
           if (value === null || value === undefined) {
             continue
           }
 
-          // Parse JSON string operations
           let op = value
           if (typeof value === 'string') {
             try {
@@ -190,7 +192,6 @@ export class UserDatabase extends ReadyResource {
             }
           }
 
-          // Apply data operations
           await this._applyOperation(op, view)
         }
       },
@@ -202,12 +203,17 @@ export class UserDatabase extends ReadyResource {
     await this.autobase.ready()
     await this.view.ready()
 
-    // Indexer initialization hack (from workshop solution)
-    // Ensures the db key does not update after the first entry
-    if (this.autobase.isIndexer) {
-      if (!this.view.db.core.length) {
-        await this.autobase.append(null)
-      }
+    // Debug: log autobase state
+    console.log(`[USERDB] Autobase ready:`)
+    console.log(`  writable: ${this.autobase.writable}`)
+    console.log(`  isIndexer: ${this.autobase.isIndexer}`)
+    console.log(`  length: ${this.autobase.length}`)
+    console.log(`  key: ${this.autobase.key?.toString('hex').slice(0, 16)}...`)
+
+    // Save the autobase key for future sessions
+    if (this.autobase.key) {
+      const keyPath = path.join(this.storagePath, 'autobase-key')
+      fs.writeFileSync(keyPath, this.autobase.key.toString('hex'))
     }
 
     // Ensure the view core is downloaded
@@ -217,7 +223,7 @@ export class UserDatabase extends ReadyResource {
     this._deviceKey = this.store.get({ keyPair: this.identity.deviceKeyPair })
     await this._deviceKey.ready()
 
-    // Register this device
+    // Register this device (handles writable check internally)
     await this._registerThisDevice()
   }
 
@@ -280,21 +286,26 @@ export class UserDatabase extends ReadyResource {
   async _registerThisDevice() {
     const deviceId = this._hashKey(this.identity.deviceKeyPair.publicKey)
 
-    // Check if already registered
+    // Check if already registered in the view
     const existing = await this.view.getDevice(deviceId)
     if (existing) {
-      // Already registered, but ensure we're a writer
-      // This is safe to call even if already a writer
-      if (this.autobase.isIndexer) {
-        // We're the indexer, add ourselves as a writer if not already
-        await this.autobase.append({ addWriter: this.identity.deviceKeyPair.publicKey })
-      }
+      return // Already registered
+    }
+
+    // Check if we can write
+    if (!this.autobase.writable) {
+      // We're not a writer yet - this happens when joining an existing autobase
+      // We need to wait for an indexer to add us as a writer
+      // For now, just register locally and wait for sync
+      console.log('Note: Not a writer yet. Waiting to be added by existing device...')
+      console.log('Run this command on an existing device to add this one:')
+      console.log(`  swarmfs add-writer ${this.identity.deviceKeyPair.publicKey.toString('hex')}`)
       return
     }
 
-    // First, add this device as a writer to the autobase
-    // This enables multi-writer replication
-    await this.autobase.append({ addWriter: this.identity.deviceKeyPair.publicKey })
+    // We're a writer, add ourselves and register
+    // Use 'add' property for autobase pattern
+    await this.autobase.append({ add: this.identity.deviceKeyPair.publicKey.toString('hex') })
 
     // Then register the device metadata
     const op = JSON.stringify({
@@ -414,8 +425,9 @@ export class UserDatabase extends ReadyResource {
    */
   async addWriter(publicKey) {
     if (!this.opened) await this.ready()
-    // addWriter needs to pass a buffer directly, not JSON
-    await this.autobase.append({ addWriter: publicKey })
+    // Use 'add' property for autobase pattern
+    const keyHex = Buffer.isBuffer(publicKey) ? publicKey.toString('hex') : publicKey
+    await this.autobase.append({ add: keyHex })
   }
 
   /**

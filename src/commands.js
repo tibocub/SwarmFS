@@ -1686,6 +1686,39 @@ export async function whoamiCommand(swarmfs) {
 }
 
 // ============================================================================
+// DEVICE MANAGEMENT COMMANDS
+// ============================================================================
+
+/**
+ * Add a writer to the autobase
+ * This authorizes a new device to write to the shared database
+ * @param {Object} swarmfs - SwarmFS instance
+ * @param {string} writerKeyHex - Public key of the new writer (hex string)
+ */
+export async function addWriterCommand(swarmfs, writerKeyHex) {
+  if (!swarmfs.userdb) {
+    console.log('Not logged in. Run "login" first.');
+    return;
+  }
+
+  if (!writerKeyHex) {
+    console.log('Usage: add-writer <writer-public-key>');
+    console.log('The new device will show its public key when it tries to login.');
+    return;
+  }
+
+  const writerKey = Buffer.from(writerKeyHex, 'hex');
+  
+  try {
+    await swarmfs.userdb.addWriter(writerKey);
+    console.log(`✓ Added writer: ${writerKeyHex.slice(0, 16)}...`);
+    console.log('  The new device can now write to the database.');
+  } catch (err) {
+    console.log(`✗ Failed to add writer: ${err.message}`);
+  }
+}
+
+// ============================================================================
 // COMMAND REGISTRY
 // ============================================================================
 
@@ -1732,7 +1765,10 @@ export const commands = {
   'vdir.repair': vdirRepairCommand,
 
   // Top-level share
-  share: shareCommand
+  share: shareCommand,
+
+  // Device management
+  'add-writer': addWriterCommand
 };
 
 // Helper to get command by name (handles aliases)
