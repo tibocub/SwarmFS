@@ -261,6 +261,14 @@ export class UserDatabase extends ReadyResource {
 
     // Register this device (handles writable check internally)
     await this._registerThisDevice()
+
+    // Keep the view up-to-date in shell mode so replicated data is applied.
+    // Autobase only processes incoming data during update() calls.
+    if (process.env.SWARMFS_REPL === '1' && !this._autobaseUpdateInterval) {
+      this._autobaseUpdateInterval = setInterval(() => {
+        this.autobase.update().catch(() => {})
+      }, 1000)
+    }
     
     // Resolve the pending promise if we were waiting
     if (this._resolveAutobaseReady) {
@@ -289,6 +297,10 @@ export class UserDatabase extends ReadyResource {
   }
 
   async _close() {
+    if (this._autobaseUpdateInterval) {
+      clearInterval(this._autobaseUpdateInterval)
+      this._autobaseUpdateInterval = null
+    }
     if (this.autobase) {
       await this.autobase.close()
     }
