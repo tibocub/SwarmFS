@@ -370,6 +370,15 @@ export class SwarmNetwork extends EventEmitter {
 
     this.userTopic = discoveryTopic.toString('hex');
     this.emit('user:topic:joined', this.userTopic);
+    
+    // ALSO join autobase.discoveryKey for actual data replication
+    // This is critical for Autobase to replicate data between writers
+    const autobaseDiscoveryKey = userDatabase.autobase.discoveryKey;
+    if (autobaseDiscoveryKey) {
+      debug(`[NETWORK] Joining autobase discovery key: ${autobaseDiscoveryKey.toString('hex').substring(0, 16)}...`);
+      await this.joinTopic('autobase-replication', autobaseDiscoveryKey);
+      this.autobaseTopic = autobaseDiscoveryKey.toString('hex');
+    }
 
     return discoveryTopic;
   }
