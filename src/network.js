@@ -166,14 +166,23 @@ export class SwarmNetwork extends EventEmitter {
         debug('[NETWORK]    No joined topics yet; connection will not be attributed to a topic');
       }
 
-      // Check if this is a user topic connection for replication
+      // Check if this is a user topic connection for key exchange
       const isUserTopic = this.userTopic && attributedTopicKeys.some(t => t.toString('hex') === this.userTopic);
       
+      // Check if this is an autobase replication connection
+      const isAutobaseTopic = this.autobaseTopic && attributedTopicKeys.some(t => t.toString('hex') === this.autobaseTopic);
+      
       if (isUserTopic && this.userDatabase) {
-        debug(`[NETWORK]    Setting up replication for user topic`);
+        debug(`[NETWORK]    Setting up key exchange for user topic`);
         // Use workshop pattern: key exchange + store.replicate
         const isIndexer = this.userDatabase.autobase.isIndexer;
         this._handleUserTopicConnection(conn, peerId, isIndexer);
+      }
+      
+      if (isAutobaseTopic && this.userDatabase) {
+        debug(`[NETWORK]    Setting up replication for autobase topic`);
+        // Just set up store replication for data sync
+        this.userDatabase.store.replicate(conn);
       }
 
       if (!this.peerConnections.has(peerId)) {
@@ -205,9 +214,9 @@ export class SwarmNetwork extends EventEmitter {
         this.emit('peer:connect', { conn, peerId, topicKey: null });
       }
 
-      // Only set up data handlers for non-user-topic connections
-      // User topic replication is handled by corestore
-      if (!isUserTopic) {
+      // Only set up data handlers for non-replication connections
+      // User topic and autobase topic replication is handled by corestore
+      if (!isUserTopic && !isAutobaseTopic) {
         this.setupConnectionHandlers(conn, peerId);
       }
     });
@@ -371,9 +380,9 @@ export class SwarmNetwork extends EventEmitter {
     this.userTopic = discoveryTopic.toString('hex');
     this.emit('user:topic:joined', this.userTopic);
     
-    // ALSO join autobase.discoveryKey for actual data replication
-    // This is critical for Autobase to replicate data between writers
-    const autobaseDiscoveryKey = userDatabase.autobase.discoveryKey;
+    // Only join autobase.discoveryKey if autobase already exists
+    // New devices will join this topic after receiving the key
+    const autobaseDiscoveryKey = userDatabase.autobase?.discoveryKey;
     if (autobaseDiscoveryKey) {
       debug(`[NETWORK] Joining autobase discovery key: ${autobaseDiscoveryKey.toString('hex').substring(0, 16)}...`);
       await this.joinTopic('autobase-replication', autobaseDiscoveryKey);

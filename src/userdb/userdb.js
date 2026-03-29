@@ -149,8 +149,7 @@ export class UserDatabase extends ReadyResource {
 
     // Bootstrap key strategy:
     // 1. Check local storage for existing key (from previous session on this device)
-    // 2. If no local key, create new autobase (first device on this machine)
-    // 3. The key is shared via network discovery topic for other devices
+    // 2. If no local key, wait for key from network (handled by network layer)
     const keyPath = path.join(this.storagePath, 'autobase-key')
     let bootstrapKey = null
     
@@ -166,9 +165,34 @@ export class UserDatabase extends ReadyResource {
       // Ignore - will create new autobase
     }
 
-    // Create Autobase (matching hyperdb-autobase-workshop pattern)
-    // bootstrap=null creates a new autobase (first device) -> becomes indexer
-    // bootstrap=key joins existing autobase -> needs to be added as writer by indexer
+    // If no saved key, we need to wait for one from the network
+    // The network layer will call createAutobaseWithKey() when it receives a key
+    // For non-REPL mode, create immediately
+    if (!bootstrapKey) {
+      if (process.env.SWARMFS_REPL === '1') {
+        console.log(`[USERDB] No saved autobase key, will wait for one from network...`)
+        this._pendingAutobase = true
+        this._autobaseReady = new Promise((resolve) => {
+          this._resolveAutobaseReady = resolve
+        })
+        return
+      } else {
+        // Non-REPL mode: create new autobase immediately
+        console.log(`[USERDB] No saved autobase key, creating new autobase...`)
+        await this._createAutobase(null)
+        return
+      }
+    }
+
+    // Create Autobase with saved key
+    await this._createAutobase(bootstrapKey)
+  }
+
+  /**
+   * Create autobase with a given bootstrap key
+   * Called by _open() when we have a saved key, or by network layer when receiving key
+   */
+  async _createAutobase(bootstrapKey) {
     this.autobase = new Autobase(this.store, bootstrapKey, {
       valueEncoding: 'json',
       open: (store) => {
@@ -237,6 +261,31 @@ export class UserDatabase extends ReadyResource {
 
     // Register this device (handles writable check internally)
     await this._registerThisDevice()
+    
+    // Resolve the pending promise if we were waiting
+    if (this._resolveAutobaseReady) {
+      this._resolveAutobaseReady()
+    }
+  }
+
+  /**
+   * Called by network layer when autobase key is received from indexer
+   * Only used when this is a new device with no saved key
+   */
+  async createWithReceivedKey(bootstrapKey) {
+    if (this.autobase) {
+      console.log(`[USERDB] Autobase already created, ignoring received key`)
+      return
+    }
+    
+    console.log(`[USERDB] Creating autobase with received key: ${bootstrapKey.toString('hex').slice(0, 16)}...`)
+    
+    // Save the key for future sessions
+    const keyPath = path.join(this.storagePath, 'autobase-key')
+    fs.writeFileSync(keyPath, bootstrapKey.toString('hex'))
+    
+    // Create the autobase
+    await this._createAutobase(bootstrapKey)
   }
 
   async _close() {
