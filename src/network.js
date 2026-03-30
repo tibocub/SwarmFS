@@ -398,15 +398,31 @@ export class SwarmNetwork extends EventEmitter {
    */
   _handleUserTopicConnection(conn, peerId, isIndexer) {
     const autobase = this.userDatabase.autobase;
+
+    // IMPORTANT: Do not run corestore replication over the user-swarm connection.
+    // Mixing binary replication traffic with JSON key-exchange messages makes the
+    // JSON parsing unreliable (messages can be split/merged with replication bytes).
+    // Replication is handled on the separate autobase-replication topic.
     
-    // Set up corestore replication (workshop pattern)
-    this.userDatabase.store.replicate(conn);
-    
-    // Key exchange protocol
+    // Key exchange protocol (newline-delimited JSON)
+    let jsonBuffer = '';
     conn.on('data', (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        
+      jsonBuffer += data.toString('utf8');
+
+      let idx;
+      while ((idx = jsonBuffer.indexOf('\n')) !== -1) {
+        const line = jsonBuffer.slice(0, idx).trim();
+        jsonBuffer = jsonBuffer.slice(idx + 1);
+
+        if (!line) continue;
+
+        let msg;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
         if (msg && msg.type === 'autobase-key') {
           console.log(`[NETWORK] Received autobase-key (amIndexer=${isIndexer}, haveAutobase=${Boolean(autobase)})`);
         }
@@ -452,8 +468,6 @@ export class SwarmNetwork extends EventEmitter {
           console.log(`[NETWORK] Writer request: ${msg.key.slice(0, 16)}...`);
           this.emit('user:writer-request', { key: Buffer.from(msg.key, 'hex'), peerId });
         }
-      } catch {
-        // Not JSON, ignore (replication data)
       }
     });
     
@@ -463,7 +477,7 @@ export class SwarmNetwork extends EventEmitter {
         type: 'autobase-key', 
         key: autobase.key.toString('hex') 
       });
-      conn.write(keyMsg);
+      conn.write(keyMsg + '\n');
       console.log(`[NETWORK] Sent autobase key to peer`);
     }
   }
