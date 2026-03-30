@@ -30,11 +30,25 @@ export class SwarmNetwork extends EventEmitter {
     };
     
     // Initialize Hyperswarm
+    // We keep a dedicated swarm for user-swarm (key exchange) and autobase-replication
+    // to avoid ambiguous topic attribution and mixing handlers on the same connection.
+    // This mirrors the working test setup.
     debug('[NETWORK] Creating Hyperswarm instance...');
 
-    this.swarm = new Hyperswarm({
+    this.mainSwarm = new Hyperswarm({
       maxPeers: this.config.maxConnections
     });
+
+    this.userSwarm = new Hyperswarm({
+      maxPeers: this.config.maxConnections
+    });
+
+    this.autobaseSwarm = new Hyperswarm({
+      maxPeers: this.config.maxConnections
+    });
+
+    // Backwards compatibility: existing code may reference this.swarm
+    this.swarm = this.mainSwarm;
     
     // Track active topics and connections
     // topics: topicKeyHex -> { discovery, name, key, connections: Map<peerId, conn> }
@@ -67,8 +81,10 @@ export class SwarmNetwork extends EventEmitter {
     debug(`[NETWORK] Joining topic: ${topicName}`);
     debug(`[NETWORK] Topic key: ${topicKeyHex}`);
 
+    const swarm = this._getSwarmForTopic(topicName);
+
     // Join the swarm
-    const discovery = this.swarm.join(topicKey, {
+    const discovery = swarm.join(topicKey, {
       server: true,  // Accept connections
       client: true   // Make connections
     });
@@ -81,7 +97,8 @@ export class SwarmNetwork extends EventEmitter {
       discovery,
       name: topicName,
       key: topicKey,
-      connections: new Map()
+      connections: new Map(),
+      swarm
     });
 
     // Wait for topic to be fully announced
@@ -92,11 +109,11 @@ export class SwarmNetwork extends EventEmitter {
     const flushTimeoutMs = this.config.flushTimeoutMs;
     if (Number.isFinite(flushTimeoutMs) && flushTimeoutMs > 0) {
       await Promise.race([
-        this.swarm.flush(),
+        swarm.flush(),
         new Promise((resolve) => setTimeout(resolve, flushTimeoutMs))
       ]);
     } else {
-      await this.swarm.flush();
+      await swarm.flush();
     }
 
     this.emit('topic:joined', topicName, topicKeyHex);
@@ -143,27 +160,22 @@ export class SwarmNetwork extends EventEmitter {
    * Handle new peer connection
    */
   setupSwarmHandlers() {
-    this.swarm.on('connection', (conn, info) => {
+    const handler = (conn, info) => {
       const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
 
       conn.on('error', (err) => {
         console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
       });
 
-      // Hyperswarm v3: In client mode, peerInfo.topics is set.
-      // In server mode (incoming connections), peerInfo.topics can be empty.
-      // For our protocol, we still need to be able to broadcast per-topic requests
-      // to incoming peers, so we conservatively attribute server-mode connections
-      // to all currently joined topics.
-      const joinedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
-      const attributedTopicKeys = joinedTopicKeys.length > 0
-        ? joinedTopicKeys
-        : Array.from(this.topics.keys()).map((hex) => Buffer.from(hex, 'hex'));
+      // Only attribute connection to topics explicitly listed by Hyperswarm.
+      // For dedicated swarms (user/autobase) this is sufficient and avoids one
+      // physical connection being treated as multiple topics.
+      const attributedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
 
       debug(`\n[NETWORK] 🔗 Peer connected: ${peerId.substring(0, 16)}...`);
 
       if (attributedTopicKeys.length === 0) {
-        debug('[NETWORK]    No joined topics yet; connection will not be attributed to a topic');
+        debug('[NETWORK]    Connection has no attributed topics');
       }
 
       // Check if this is a user topic connection for key exchange
@@ -219,7 +231,17 @@ export class SwarmNetwork extends EventEmitter {
       if (!isUserTopic && !isAutobaseTopic) {
         this.setupConnectionHandlers(conn, peerId);
       }
-    });
+    };
+
+    this.mainSwarm.on('connection', handler);
+    this.userSwarm.on('connection', handler);
+    this.autobaseSwarm.on('connection', handler);
+  }
+
+  _getSwarmForTopic(topicName) {
+    if (topicName === 'user-swarm') return this.userSwarm;
+    if (topicName === 'autobase-replication') return this.autobaseSwarm;
+    return this.mainSwarm;
   }
 
   setupConnectionHandlers(conn, peerId) {
@@ -338,8 +360,10 @@ export class SwarmNetwork extends EventEmitter {
       this.peerConnections.delete(peerId);
     }
 
-    // Destroy swarm
-    await this.swarm.destroy();
+    // Destroy swarms
+    await this.mainSwarm.destroy();
+    await this.userSwarm.destroy();
+    await this.autobaseSwarm.destroy();
 
     this.topics.clear();
     this.peerConnections.clear();
