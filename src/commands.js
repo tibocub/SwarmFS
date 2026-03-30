@@ -1602,6 +1602,15 @@ export async function loginCommand(swarmfs, mnemonic = null, deviceName = null) 
     try {
       await swarmfs.network.joinUserTopic(identity, userdb);
       console.log(`User swarm topic joined - other devices can sync`);
+
+      swarmfs.network.on('user:autobase-key-mismatch', async ({ localKey, peerKey, peerId }) => {
+        console.log(`\n[NETWORK] ⚠️  Autobase key mismatch with peer ${peerId.slice(0, 16)}...`)
+        console.log(`[NETWORK]   local: ${localKey.toString('hex').slice(0, 16)}...`)
+        console.log(`[NETWORK]   peer:  ${peerKey.toString('hex').slice(0, 16)}...`)
+        console.log(`[NETWORK] This means your local device has a different autobase bootstrap key saved.`)
+        console.log(`[NETWORK] To join the correct autobase, delete the saved key file and restart shell:`)
+        console.log(`  ${path.join(userdbPath, 'autobase-key')}`)
+      })
       
       // Handle writer requests
       swarmfs.network.on('user:writer-request', async ({ key, peerId }) => {

@@ -147,7 +147,8 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
 - [x] Improve TUI UX (don't force users to use the REPL anymore, provide keys-based controls, basic mouse support and tabs to switch views between browse, downloads, topics, local files, etc)
 - [In progress] Improve browsing UX (search, filters, danger warning in public topics)
 - [ ] Better sharing controls (per-topic files allowlist/denylist and/or per-file topics allowlist/denylist, share entire virtual directories)
-- [ ] Minimal ID system (required to develop other features such as multi-user directories, actually secure private topics, etc)
+- [x] Minimal ID system (required to develop other features such as multi-user directories, actually secure private topics, etc)
+- [ ] Mnemonic login (and replicate user data from other devices)
 
 ### Planned
 
@@ -181,10 +182,9 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
     - Simplifies streaming architecture.
     - Ensures constant memory usage regardless of file size.
     - Predictable memory footprint for large files (1TB+).
-- [x] **True streaming with Protomux**
+- [x] **True chunk streaming with Protomux**
     - Zero-copy serving: read from disk → send immediately (no buffering).
     - Direct-to-disk receiving: write each chunk as it arrives.
-    - Memory usage: ~26MB constant (8MB serving + 8MB receiving + overhead).
 - [x] **Batch transfers / grouped chunks**
     - Allow requesting/serving a contiguous range of chunks in one response.
     - Receiver verifies and writes a group as a unit.

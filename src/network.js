@@ -175,7 +175,7 @@ export class SwarmNetwork extends EventEmitter {
       if (isUserTopic && this.userDatabase) {
         debug(`[NETWORK]    Setting up key exchange for user topic`);
         // Use workshop pattern: key exchange + store.replicate
-        const isIndexer = this.userDatabase.autobase.isIndexer;
+        const isIndexer = Boolean(this.userDatabase.autobase && this.userDatabase.autobase.isIndexer);
         this._handleUserTopicConnection(conn, peerId, isIndexer);
       }
       
@@ -407,18 +407,44 @@ export class SwarmNetwork extends EventEmitter {
       try {
         const msg = JSON.parse(data.toString());
         
-        // New device receives autobase key from indexer
-        if (msg.type === 'autobase-key' && !isIndexer) {
-          console.log(`[NETWORK] Received autobase key: ${msg.key.slice(0, 16)}...`);
-          this.emit('user:autobase-key-received', { key: Buffer.from(msg.key, 'hex'), peerId });
-          
-          // Send writer request immediately
-          const writerMsg = JSON.stringify({ 
-            type: 'writer-key', 
-            key: autobase.local.key.toString('hex') 
-          });
-          conn.write(writerMsg);
-          console.log(`[NETWORK] Sent writer request: ${autobase.local.key.toString('hex').slice(0, 16)}...`);
+        if (msg && msg.type === 'autobase-key') {
+          console.log(`[NETWORK] Received autobase-key (amIndexer=${isIndexer}, haveAutobase=${Boolean(autobase)})`);
+        }
+
+        // Receive autobase key from peer (indexer broadcasts it)
+        if (msg.type === 'autobase-key' && msg.key) {
+          const receivedKey = Buffer.from(msg.key, 'hex');
+          const receivedKeyHex = msg.key;
+
+          // If we already have an autobase, detect mismatch (stale local key file / split brain)
+          if (autobase && autobase.key) {
+            const currentKeyHex = autobase.key.toString('hex');
+            if (currentKeyHex !== receivedKeyHex) {
+              console.log(`[NETWORK] ⚠️  Autobase key mismatch. local=${currentKeyHex.slice(0, 16)}... peer=${receivedKeyHex.slice(0, 16)}...`);
+              this.emit('user:autobase-key-mismatch', {
+                localKey: Buffer.from(currentKeyHex, 'hex'),
+                peerKey: receivedKey,
+                peerId
+              });
+            }
+          }
+
+          // New device (non-indexer) receives autobase key from indexer
+          if (!isIndexer) {
+            console.log(`[NETWORK] Received autobase key: ${receivedKeyHex.slice(0, 16)}...`);
+            this.emit('user:autobase-key-received', { key: receivedKey, peerId });
+
+            // Only send writer request if we already have a local autobase keypair.
+            // If we are still pending (no autobase yet), commands.js will create it first.
+            if (autobase && autobase.local && autobase.local.key) {
+              const writerKeyHex = autobase.local.key.toString('hex');
+              const writerMsg = JSON.stringify({ type: 'writer-key', key: writerKeyHex });
+              conn.write(writerMsg);
+              console.log(`[NETWORK] Sent writer request: ${writerKeyHex.slice(0, 16)}...`);
+            } else {
+              console.log('[NETWORK] Cannot send writer request yet (no local autobase). Waiting for userdb to create it.');
+            }
+          }
         }
         
         // Indexer receives writer key request from new device
@@ -431,8 +457,8 @@ export class SwarmNetwork extends EventEmitter {
       }
     });
     
-    // If we're an indexer, send our autobase key
-    if (isIndexer) {
+    // If we're an indexer and have an autobase, send our autobase key
+    if (isIndexer && autobase && autobase.key) {
       const keyMsg = JSON.stringify({ 
         type: 'autobase-key', 
         key: autobase.key.toString('hex') 
