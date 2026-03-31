@@ -542,7 +542,12 @@ export class SwarmNetwork extends EventEmitter {
     
     const crypto = await import('hypercore-crypto')
     const namespace = Buffer.from('swarmfs-user-discovery-v1')
-    const discoveryTopic = crypto.hash(Buffer.concat([namespace, Buffer.from(mnemonic)]))
+    const combined = Buffer.concat([namespace, Buffer.from(mnemonic)])
+    const discoveryTopic = crypto.hash(combined)
+    
+    console.log(`[NETWORK] DEBUG namespace hex: ${namespace.toString('hex')}`);
+    console.log(`[NETWORK] DEBUG combined length: ${combined.length}`);
+    console.log(`[NETWORK] DEBUG discovery topic hex: ${discoveryTopic.toString('hex')}`);
     
     console.log(`[NETWORK] Joining discovery topic: ${discoveryTopic.toString('hex').substring(0, 16)}...`);
     
