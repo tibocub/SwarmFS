@@ -85,24 +85,24 @@ async function autoLogin() {
         swarmfs.network = new SwarmNetwork(loadConfig().network || {});
       }
       
+      // Non-indexer: set up listener BEFORE joining topic (event may fire during join)
+      if (!isIndexer) {
+        swarmfs.network.on('autobase-key-received', async ({ key, peerId }) => {
+          console.log(`\n[NETWORK] Received autobase key from indexer`);
+          try {
+            await userdb.setAutobaseKey(key);
+            console.log(`[NETWORK] Autobase created with received key`);
+            console.log(`[NETWORK] Waiting for indexer to add us as writer...`);
+          } catch (err) {
+            console.log(`[NETWORK] Failed to create autobase: ${err.message}`);
+          }
+        });
+      }
+      
       // Join user topic for replication
       try {
         const topicKey = await swarmfs.network.joinUserTopic(identity, userdb);
         console.log(`  User swarm: ${topicKey.toString('hex').slice(0, 16)}...`);
-        
-        // Non-indexer: listen for autobase key from indexer
-        if (!isIndexer) {
-          swarmfs.network.on('autobase-key-received', async ({ key, peerId }) => {
-            console.log(`\n[NETWORK] Received autobase key from indexer`);
-            try {
-              await userdb.setAutobaseKey(key);
-              console.log(`[NETWORK] Autobase created with received key`);
-              console.log(`[NETWORK] Waiting for indexer to add us as writer...`);
-            } catch (err) {
-              console.log(`[NETWORK] Failed to create autobase: ${err.message}`);
-            }
-          });
-        }
       } catch (err) {
         console.log(`  User swarm: failed (${err.message})`);
       }
