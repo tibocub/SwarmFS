@@ -480,30 +480,36 @@ export class SwarmNetwork extends EventEmitter {
   }
 
   /**
-   * Join the autobase topic for database replication
-   * Workshop pattern: join autobase.discoveryKey - all devices with same bootstrap key connect here
-   * @param {Object} identity - IdentityManager instance (unused, kept for API compat)
-   * @param {Object} userDatabase - UserDatabase instance to replicate
+   * Join the user discovery topic for key exchange
+   * Uses a topic derived from the user's mnemonic (same for all devices)
+   * NOT the autobase.discoveryKey (which is unknown to non-indexers initially)
+   * @param {Object} identity - IdentityManager instance
+   * @param {Object} userDatabase - UserDatabase instance
    */
   async joinUserTopic(identity, userDatabase) {
     this.userDatabase = userDatabase;
     this.identity = identity;
 
-    // Workshop pattern: join autobase.discoveryKey
-    // All devices with same deterministic bootstrap key connect here
-    const autobaseDiscoveryKey = userDatabase.autobase?.discoveryKey;
-    if (!autobaseDiscoveryKey) {
-      debug('[NETWORK] No autobase yet, cannot join topic');
+    // Derive discovery topic from mnemonic (same for all devices with same mnemonic)
+    const mnemonic = identity.mnemonic || identity.getUserIdentity?.()
+    if (!mnemonic) {
+      debug('[NETWORK] No mnemonic, cannot derive discovery topic');
       return null;
     }
-
-    this.autobaseTopic = autobaseDiscoveryKey.toString('hex');
-    debug(`[NETWORK] Joining autobase discovery key: ${autobaseDiscoveryKey.toString('hex').substring(0, 16)}...`);
     
-    await this.joinTopic('autobase-replication', autobaseDiscoveryKey);
+    const crypto = await import('hypercore-crypto')
+    const namespace = Buffer.from('swarmfs-user-discovery-v1')
+    const discoveryTopic = crypto.hash(Buffer.concat([namespace, Buffer.from(mnemonic)]))
+    
+    debug(`[NETWORK] Joining discovery topic: ${discoveryTopic.toString('hex').substring(0, 16)}...`);
+    
+    await this.joinTopic('user-discovery', discoveryTopic);
+    this.autobaseTopic = discoveryTopic.toString('hex');
     this.emit('user:topic:joined', this.autobaseTopic);
 
-    return autobaseDiscoveryKey;
+    debug('[NETWORK] Joined discovery topic - key exchange will happen here');
+    
+    return discoveryTopic;
   }
   
   /**
