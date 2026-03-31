@@ -7,11 +7,9 @@ import Hyperswarm from 'hyperswarm';
 import crypto from 'hypercore-crypto';
 import { EventEmitter } from 'events';
 
-const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true';
 const debug = (...args) => {
-  if (VERBOSE) {
-    console.log(...args);
-  }
+  const verbose = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true';
+  if (verbose) console.log(...args);
 };
 
 // Namespace for user topic derivation
@@ -241,7 +239,15 @@ export class SwarmNetwork extends EventEmitter {
       debug(`\n[NETWORK] 🔗 Peer connected (userSwarm): ${peerId.substring(0, 16)}...`);
 
       // Attribute this connection to the user-swarm topic explicitly
-      const topicKey = this.userTopic ? Buffer.from(this.userTopic, 'hex') : null;
+      let topicKey = this.userTopic ? Buffer.from(this.userTopic, 'hex') : null;
+      if (!topicKey) {
+        for (const [hex, topic] of this.topics) {
+          if (topic && topic.name === 'user-swarm') {
+            topicKey = Buffer.from(hex, 'hex');
+            break;
+          }
+        }
+      }
       if (topicKey) addConnToTopics(conn, peerId, [topicKey]);
 
       if (this.userDatabase) {
@@ -257,7 +263,15 @@ export class SwarmNetwork extends EventEmitter {
       debug(`\n[NETWORK] 🔗 Peer connected (autobaseSwarm): ${peerId.substring(0, 16)}...`);
 
       // Attribute this connection to the autobase-replication topic explicitly
-      const topicKey = this.autobaseTopic ? Buffer.from(this.autobaseTopic, 'hex') : null;
+      let topicKey = this.autobaseTopic ? Buffer.from(this.autobaseTopic, 'hex') : null;
+      if (!topicKey) {
+        for (const [hex, topic] of this.topics) {
+          if (topic && topic.name === 'autobase-replication') {
+            topicKey = Buffer.from(hex, 'hex');
+            break;
+          }
+        }
+      }
       if (topicKey) addConnToTopics(conn, peerId, [topicKey]);
 
       if (this.userDatabase) {
@@ -431,19 +445,21 @@ export class SwarmNetwork extends EventEmitter {
     this.userDatabase = userDatabase;
     this.identity = identity;
 
+    // Set this before joining to avoid races where connections arrive early.
+    this.userTopic = discoveryTopic.toString('hex');
+
     // Join the discovery topic for key exchange
     await this.joinTopic('user-swarm', discoveryTopic);
-
-    this.userTopic = discoveryTopic.toString('hex');
     this.emit('user:topic:joined', this.userTopic);
     
     // Only join autobase.discoveryKey if autobase already exists
     // New devices will join this topic after receiving the key
     const autobaseDiscoveryKey = userDatabase.autobase?.discoveryKey;
     if (autobaseDiscoveryKey) {
+      // Set this before joining to avoid races where connections arrive early.
+      this.autobaseTopic = autobaseDiscoveryKey.toString('hex');
       debug(`[NETWORK] Joining autobase discovery key: ${autobaseDiscoveryKey.toString('hex').substring(0, 16)}...`);
       await this.joinTopic('autobase-replication', autobaseDiscoveryKey);
-      this.autobaseTopic = autobaseDiscoveryKey.toString('hex');
     }
 
     return discoveryTopic;
