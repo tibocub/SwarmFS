@@ -204,9 +204,28 @@ export class SwarmNetwork extends EventEmitter {
       if (this.userDatabase) {
         this._handleDiscoveryProtocol(conn, peerId);
       } else {
-        this.setupConnectionHandlers(conn, peerId);
+        // Queue the connection - will be processed when joinUserTopic is called
+        console.log(`[NETWORK] Connection before userDatabase set, queuing...`)
+        if (!this._pendingConnections) {
+          this._pendingConnections = []
+        }
+        this._pendingConnections.push({ conn, peerId })
       }
     });
+  }
+
+  /**
+   * Process any pending connections (called by joinUserTopic)
+   */
+  _processPendingConnections() {
+    if (!this._pendingConnections) return
+    
+    for (const { conn, peerId } of this._pendingConnections) {
+      if (!conn.destroyed) {
+        this._handleDiscoveryProtocol(conn, peerId)
+      }
+    }
+    this._pendingConnections = []
   }
 
   /**
@@ -224,9 +243,15 @@ export class SwarmNetwork extends EventEmitter {
    *   - Start replication
    */
   _handleDiscoveryProtocol(conn, peerId) {
+    // Use options.isIndexer (set at creation) not autobase.isIndexer
+    // Non-indexers don't have autobase yet when they first connect
+    const isIndexer = this.userDatabase.options?.isIndexer === true
     const autobase = this.userDatabase.autobase
-    const isIndexer = autobase ? autobase.isIndexer : false
     const hasAutobase = !!autobase
+    
+    console.log(`[NETWORK] Connection from ${peerId.slice(0, 16)}...`)
+    console.log(`[NETWORK]   Role: ${isIndexer ? 'INDEXER' : 'NON-INDEXER'}`)
+    console.log(`[NETWORK]   Has autobase: ${hasAutobase}`)
     
     let buffer = ''
     let replicationStarted = false
@@ -244,6 +269,7 @@ export class SwarmNetwork extends EventEmitter {
         
         try {
           const msg = JSON.parse(line)
+          console.log(`[NETWORK] Received: ${msg.type} from ${peerId.slice(0, 16)}...`)
           
           // === INDEXER HANDLERS ===
           if (isIndexer) {
@@ -254,12 +280,12 @@ export class SwarmNetwork extends EventEmitter {
                 key: autobase.key.toString('hex')
               }) + '\n'
               conn.write(keyMsg)
-              debug(`[NETWORK] Sent autobase key: ${autobase.key.toString('hex').slice(0, 16)}...`)
+              console.log(`[NETWORK] INDEXER: Sent autobase key: ${autobase.key.toString('hex').slice(0, 16)}...`)
             }
             
             // Writer request from non-indexer
             if (msg.type === 'writer-request' && msg.key) {
-              debug(`[NETWORK] Writer request from: ${msg.key.slice(0, 16)}...`)
+              console.log(`[NETWORK] INDEXER: Writer request from: ${msg.key.slice(0, 16)}...`)
               this._handleWriterRequest(conn, msg.key)
             }
           }
@@ -268,13 +294,13 @@ export class SwarmNetwork extends EventEmitter {
           if (!isIndexer) {
             // Receive autobase key from indexer
             if (msg.type === 'autobase-key' && msg.key) {
-              debug(`[NETWORK] Received autobase key: ${msg.key.slice(0, 16)}...`)
+              console.log(`[NETWORK] NON-INDEXER: Received autobase key: ${msg.key.slice(0, 16)}...`)
               this.emit('autobase-key-received', { key: Buffer.from(msg.key, 'hex'), peerId })
             }
             
             // Writer added confirmation
             if (msg.type === 'writer-added') {
-              debug(`[NETWORK] Writer-added confirmation received`)
+              console.log(`[NETWORK] NON-INDEXER: Writer-added confirmation received`)
               this._startReplication(conn, onData, replicationStarted)
               replicationStarted = true
             }
@@ -287,25 +313,25 @@ export class SwarmNetwork extends EventEmitter {
     
     conn.on('data', onData)
     
-    // Non-indexer: send get-key request immediately
-    if (!isIndexer && !hasAutobase) {
+    // NON-INDEXER: send get-key request
+    if (!isIndexer) {
       conn.write(JSON.stringify({ type: 'get-key' }) + '\n')
-      debug('[NETWORK] Sent get-key request')
+      console.log(`[NETWORK] NON-INDEXER: Sent get-key request`)
     }
     
-    // Non-indexer with autobase: send writer request
+    // NON-INDEXER with autobase: send writer request (after key received and autobase created)
     if (!isIndexer && hasAutobase && autobase.local) {
       conn.write(JSON.stringify({
         type: 'writer-request',
         key: autobase.local.key.toString('hex')
       }) + '\n')
-      debug(`[NETWORK] Sent writer request: ${autobase.local.key.toString('hex').slice(0, 16)}...`)
+      console.log(`[NETWORK] NON-INDEXER: Sent writer request: ${autobase.local.key.toString('hex').slice(0, 16)}...`)
     }
     
     // Timeout: start replication anyway after 10s
     setTimeout(() => {
       if (!replicationStarted && hasAutobase) {
-        debug('[NETWORK] Handshake timeout, starting replication')
+        console.log('[NETWORK] Handshake timeout, starting replication')
         this._startReplication(conn, onData, replicationStarted)
         replicationStarted = true
       }
@@ -493,7 +519,7 @@ export class SwarmNetwork extends EventEmitter {
     // Derive discovery topic from mnemonic (same for all devices with same mnemonic)
     const mnemonic = identity.mnemonic || identity.getUserIdentity?.()
     if (!mnemonic) {
-      debug('[NETWORK] No mnemonic, cannot derive discovery topic');
+      console.log('[NETWORK] No mnemonic, cannot derive discovery topic');
       return null;
     }
     
@@ -501,13 +527,16 @@ export class SwarmNetwork extends EventEmitter {
     const namespace = Buffer.from('swarmfs-user-discovery-v1')
     const discoveryTopic = crypto.hash(Buffer.concat([namespace, Buffer.from(mnemonic)]))
     
-    debug(`[NETWORK] Joining discovery topic: ${discoveryTopic.toString('hex').substring(0, 16)}...`);
+    console.log(`[NETWORK] Joining discovery topic: ${discoveryTopic.toString('hex').substring(0, 16)}...`);
     
     await this.joinTopic('user-discovery', discoveryTopic);
     this.autobaseTopic = discoveryTopic.toString('hex');
     this.emit('user:topic:joined', this.autobaseTopic);
 
-    debug('[NETWORK] Joined discovery topic - key exchange will happen here');
+    console.log('[NETWORK] Joined discovery topic - key exchange will happen here');
+    
+    // Process any connections that arrived before we were ready
+    this._processPendingConnections();
     
     return discoveryTopic;
   }
