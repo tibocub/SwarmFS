@@ -149,7 +149,7 @@ export class SwarmNetwork extends EventEmitter {
     this.swarm.on('connection', (conn, info) => {
       const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
 
-      debug(`\n[NETWORK] 🔗 Peer connected: ${peerId.substring(0, 16)}...`);
+      console.log(`\n[NETWORK] 🔗 Peer connected: ${peerId.substring(0, 16)}...`);
 
       conn.on('error', (err) => {
         console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
@@ -157,6 +157,19 @@ export class SwarmNetwork extends EventEmitter {
 
       // Track topics for this connection
       const attributedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
+      
+      // Debug: show what topics are being attributed
+      console.log(`[NETWORK] DEBUG info.topics count: ${(info.topics || []).length}`);
+      console.log(`[NETWORK] DEBUG this.topics count: ${this.topics.size}`);
+      console.log(`[NETWORK] DEBUG attributed topics: ${attributedTopicKeys.length}`);
+      
+      if ((info.topics || []).length > 0) {
+        for (const t of info.topics) {
+          const hex = t.toString('hex');
+          const hasIt = this.topics.has(hex);
+          console.log(`[NETWORK] DEBUG topic ${hex.slice(0, 16)}... tracked: ${hasIt}`);
+        }
+      }
 
       if (!this.peerConnections.has(peerId)) {
         this.peerConnections.set(peerId, { conn, topics: new Set() });
@@ -172,7 +185,7 @@ export class SwarmNetwork extends EventEmitter {
         peerConn.topics.add(topicKeyHex);
         topic.connections.set(peerId, conn);
 
-        debug(`[NETWORK]    Topic: ${topic.name}`);
+        console.log(`[NETWORK]    Topic: ${topic.name}`);
         this.emit('peer:connected', { conn, peerId, topicKey: t });
         this.emit('peer:connect', { conn, peerId, topicKey: t });
       }
