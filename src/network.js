@@ -27,26 +27,12 @@ export class SwarmNetwork extends EventEmitter {
       ...config
     };
     
-    // Initialize Hyperswarm
-    // We keep a dedicated swarm for user-swarm (key exchange) and autobase-replication
-    // to avoid ambiguous topic attribution and mixing handlers on the same connection.
-    // This mirrors the working test setup.
+    // Initialize Hyperswarm (workshop pattern: single swarm)
     debug('[NETWORK] Creating Hyperswarm instance...');
 
-    this.mainSwarm = new Hyperswarm({
+    this.swarm = new Hyperswarm({
       maxPeers: this.config.maxConnections
     });
-
-    this.userSwarm = new Hyperswarm({
-      maxPeers: this.config.maxConnections
-    });
-
-    this.autobaseSwarm = new Hyperswarm({
-      maxPeers: this.config.maxConnections
-    });
-
-    // Backwards compatibility: existing code may reference this.swarm
-    this.swarm = this.mainSwarm;
     
     // Track active topics and connections
     // topics: topicKeyHex -> { discovery, name, key, connections: Map<peerId, conn> }
@@ -79,10 +65,8 @@ export class SwarmNetwork extends EventEmitter {
     debug(`[NETWORK] Joining topic: ${topicName}`);
     debug(`[NETWORK] Topic key: ${topicKeyHex}`);
 
-    const swarm = this._getSwarmForTopic(topicName);
-
-    // Join the swarm
-    const discovery = swarm.join(topicKey, {
+    // Join the swarm (workshop pattern: single swarm)
+    const discovery = this.swarm.join(topicKey, {
       server: true,  // Accept connections
       client: true   // Make connections
     });
@@ -95,8 +79,7 @@ export class SwarmNetwork extends EventEmitter {
       discovery,
       name: topicName,
       key: topicKey,
-      connections: new Map(),
-      swarm
+      connections: new Map()
     });
 
     // Wait for topic to be fully announced
@@ -107,11 +90,11 @@ export class SwarmNetwork extends EventEmitter {
     const flushTimeoutMs = this.config.flushTimeoutMs;
     if (Number.isFinite(flushTimeoutMs) && flushTimeoutMs > 0) {
       await Promise.race([
-        swarm.flush(),
+        this.swarm.flush(),
         new Promise((resolve) => setTimeout(resolve, flushTimeoutMs))
       ]);
     } else {
-      await swarm.flush();
+      await this.swarm.flush();
     }
 
     this.emit('topic:joined', topicName, topicKeyHex);
@@ -156,13 +139,48 @@ export class SwarmNetwork extends EventEmitter {
 
   /**
    * Handle new peer connection
+   * Workshop pattern: single connection handler that replicates corestore on ALL connections
    */
   setupSwarmHandlers() {
-    const attachCommonHandlers = (conn, peerId) => {
+    this.swarm.on('connection', (conn, info) => {
+      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
+
+      debug(`\n[NETWORK] 🔗 Peer connected: ${peerId.substring(0, 16)}...`);
+
       conn.on('error', (err) => {
         console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
       });
 
+      // Workshop pattern: replicate corestore on ALL connections
+      // With deterministic bootstrap key, all connections are for data sync
+      if (this.userDatabase) {
+        this.userDatabase.store.replicate(conn);
+        debug('[NETWORK]    Corestore replication active');
+      }
+
+      // Track topics for this connection
+      const attributedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
+
+      if (!this.peerConnections.has(peerId)) {
+        this.peerConnections.set(peerId, { conn, topics: new Set() });
+      }
+      const peerConn = this.peerConnections.get(peerId);
+      peerConn.conn = conn;
+
+      for (const t of attributedTopicKeys) {
+        const topicKeyHex = t.toString('hex');
+        const topic = this.topics.get(topicKeyHex);
+        if (!topic) continue;
+
+        peerConn.topics.add(topicKeyHex);
+        topic.connections.set(peerId, conn);
+
+        debug(`[NETWORK]    Topic: ${topic.name}`);
+        this.emit('peer:connected', { conn, peerId, topicKey: t });
+        this.emit('peer:connect', { conn, peerId, topicKey: t });
+      }
+
+      // Setup close handler
       conn.on('close', () => {
         debug(`\n[NETWORK] ❌ Peer disconnected: ${peerId.substring(0, 16)}...`);
 
@@ -184,112 +202,12 @@ export class SwarmNetwork extends EventEmitter {
           this.peerConnections.delete(peerId);
         }
       });
-    };
 
-    const addConnToTopics = (conn, peerId, topicKeys) => {
-      if (!this.peerConnections.has(peerId)) {
-        this.peerConnections.set(peerId, { conn, topics: new Set() });
-      }
-
-      const peerConn = this.peerConnections.get(peerId);
-      peerConn.conn = conn;
-
-      for (const t of topicKeys) {
-        const topicKeyHex = t.toString('hex');
-        const topic = this.topics.get(topicKeyHex);
-        if (!topic) continue;
-
-        peerConn.topics.add(topicKeyHex);
-        topic.connections.set(peerId, conn);
-
-        debug(`[NETWORK]    Topic: ${topic.name}`);
-        this.emit('peer:connected', { conn, peerId, topicKey: t });
-        this.emit('peer:connect', { conn, peerId, topicKey: t });
-      }
-    };
-
-    const mainHandler = (conn, info) => {
-      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
-
-      attachCommonHandlers(conn, peerId);
-
-      // Main swarm: only attribute connection to topics explicitly listed by Hyperswarm.
-      const attributedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
-
-      debug(`\n[NETWORK] 🔗 Peer connected (mainSwarm): ${peerId.substring(0, 16)}...`);
-
-      if (attributedTopicKeys.length === 0) {
-        debug('[NETWORK]    Connection has no attributed topics');
-      }
-
-      addConnToTopics(conn, peerId, attributedTopicKeys);
-
-      // For mainSwarm connections that are not user/autobase topics, keep existing protocol handlers
-      if (attributedTopicKeys.length === 0) {
-        this.emit('peer:connected', { conn, peerId, topicKey: null });
-        this.emit('peer:connect', { conn, peerId, topicKey: null });
-      }
-
+      // Setup data handlers
       this.setupConnectionHandlers(conn, peerId);
-    };
-
-    const userHandler = (conn, info) => {
-      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
-      attachCommonHandlers(conn, peerId);
-      debug(`\n[NETWORK] 🔗 Peer connected (userSwarm): ${peerId.substring(0, 16)}...`);
-
-      // Attribute this connection to the user-swarm topic explicitly
-      let topicKey = this.userTopic ? Buffer.from(this.userTopic, 'hex') : null;
-      if (!topicKey) {
-        for (const [hex, topic] of this.topics) {
-          if (topic && topic.name === 'user-swarm') {
-            topicKey = Buffer.from(hex, 'hex');
-            break;
-          }
-        }
-      }
-      if (topicKey) addConnToTopics(conn, peerId, [topicKey]);
-
-      if (this.userDatabase) {
-        debug(`[NETWORK]    userSwarm: key exchange handler active`);
-        const isIndexer = Boolean(this.userDatabase.autobase && this.userDatabase.autobase.isIndexer);
-        this._handleUserTopicConnection(conn, peerId, isIndexer);
-      }
-    };
-
-    const autobaseHandler = (conn, info) => {
-      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
-      attachCommonHandlers(conn, peerId);
-      debug(`\n[NETWORK] 🔗 Peer connected (autobaseSwarm): ${peerId.substring(0, 16)}...`);
-
-      // Attribute this connection to the autobase-replication topic explicitly
-      let topicKey = this.autobaseTopic ? Buffer.from(this.autobaseTopic, 'hex') : null;
-      if (!topicKey) {
-        for (const [hex, topic] of this.topics) {
-          if (topic && topic.name === 'autobase-replication') {
-            topicKey = Buffer.from(hex, 'hex');
-            break;
-          }
-        }
-      }
-      if (topicKey) addConnToTopics(conn, peerId, [topicKey]);
-
-      if (this.userDatabase) {
-        debug(`[NETWORK]    autobaseSwarm: replication handler active`);
-        this.userDatabase.store.replicate(conn);
-      }
-    };
-
-    this.mainSwarm.on('connection', mainHandler);
-    this.userSwarm.on('connection', userHandler);
-    this.autobaseSwarm.on('connection', autobaseHandler);
+    });
   }
 
-  _getSwarmForTopic(topicName) {
-    if (topicName === 'user-swarm') return this.userSwarm;
-    if (topicName === 'autobase-replication') return this.autobaseSwarm;
-    return this.mainSwarm;
-  }
 
   setupConnectionHandlers(conn, peerId) {
     conn.on('data', (data) => {
@@ -407,10 +325,8 @@ export class SwarmNetwork extends EventEmitter {
       this.peerConnections.delete(peerId);
     }
 
-    // Destroy swarms
-    await this.mainSwarm.destroy();
-    await this.userSwarm.destroy();
-    await this.autobaseSwarm.destroy();
+    // Destroy swarm
+    await this.swarm.destroy();
 
     this.topics.clear();
     this.peerConnections.clear();
@@ -430,205 +346,46 @@ export class SwarmNetwork extends EventEmitter {
   }
 
   /**
-   * Join the user topic for database replication
-   * Uses identity-derived discovery topic so all devices with same mnemonic find each other
-   * Implements workshop pattern for key exchange and replication
-   * @param {Object} identity - IdentityManager instance
+   * Join the autobase topic for database replication
+   * Workshop pattern: join autobase.discoveryKey - all devices with same bootstrap key connect here
+   * @param {Object} identity - IdentityManager instance (unused, kept for API compat)
    * @param {Object} userDatabase - UserDatabase instance to replicate
    */
   async joinUserTopic(identity, userDatabase) {
-    // Use identity-derived topic for discovery (same for all devices with same mnemonic)
-    const discoveryTopic = identity.deriveUserSwarmTopic();
-    
-    debug(`[NETWORK] Joining user discovery topic: ${discoveryTopic.toString('hex').substring(0, 16)}...`);
-
     this.userDatabase = userDatabase;
     this.identity = identity;
 
-    // Set this before joining to avoid races where connections arrive early.
-    this.userTopic = discoveryTopic.toString('hex');
-
-    // Join the discovery topic for key exchange
-    await this.joinTopic('user-swarm', discoveryTopic);
-    this.emit('user:topic:joined', this.userTopic);
-    
-    // Only join autobase.discoveryKey if autobase already exists
-    // New devices will join this topic after receiving the key
+    // Workshop pattern: join autobase.discoveryKey
+    // All devices with same deterministic bootstrap key connect here
     const autobaseDiscoveryKey = userDatabase.autobase?.discoveryKey;
-    if (autobaseDiscoveryKey) {
-      // Set this before joining to avoid races where connections arrive early.
-      this.autobaseTopic = autobaseDiscoveryKey.toString('hex');
-      debug(`[NETWORK] Joining autobase discovery key: ${autobaseDiscoveryKey.toString('hex').substring(0, 16)}...`);
-      await this.joinTopic('autobase-replication', autobaseDiscoveryKey);
+    if (!autobaseDiscoveryKey) {
+      debug('[NETWORK] No autobase yet, cannot join topic');
+      return null;
     }
 
-    return discoveryTopic;
+    this.autobaseTopic = autobaseDiscoveryKey.toString('hex');
+    debug(`[NETWORK] Joining autobase discovery key: ${autobaseDiscoveryKey.toString('hex').substring(0, 16)}...`);
+    
+    await this.joinTopic('autobase-replication', autobaseDiscoveryKey);
+    this.emit('user:topic:joined', this.autobaseTopic);
+
+    return autobaseDiscoveryKey;
   }
   
-  /**
-   * Handle user topic connection - key exchange and replication
-   * Workshop pattern: indexer sends key, new devices request to be added as writer
-   */
-  _handleUserTopicConnection(conn, peerId, isIndexer) {
-    const autobase = this.userDatabase.autobase;
-
-    // IMPORTANT: Do not run corestore replication over the user-swarm connection.
-    // Mixing binary replication traffic with JSON key-exchange messages makes the
-    // JSON parsing unreliable (messages can be split/merged with replication bytes).
-    // Replication is handled on the separate autobase-replication topic.
-    
-    // Key exchange protocol (newline-delimited JSON)
-    let jsonBuffer = '';
-    conn.on('data', (data) => {
-      jsonBuffer += data.toString('utf8');
-
-      let idx;
-      while ((idx = jsonBuffer.indexOf('\n')) !== -1) {
-        const line = jsonBuffer.slice(0, idx).trim();
-        jsonBuffer = jsonBuffer.slice(idx + 1);
-
-        if (!line) continue;
-
-        let msg;
-        try {
-          msg = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        if (msg && msg.type === 'autobase-key') {
-          console.log(`[NETWORK] Received autobase-key (amIndexer=${isIndexer}, haveAutobase=${Boolean(autobase)})`);
-        }
-
-        // Receive autobase key from peer (indexer broadcasts it)
-        if (msg.type === 'autobase-key' && msg.key) {
-          const receivedKey = Buffer.from(msg.key, 'hex');
-          const receivedKeyHex = msg.key;
-
-          // If we already have an autobase, detect mismatch (stale local key file / split brain)
-          if (autobase && autobase.key) {
-            const currentKeyHex = autobase.key.toString('hex');
-            if (currentKeyHex !== receivedKeyHex) {
-              console.log(`[NETWORK] ⚠️  Autobase key mismatch. local=${currentKeyHex.slice(0, 16)}... peer=${receivedKeyHex.slice(0, 16)}...`);
-              this.emit('user:autobase-key-mismatch', {
-                localKey: Buffer.from(currentKeyHex, 'hex'),
-                peerKey: receivedKey,
-                peerId
-              });
-            }
-          }
-
-          // New device (non-indexer) receives autobase key from indexer
-          if (!isIndexer) {
-            console.log(`[NETWORK] Received autobase key: ${receivedKeyHex.slice(0, 16)}...`);
-            this.emit('user:autobase-key-received', { key: receivedKey, peerId });
-
-            // Only send writer request if we already have a local autobase keypair.
-            // If we are still pending (no autobase yet), commands.js will create it first.
-            if (autobase && autobase.local && autobase.local.key) {
-              const writerKeyHex = autobase.local.key.toString('hex');
-              const writerMsg = JSON.stringify({ type: 'writer-key', key: writerKeyHex });
-              conn.write(writerMsg);
-              console.log(`[NETWORK] Sent writer request: ${writerKeyHex.slice(0, 16)}...`);
-            } else {
-              console.log('[NETWORK] Cannot send writer request yet (no local autobase). Waiting for userdb to create it.');
-            }
-          }
-        }
-        
-        // Indexer receives writer key request from new device
-        if (msg.type === 'writer-key' && isIndexer) {
-          console.log(`[NETWORK] Writer request: ${msg.key.slice(0, 16)}...`);
-          this.emit('user:writer-request', { key: Buffer.from(msg.key, 'hex'), peerId });
-        }
-      }
-    });
-    
-    // If we're an indexer and have an autobase, send our autobase key
-    if (isIndexer && autobase && autobase.key) {
-      const keyMsg = JSON.stringify({ 
-        type: 'autobase-key', 
-        key: autobase.key.toString('hex') 
-      });
-      conn.write(keyMsg + '\n');
-      console.log(`[NETWORK] Sent autobase key to peer`);
-    }
-  }
-
   /**
    * Leave the user topic
    */
   async leaveUserTopic() {
-    if (!this.userTopic) {
+    if (!this.autobaseTopic) {
       return;
     }
 
-    const topicKey = Buffer.from(this.userTopic, 'hex');
-    await this.leaveTopic('user-sync', topicKey);
+    const topicKey = Buffer.from(this.autobaseTopic, 'hex');
+    await this.leaveTopic('autobase-replication', topicKey);
 
-    this.userTopic = null;
+    this.autobaseTopic = null;
     this.userDatabase = null;
     this.emit('user:topic:left');
-  }
-
-  /**
-   * Set up connection for user topic - handles key exchange and replication
-   * Pattern: indexers broadcast their autobase key, new devices receive and rejoin
-   */
-  _setupUserTopicConnection(conn, peerId) {
-    const autobase = this.userDatabase.autobase;
-    const isIndexer = autobase.isIndexer;
-    
-    // Set up replication first
-    autobase.replicate(conn);
-    
-    // Key exchange protocol
-    conn.on('data', (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        
-        // New device receives autobase key from indexer
-        if (msg.type === 'autobase-key' && !isIndexer) {
-          console.log(`[NETWORK] Received autobase key from indexer: ${msg.key.slice(0, 16)}...`);
-          
-          // Check if we need to rejoin with this key
-          const currentKey = autobase.key?.toString('hex');
-          if (currentKey !== msg.key) {
-            console.log(`[NETWORK] Different autobase key, need to rejoin`);
-            // Emit event so UserDatabase can handle rejoin
-            this.emit('user:autobase-key-received', { key: Buffer.from(msg.key, 'hex'), peerId });
-          }
-        }
-        
-        // Indexer receives writer key request from new device
-        if (msg.type === 'writer-key' && isIndexer) {
-          console.log(`[NETWORK] New device wants to join: ${msg.key.slice(0, 16)}...`);
-          // Emit event so we can add them as writer
-          this.emit('user:writer-request', { key: Buffer.from(msg.key, 'hex'), peerId });
-        }
-      } catch {
-        // Not JSON, ignore (replication data)
-      }
-    });
-    
-    // If we're an indexer, broadcast our key
-    if (isIndexer) {
-      // Send our autobase key to the peer
-      const keyMsg = JSON.stringify({ 
-        type: 'autobase-key', 
-        key: autobase.key.toString('hex') 
-      });
-      conn.write(keyMsg);
-      console.log(`[NETWORK] Sent autobase key to peer`);
-    } else {
-      // We're not an indexer, send our local key to request being added
-      const writerMsg = JSON.stringify({ 
-        type: 'writer-key', 
-        key: autobase.local.key.toString('hex') 
-      });
-      conn.write(writerMsg);
-      console.log(`[NETWORK] Sent writer key request to indexer`);
-    }
   }
 
   /**
@@ -636,7 +393,7 @@ export class SwarmNetwork extends EventEmitter {
    * @returns {Buffer|null}
    */
   getUserTopicKey() {
-    return this.userTopic ? Buffer.from(this.userTopic, 'hex') : null;
+    return this.autobaseTopic ? Buffer.from(this.autobaseTopic, 'hex') : null;
   }
 
   /**
@@ -644,6 +401,6 @@ export class SwarmNetwork extends EventEmitter {
    * @returns {boolean}
    */
   isUserTopicJoined() {
-    return this.userTopic !== null;
+    return this.autobaseTopic !== null;
   }
 }

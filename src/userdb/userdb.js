@@ -147,44 +147,13 @@ export class UserDatabase extends ReadyResource {
     this.store = new Corestore(this.storagePath)
     await this.store.ready()
 
-    // Bootstrap key strategy:
-    // 1. Check local storage for existing key (from previous session on this device)
-    // 2. If no local key, wait for key from network (handled by network layer)
-    const keyPath = path.join(this.storagePath, 'autobase-key')
-    let bootstrapKey = null
+    // Workshop pattern: derive bootstrap key deterministically from user identity
+    // All devices with same mnemonic join the SAME autobase - no key exchange needed
+    const bootstrapKey = this.identity.deriveAutobaseKey()
     
-    try {
-      if (fs.existsSync(keyPath)) {
-        const keyData = fs.readFileSync(keyPath, 'utf8').trim()
-        if (keyData.length === 64) {
-          bootstrapKey = Buffer.from(keyData, 'hex')
-          console.log(`[USERDB] Rejoining autobase: ${keyData.slice(0, 16)}...`)
-        }
-      }
-    } catch {
-      // Ignore - will create new autobase
-    }
+    console.log(`[USERDB] Using deterministic bootstrap key: ${bootstrapKey.toString('hex').slice(0, 16)}...`)
 
-    // If no saved key, we need to wait for one from the network
-    // The network layer will call createAutobaseWithKey() when it receives a key
-    // For non-REPL mode, create immediately
-    if (!bootstrapKey) {
-      if (process.env.SWARMFS_REPL === '1') {
-        console.log(`[USERDB] No saved autobase key, will wait for one from network...`)
-        this._pendingAutobase = true
-        this._autobaseReady = new Promise((resolve) => {
-          this._resolveAutobaseReady = resolve
-        })
-        return
-      } else {
-        // Non-REPL mode: create new autobase immediately
-        console.log(`[USERDB] No saved autobase key, creating new autobase...`)
-        await this._createAutobase(null)
-        return
-      }
-    }
-
-    // Create Autobase with saved key
+    // Create Autobase with deterministic key
     await this._createAutobase(bootstrapKey)
   }
 
@@ -293,6 +262,37 @@ export class UserDatabase extends ReadyResource {
     fs.writeFileSync(keyPath, bootstrapKey.toString('hex'))
     
     // Create the autobase
+    await this._createAutobase(bootstrapKey)
+  }
+
+  async switchToAutobaseKey(bootstrapKey) {
+    if (!bootstrapKey) return
+
+    const nextKeyHex = bootstrapKey.toString('hex')
+    const currentKeyHex = this.autobase?.key?.toString('hex')
+
+    if (currentKeyHex === nextKeyHex) {
+      return
+    }
+
+    console.log(`[USERDB] Switching autobase key: ${currentKeyHex ? currentKeyHex.slice(0, 16) : 'none'}... -> ${nextKeyHex.slice(0, 16)}...`)
+
+    // Persist new key
+    const keyPath = path.join(this.storagePath, 'autobase-key')
+    fs.writeFileSync(keyPath, nextKeyHex)
+
+    // Close current autobase if present
+    if (this.autobase) {
+      try {
+        await this.autobase.close()
+      } catch {
+        // ignore
+      }
+      this.autobase = null
+      this.view = null
+    }
+
+    // Recreate Autobase with the canonical key
     await this._createAutobase(bootstrapKey)
   }
 

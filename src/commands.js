@@ -1520,16 +1520,11 @@ export async function loginCommand(swarmfs, mnemonic = null, deviceName = null) 
   });
   await userdb.ready();
 
-  // Only print key if autobase exists (new devices wait for key from network)
-  if (userdb.key) {
-    console.log(`Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
-  } else {
-    console.log(`No saved autobase key, will wait for one from network...`);
-  }
+  console.log(`Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
+  console.log(`isIndexer: ${userdb.autobase.isIndexer}`);
 
-  // Join user topic for device replication
-  // Both REPL and non-REPL modes need to connect to receive key
-  if (userdb._pendingAutobase) {
+  // Join autobase topic for replication (workshop pattern)
+  if (process.env.SWARMFS_REPL === '1') {
     try {
       // Initialize network if needed
       if (!swarmfs.network) {
@@ -1537,93 +1532,19 @@ export async function loginCommand(swarmfs, mnemonic = null, deviceName = null) 
         await swarmfs.network.ready();
       }
       
-      // Join discovery topic to receive key
+      // Join autobase topic
       await swarmfs.network.joinUserTopic(identity, userdb);
-      console.log(`Joined discovery topic, waiting for indexer...`);
+      console.log(`Joined autobase topic - other devices can sync`);
       
-      // Handle receiving autobase key from indexer
-      const keyReceived = new Promise((resolve) => {
-        swarmfs.network.once('user:autobase-key-received', async ({ key, peerId }) => {
-          console.log(`\nReceived autobase key from indexer`);
-          try {
-            await userdb.createWithReceivedKey(key);
-            console.log(`Created autobase with received key`);
-            
-            // Join autobase replication topic
-            const autobaseDiscoveryKey = userdb.autobase.discoveryKey;
-            if (autobaseDiscoveryKey) {
-              await swarmfs.network.joinTopic('autobase-replication', autobaseDiscoveryKey);
-              console.log(`Joined autobase replication topic`);
-            }
-            resolve(true);
-          } catch (err) {
-            console.log(`Failed to create autobase: ${err.message}`);
-            resolve(false);
-          }
-        });
-      });
-      
-      // Wait up to 10 seconds for key
-      const timeout = new Promise(r => setTimeout(r, 10000));
-      const result = await Promise.race([keyReceived, timeout]);
-      
-      if (!userdb.autobase) {
-        console.log(`No key received - creating new autobase as first device`);
-        await userdb._createAutobase(null);
+      // Periodically check for new writers and add them (if we're indexer)
+      if (userdb.autobase.isIndexer) {
+        console.log(`Running as indexer - will add new devices as writers`);
         
-        // Join autobase replication topic
-        const autobaseDiscoveryKey = userdb.autobase.discoveryKey;
-        if (autobaseDiscoveryKey) {
-          await swarmfs.network.joinTopic('autobase-replication', autobaseDiscoveryKey);
-        }
+        // TODO: Implement writer discovery mechanism
+        // For now, writers must be added manually via 'add-writer' command
       }
-      
-      // Handle writer requests (for when we become indexer)
-      swarmfs.network.on('user:writer-request', async ({ key, peerId }) => {
-        console.log(`\nNew device requesting to join: ${key.toString('hex').slice(0, 16)}...`);
-        try {
-          await userdb.addWriter(key);
-          console.log(`Added writer: ${key.toString('hex').slice(0, 16)}...`);
-        } catch (err) {
-          console.log(`Failed to add writer: ${err.message}`);
-        }
-      });
-      
     } catch (err) {
-      console.warn(`Could not join user swarm: ${err.message}`);
-      // Fallback: create new autobase
-      if (!userdb.autobase) {
-        console.log(`Creating new autobase as fallback`);
-        await userdb._createAutobase(null);
-      }
-    }
-  } else if (process.env.SWARMFS_REPL === '1' && userdb.autobase) {
-    // Already have autobase, just join the topics
-    try {
-      await swarmfs.network.joinUserTopic(identity, userdb);
-      console.log(`User swarm topic joined - other devices can sync`);
-
-      swarmfs.network.on('user:autobase-key-mismatch', async ({ localKey, peerKey, peerId }) => {
-        console.log(`\n[NETWORK] ⚠️  Autobase key mismatch with peer ${peerId.slice(0, 16)}...`)
-        console.log(`[NETWORK]   local: ${localKey.toString('hex').slice(0, 16)}...`)
-        console.log(`[NETWORK]   peer:  ${peerKey.toString('hex').slice(0, 16)}...`)
-        console.log(`[NETWORK] This means your local device has a different autobase bootstrap key saved.`)
-        console.log(`[NETWORK] To join the correct autobase, delete the saved key file and restart shell:`)
-        console.log(`  ${path.join(userdbPath, 'autobase-key')}`)
-      })
-      
-      // Handle writer requests
-      swarmfs.network.on('user:writer-request', async ({ key, peerId }) => {
-        console.log(`\nNew device requesting to join: ${key.toString('hex').slice(0, 16)}...`);
-        try {
-          await userdb.addWriter(key);
-          console.log(`Added writer: ${key.toString('hex').slice(0, 16)}...`);
-        } catch (err) {
-          console.log(`Failed to add writer: ${err.message}`);
-        }
-      });
-    } catch (err) {
-      console.warn(`Could not join user swarm: ${err.message}`);
+      console.warn(`Could not join autobase topic: ${err.message}`);
     }
   }
 
