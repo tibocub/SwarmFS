@@ -1489,6 +1489,9 @@ export async function newLoginCommand(swarmfs, deviceName = null) {
   console.log(`Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
   console.log(`isIndexer: ${userdb.autobase.isIndexer}`);
 
+  // Mark this device as indexer (persist for future sessions)
+  identity.markAsIndexer();
+
   // Join autobase topic for replication
   if (process.env.SWARMFS_REPL === '1') {
     try {
@@ -1668,10 +1671,15 @@ async function autoLoadIdentity(swarmfs) {
     await identity.initUser(null, password)
     const deviceInfo = await identity.initDevice()
     
-    // Initialize user database
+    // Use persisted isIndexer flag from device config
+    const isIndexer = identity.isDeviceIndexer()
+    console.log(`Device role: ${isIndexer ? 'INDEXER' : 'NON-INDEXER'}`)
+    
+    // Initialize user database with correct role
     const userdb = new UserDatabase({
       storagePath: userdbPath,
-      identity
+      identity,
+      isIndexer
     })
     await userdb.ready()
 

@@ -121,6 +121,7 @@ export class IdentityManager {
           publicKey: Buffer.from(deviceConfig.publicKey, 'hex'),
           secretKey: Buffer.from(deviceConfig.secretKey, 'hex')
         }
+        this.isIndexer = deviceConfig.isIndexer === true
         
         // Re-generate proof from user identity
         this.deviceProof = this.userIdentity.bootstrap(this.deviceKeyPair.publicKey)
@@ -128,7 +129,8 @@ export class IdentityManager {
         return {
           deviceName: this.deviceName,
           devicePublicKey: this.deviceKeyPair.publicKey,
-          isNew: false
+          isNew: false,
+          isIndexer: this.isIndexer
         }
       } catch (err) {
         console.warn('Failed to load device config, creating new one:', err.message)
@@ -147,7 +149,8 @@ export class IdentityManager {
       deviceName: this.deviceName,
       publicKey: this.deviceKeyPair.publicKey.toString('hex'),
       secretKey: this.deviceKeyPair.secretKey.toString('hex'),
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      isIndexer: this._pendingIsIndexer || false  // Set by markAsIndexer()
     }
     
     fs.writeFileSync(devicePath, JSON.stringify(deviceConfig, null, 2))
@@ -157,6 +160,37 @@ export class IdentityManager {
       devicePublicKey: this.deviceKeyPair.publicKey,
       isNew: true
     }
+  }
+
+  /**
+   * Mark this device as the indexer (called after creating new autobase)
+   */
+  markAsIndexer() {
+    this._pendingIsIndexer = true
+    this.isIndexer = true
+    
+    // Update device config if it exists
+    const devicePath = path.join(this.identityDir, 'device.json')
+    if (fs.existsSync(devicePath)) {
+      const deviceConfig = JSON.parse(fs.readFileSync(devicePath, 'utf8'))
+      deviceConfig.isIndexer = true
+      fs.writeFileSync(devicePath, JSON.stringify(deviceConfig, null, 2))
+    }
+  }
+
+  /**
+   * Check if this device is the indexer
+   */
+  isDeviceIndexer() {
+    if (this.isIndexer !== undefined) return this.isIndexer
+    
+    const devicePath = path.join(this.identityDir, 'device.json')
+    if (fs.existsSync(devicePath)) {
+      const deviceConfig = JSON.parse(fs.readFileSync(devicePath, 'utf8'))
+      this.isIndexer = deviceConfig.isIndexer === true
+      return this.isIndexer
+    }
+    return false
   }
 
   /**
