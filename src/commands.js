@@ -1434,24 +1434,99 @@ export async function networkCommand(swarmfs) {
 // ============================================================================
 
 /**
- * Login command - Initialize or load user identity
+ * New login command - Create new identity and become indexer
+ * Creates new autobase with null bootstrap (becomes indexer)
  * @param {Object} swarmfs - SwarmFS instance
- * @param {string|null} mnemonic - Optional mnemonic for existing user
+ * @param {string|null} deviceName - Optional device name
+ */
+export async function newLoginCommand(swarmfs, deviceName = null) {
+  const identityDir = getIdentityDir();
+  const userdbPath = getUserdbDir();
+  
+  // Check if already logged in
+  if (swarmfs.identity && swarmfs.identity.hasUserIdentity()) {
+    console.log('Already logged in. Use "logout" first.');
+    return swarmfs.identity;
+  }
+
+  // Check for existing identity
+  const identity = new IdentityManager({ identityDir });
+  if (identity.hasUserIdentity()) {
+    console.log('Existing identity found. Use "login" with mnemonic to join existing autobase.');
+    console.log('Or delete identity folder to create new identity.');
+    return null;
+  }
+
+  console.log('Creating new identity (this device will be the indexer)...\n');
+  
+  let password, passwordConfirm;
+  do {
+    password = await promptPassword('Create password: ');
+    passwordConfirm = await promptPassword('Confirm password: ');
+
+    if (password !== passwordConfirm) {
+      console.log('Passwords do not match. Try again.');
+    }
+  } while (password !== passwordConfirm);
+
+  await identity.initUser(null, password);
+  
+  console.log('\n⚠️  Save this mnemonic to login on other devices:');
+  console.log(`    ${identity.mnemonic}\n`);
+
+  // Initialize device
+  const deviceInfo = await identity.initDevice(deviceName);
+  console.log(`Device: ${deviceInfo.deviceName} (new)`);
+
+  // Initialize user database AS INDEXER
+  const userdb = new UserDatabase({
+    storagePath: userdbPath,
+    identity,
+    isIndexer: true  // This device becomes the indexer
+  });
+  await userdb.ready();
+
+  console.log(`Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
+  console.log(`isIndexer: ${userdb.autobase.isIndexer}`);
+
+  // Join autobase topic for replication
+  if (process.env.SWARMFS_REPL === '1') {
+    try {
+      if (!swarmfs.network) {
+        swarmfs.network = new SwarmNetwork(swarmfs.config);
+        await swarmfs.network.ready();
+      }
+      
+      await swarmfs.network.joinUserTopic(identity, userdb);
+      console.log(`Joined autobase topic - other devices can sync`);
+      console.log(`Running as indexer - will add new devices as writers automatically`);
+    } catch (err) {
+      console.warn(`Could not join autobase topic: ${err.message}`);
+    }
+  }
+
+  // Store on swarmfs instance
+  swarmfs.identity = identity;
+  swarmfs.userdb = userdb;
+
+  restoreTerminal();
+
+  console.log('\n✅ Created new identity and logged in as indexer!');
+  console.log(`  User ID: ${identity.getUserId()}`);
+  console.log(`  Device ID: ${identity.getDeviceId()}`);
+  console.log(`\n  Use "login <mnemonic>" on other devices to join this autobase.`);
+
+  return identity;
+}
+
+/**
+ * Login command - Join existing autobase with mnemonic
+ * Uses deterministic bootstrap key (not indexer, waits to be added as writer)
+ * @param {Object} swarmfs - SwarmFS instance
+ * @param {string} mnemonic - REQUIRED mnemonic for existing user
  * @param {string|null} deviceName - Optional device name
  */
 export async function loginCommand(swarmfs, mnemonic = null, deviceName = null) {
-  // In REPL mode, login is handled at startup
-  if (process.env.SWARMFS_REPL === '1') {
-    if (swarmfs.identity && swarmfs.identity.hasUserIdentity()) {
-      console.log('Already logged in.');
-      console.log(`  User ID: ${swarmfs.identity.getUserId()}`);
-      console.log(`  Device: ${swarmfs.identity.deviceName}`);
-      return swarmfs.identity;
-    }
-    console.log('No identity loaded. Restart the REPL to login.');
-    return null;
-  }
-  
   const identityDir = getIdentityDir();
   const userdbPath = getUserdbDir();
   
@@ -1463,89 +1538,71 @@ export async function loginCommand(swarmfs, mnemonic = null, deviceName = null) 
     return swarmfs.identity;
   }
 
-  // Create identity manager
-  const identity = new IdentityManager({ identityDir });
-
-  // Check for existing identity
-  const hasExisting = identity.hasUserIdentity();
-
-  if (hasExisting && !mnemonic) {
-    // Need password to decrypt existing identity
-    console.log('Existing identity found.');
-    
-    const password = await promptPassword('Enter password: ');
-
-    try {
-      await identity.initUser(null, password);
-    } catch (err) {
-      console.error('Failed to decrypt identity. Wrong password?');
-      restoreTerminal();
-      throw err;
-    }
-  } else if (mnemonic) {
-    // Login with mnemonic
-    console.log('Logging in with mnemonic...');
-    
-    const password = await promptPassword('Create password for this device: ');
-
-    await identity.initUser(mnemonic, password);
-  } else {
-    // Create new identity
-    console.log('Creating new identity...');
-    
-    let password, passwordConfirm;
-    do {
-      password = await promptPassword('Create password: ');
-      passwordConfirm = await promptPassword('Confirm password: ');
-
-      if (password !== passwordConfirm) {
-        console.log('Passwords do not match. Try again.');
-      }
-    } while (password !== passwordConfirm);
-
-    await identity.initUser(null, password);
-    
-    console.log('\n⚠️  Save this mnemonic to recover your identity:');
-    console.log(`    ${identity.mnemonic}\n`);
+  // Mnemonic is REQUIRED for login (use new-login to create new identity)
+  if (!mnemonic) {
+    console.log('Usage: login <mnemonic>');
+    console.log('  Login requires a mnemonic from an existing identity.');
+    console.log('  Use "new-login" to create a new identity.');
+    return null;
   }
+
+  console.log('Logging in with mnemonic (joining existing autobase)...\n');
+  
+  const identity = new IdentityManager({ identityDir });
+  const password = await promptPassword('Create password for this device: ');
+
+  await identity.initUser(mnemonic, password);
 
   // Initialize device
   const deviceInfo = await identity.initDevice(deviceName);
   console.log(`Device: ${deviceInfo.deviceName} ${deviceInfo.isNew ? '(new)' : '(existing)'}`);
 
-  // Initialize user database (ReadyResource pattern)
+  // Initialize user database AS NON-INDEXER (will join existing autobase)
   const userdb = new UserDatabase({
     storagePath: userdbPath,
-    identity
+    identity,
+    isIndexer: false  // This device joins existing autobase
   });
   await userdb.ready();
 
-  console.log(`Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
-  console.log(`isIndexer: ${userdb.autobase.isIndexer}`);
-
-  // Join autobase topic for replication (workshop pattern)
+  // Join discovery topic for key exchange
   if (process.env.SWARMFS_REPL === '1') {
     try {
-      // Initialize network if needed
       if (!swarmfs.network) {
         swarmfs.network = new SwarmNetwork(swarmfs.config);
         await swarmfs.network.ready();
       }
       
-      // Join autobase topic
-      await swarmfs.network.joinUserTopic(identity, userdb);
-      console.log(`Joined autobase topic - other devices can sync`);
-      
-      // Periodically check for new writers and add them (if we're indexer)
-      if (userdb.autobase.isIndexer) {
-        console.log(`Running as indexer - will add new devices as writers`);
+      // Listen for autobase key from indexer
+      swarmfs.network.on('autobase-key-received', async ({ key, peerId }) => {
+        console.log(`\n[NETWORK] Received autobase key from peer: ${peerId.slice(0, 16)}...`);
+        await userdb.setAutobaseKey(key);
         
-        // TODO: Implement writer discovery mechanism
-        // For now, writers must be added manually via 'add-writer' command
+        // Now send writer request
+        if (userdb.autobase && userdb.autobase.local) {
+          const localKey = userdb.autobase.local.key.toString('hex');
+          console.log(`[NETWORK] Sending writer request: ${localKey.slice(0, 16)}...`);
+        }
+      });
+      
+      await swarmfs.network.joinUserTopic(identity, userdb);
+      console.log(`Joined discovery topic - waiting for autobase key from indexer...`);
+      
+      // Wait for autobase key
+      try {
+        await userdb.waitForAutobaseKey(30000);
+        console.log(`\nAutobase key received!`);
+        console.log(`  Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
+        console.log(`  isIndexer: ${userdb.autobase.isIndexer}`);
+        console.log(`  writable: ${userdb.autobase.writable} (waiting for indexer to add this device...)`);
+      } catch (err) {
+        console.log(`\nTimeout waiting for autobase key. Is the indexer running?`);
       }
     } catch (err) {
-      console.warn(`Could not join autobase topic: ${err.message}`);
+      console.warn(`Could not join discovery topic: ${err.message}`);
     }
+  } else {
+    console.log(`Database ready (non-indexer mode)`);
   }
 
   // Store on swarmfs instance

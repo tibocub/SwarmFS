@@ -141,8 +141,13 @@ program
 // ============================================================================
 
 program
-  .command('login [mnemonic] [device-name]')
-  .description('Login with existing identity or create new one')
+  .command('new-login [device-name]')
+  .description('Create new identity and become indexer (first device)')
+  .action(wrapCommand(cmd.newLoginCommand));
+
+program
+  .command('login <mnemonic> [device-name]')
+  .description('Login with existing identity mnemonic (join existing autobase)')
   .action(wrapCommand(cmd.loginCommand));
 
 program

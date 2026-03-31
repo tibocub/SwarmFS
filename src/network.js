@@ -139,10 +139,11 @@ export class SwarmNetwork extends EventEmitter {
 
   /**
    * Handle new peer connection
-   * Workshop pattern with automatic writer discovery:
-   * 1. Non-indexer sends writer-request immediately
-   * 2. Indexer adds writer and confirms
-   * 3. THEN replication starts (avoids mixing JSON with binary)
+   * 
+   * Protocol flow:
+   * 1. Discovery topic: non-indexer requests key, indexer sends autobase.key
+   * 2. After key exchange: non-indexer sends writer-request, indexer adds writer
+   * 3. Then: start replication
    */
   setupSwarmHandlers() {
     this.swarm.on('connection', (conn, info) => {
@@ -199,120 +200,148 @@ export class SwarmNetwork extends EventEmitter {
         }
       });
 
-      // Automatic writer discovery handshake (before replication)
-      if (this.userDatabase && this.userDatabase.autobase) {
-        this._handleWriterHandshake(conn, peerId);
+      // Handle discovery topic protocol (key exchange + writer handshake)
+      if (this.userDatabase) {
+        this._handleDiscoveryProtocol(conn, peerId);
       } else {
-        // No userdb yet, just setup data handlers
         this.setupConnectionHandlers(conn, peerId);
       }
     });
   }
 
   /**
-   * Handle writer handshake before replication
-   * Non-indexer: send writer-request, wait for writer-added, then replicate
-   * Indexer: wait for writer-request, add writer, send writer-added, then replicate
+   * Handle discovery topic protocol: key exchange + writer handshake
+   * 
+   * Indexer flow:
+   *   - Receive get-key request → send autobase.key
+   *   - Receive writer-request → add writer, send writer-added
+   *   - Start replication
+   * 
+   * Non-indexer flow:
+   *   - Send get-key request → receive autobase.key
+   *   - (userdb creates autobase with received key)
+   *   - Send writer-request → receive writer-added
+   *   - Start replication
    */
-  _handleWriterHandshake(conn, peerId) {
-    const autobase = this.userDatabase.autobase;
-    const isIndexer = autobase.isIndexer;
+  _handleDiscoveryProtocol(conn, peerId) {
+    const autobase = this.userDatabase.autobase
+    const isIndexer = autobase ? autobase.isIndexer : false
+    const hasAutobase = !!autobase
     
-    let handshakeDone = false;
-    let buffer = '';
+    let buffer = ''
+    let replicationStarted = false
     
-    const onHandshakeData = (data) => {
-      if (handshakeDone) return;
+    const onData = (data) => {
+      if (replicationStarted) return
       
-      buffer += data.toString();
-      let idx;
+      buffer += data.toString()
+      let idx
       while ((idx = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
+        const line = buffer.slice(0, idx).trim()
+        buffer = buffer.slice(idx + 1)
         
-        if (!line) continue;
+        if (!line) continue
         
         try {
-          const msg = JSON.parse(line);
+          const msg = JSON.parse(line)
           
-          // Indexer receives writer request
-          if (msg.type === 'writer-request' && msg.key && isIndexer) {
-            debug(`[NETWORK] Writer request from: ${msg.key.slice(0, 16)}...`);
-            this.emit('user:writer-request', { key: Buffer.from(msg.key, 'hex'), peerId });
+          // === INDEXER HANDLERS ===
+          if (isIndexer) {
+            // Key request from non-indexer
+            if (msg.type === 'get-key' && autobase) {
+              const keyMsg = JSON.stringify({
+                type: 'autobase-key',
+                key: autobase.key.toString('hex')
+              }) + '\n'
+              conn.write(keyMsg)
+              debug(`[NETWORK] Sent autobase key: ${autobase.key.toString('hex').slice(0, 16)}...`)
+            }
             
-            // Add writer and confirm
-            this._addWriterAndConfirm(conn, msg.key);
+            // Writer request from non-indexer
+            if (msg.type === 'writer-request' && msg.key) {
+              debug(`[NETWORK] Writer request from: ${msg.key.slice(0, 16)}...`)
+              this._handleWriterRequest(conn, msg.key)
+            }
           }
           
-          // Non-indexer receives confirmation
-          if (msg.type === 'writer-added' && !isIndexer) {
-            debug(`[NETWORK] Writer added confirmation received`);
-            this._startReplication(conn, handshakeState);
+          // === NON-INDEXER HANDLERS ===
+          if (!isIndexer) {
+            // Receive autobase key from indexer
+            if (msg.type === 'autobase-key' && msg.key) {
+              debug(`[NETWORK] Received autobase key: ${msg.key.slice(0, 16)}...`)
+              this.emit('autobase-key-received', { key: Buffer.from(msg.key, 'hex'), peerId })
+            }
+            
+            // Writer added confirmation
+            if (msg.type === 'writer-added') {
+              debug(`[NETWORK] Writer-added confirmation received`)
+              this._startReplication(conn, onData, replicationStarted)
+              replicationStarted = true
+            }
           }
         } catch {
           // Not JSON, ignore
         }
       }
-    };
-    
-    const handshakeState = { done: false, buffer: '', onHandshakeData };
-    
-    // Non-indexer: send writer request immediately
-    if (!isIndexer && autobase.local && autobase.local.key) {
-      const localKey = autobase.local.key.toString('hex');
-      conn.write(JSON.stringify({ type: 'writer-request', key: localKey }) + '\n');
-      debug(`[NETWORK] Sent writer request: ${localKey.slice(0, 16)}...`);
     }
     
-    // Indexer: just listen for requests
-    conn.on('data', onHandshakeData);
+    conn.on('data', onData)
     
-    // Timeout: if no handshake in 5s, start replication anyway
+    // Non-indexer: send get-key request immediately
+    if (!isIndexer && !hasAutobase) {
+      conn.write(JSON.stringify({ type: 'get-key' }) + '\n')
+      debug('[NETWORK] Sent get-key request')
+    }
+    
+    // Non-indexer with autobase: send writer request
+    if (!isIndexer && hasAutobase && autobase.local) {
+      conn.write(JSON.stringify({
+        type: 'writer-request',
+        key: autobase.local.key.toString('hex')
+      }) + '\n')
+      debug(`[NETWORK] Sent writer request: ${autobase.local.key.toString('hex').slice(0, 16)}...`)
+    }
+    
+    // Timeout: start replication anyway after 10s
     setTimeout(() => {
-      if (!handshakeState.done) {
-        debug('[NETWORK] Handshake timeout, starting replication');
-        this._startReplication(conn, handshakeState);
+      if (!replicationStarted && hasAutobase) {
+        debug('[NETWORK] Handshake timeout, starting replication')
+        this._startReplication(conn, onData, replicationStarted)
+        replicationStarted = true
       }
-    }, 5000);
+    }, 10000)
   }
   
   /**
-   * Add writer and send confirmation
+   * Handle writer request (indexer only)
    */
-  async _addWriterAndConfirm(conn, keyHex) {
+  async _handleWriterRequest(conn, keyHex) {
     try {
-      // Add writer via userdb
-      await this.userDatabase.addWriter(Buffer.from(keyHex, 'hex'));
-      debug(`[NETWORK] Added writer: ${keyHex.slice(0, 16)}...`);
+      await this.userDatabase.addWriter(Buffer.from(keyHex, 'hex'))
+      debug(`[NETWORK] Added writer: ${keyHex.slice(0, 16)}...`)
       
-      // Send confirmation
-      conn.write(JSON.stringify({ type: 'writer-added' }) + '\n');
-      debug('[NETWORK] Sent writer-added confirmation');
+      conn.write(JSON.stringify({ type: 'writer-added' }) + '\n')
+      debug('[NETWORK] Sent writer-added confirmation')
       
       // Start replication after adding writer
-      const peerId = (conn.remotePublicKey || conn.publicKey).toString('hex');
-      this._startReplication(conn, { done: false, onHandshakeData: () => {} });
+      // Note: The connection is still in discovery protocol mode
+      // Replication will be started when writer-added is processed
     } catch (err) {
-      debug(`[NETWORK] Failed to add writer: ${err.message}`);
+      debug(`[NETWORK] Failed to add writer: ${err.message}`)
     }
   }
   
   /**
-   * Start replication after handshake
+   * Start replication after handshake complete
    */
-  _startReplication(conn, handshakeState) {
-    if (handshakeState.done) return;
-    handshakeState.done = true;
+  _startReplication(conn, dataHandler, state) {
+    if (state.started) return
+    state.started = true
     
-    conn.removeListener('data', handshakeState.onHandshakeData);
-    this.userDatabase.store.replicate(conn);
-    debug('[NETWORK] Corestore replication active');
-    
-    // Setup regular data handlers
-    const peerId = (conn.remotePublicKey || conn.publicKey).toString('hex');
-    this.setupConnectionHandlers(conn, peerId);
+    conn.removeListener('data', dataHandler)
+    this.userDatabase.store.replicate(conn)
+    debug('[NETWORK] Corestore replication active')
   }
-
 
   setupConnectionHandlers(conn, peerId) {
     conn.on('data', (data) => {

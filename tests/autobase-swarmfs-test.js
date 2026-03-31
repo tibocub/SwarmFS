@@ -1,14 +1,14 @@
 /**
- * Autobase test with automatic writer discovery
+ * Autobase test with explicit roles and key exchange
  * 
- * Key insight: The indexer needs to learn new peers' local.key to add them as writers.
- * 
- * Approach: Simple handshake BEFORE replication starts
- * 1. New peer connects and immediately sends: { type: 'writer-request', key: localKey }
- * 2. Indexer receives, adds writer, then sends: { type: 'writer-added' }
- * 3. Both sides THEN start store.replicate(conn)
- * 
- * This avoids mixing JSON with binary replication data.
+ * Flow:
+ * 1. Indexer creates autobase with null bootstrap (random key)
+ * 2. Both join a SHARED discovery topic (derived from mnemonic)
+ * 3. Indexer broadcasts its autobase.key on the shared topic
+ * 4. Non-indexer receives key, creates autobase with that key
+ * 5. Non-indexer sends writer request
+ * 6. Indexer adds writer
+ * 7. Both start replication on the shared connection
  */
 
 import Corestore from 'corestore'
@@ -24,13 +24,20 @@ import spec from '../src/userdb/spec/hyperdb/index.js'
 
 const testDir = path.join(os.tmpdir(), 'swarmfs-test-' + Date.now())
 fs.mkdirSync(testDir, { recursive: true })
-const keyFile = path.join(testDir, 'autobase-key')
+
+const MNEMONIC = 'test-user-mnemonic-phrase'
 
 console.log('Test dir:', testDir)
 console.log('============================================================')
-console.log('TEST: Autobase with Automatic Writer Discovery')
+console.log('TEST: Autobase with Explicit Roles + Key Exchange')
 console.log('============================================================')
 console.log()
+
+// Derive shared discovery topic from mnemonic
+function deriveDiscoveryTopic(mnemonic) {
+  const namespace = Buffer.from('swarmfs-user-discovery-v1')
+  return crypto.hash(Buffer.concat([namespace, Buffer.from(mnemonic)]))
+}
 
 // HyperDB wrapper
 class UserDB {
@@ -80,13 +87,15 @@ async function apply(nodes, view, base) {
 
 // Device class
 class Device {
-  constructor(name, storagePath) {
+  constructor(name, storagePath, isIndexer) {
     this.name = name
+    this.isIndexer = isIndexer
     this.store = new Corestore(storagePath)
     this.swarm = null
     this.autobase = null
     this.userdb = null
-    this.writersAdded = new Set() // Track writers we've added
+    this.writersAdded = new Set()
+    this.receivedKey = null
   }
   
   async init() {
@@ -117,18 +126,14 @@ class Device {
     console.log(`[${this.name}]   isIndexer: ${this.autobase.isIndexer}`)
   }
   
-  async joinAutobaseTopic() {
-    if (!this.autobase) return
-    
-    const discoveryKey = this.autobase.discoveryKey
-    await this.swarm.join(discoveryKey, { server: true, client: true }).flushed()
-    console.log(`[${this.name}] Joined autobase topic`)
+  async joinDiscoveryTopic(topic) {
+    await this.swarm.join(topic, { server: true, client: true }).flushed()
+    console.log(`[${this.name}] Joined discovery topic: ${topic.toString('hex').slice(0, 16)}...`)
   }
   
   async addWriter(key) {
     const keyHex = key.toString('hex')
     if (this.writersAdded.has(keyHex)) {
-      console.log(`[${this.name}] Writer already added: ${keyHex.slice(0, 16)}...`)
       return
     }
     
@@ -169,66 +174,63 @@ class Device {
 
 // Main test
 async function run() {
-  // --- Device A (first device, becomes indexer) ---
-  console.log('--- Device A ---')
-  const deviceA = new Device('DeviceA', path.join(testDir, 'device-a'))
+  const discoveryTopic = deriveDiscoveryTopic(MNEMONIC)
+  
+  // ========================================
+  // DEVICE A (Indexer)
+  // ========================================
+  console.log('--- Device A (Indexer) ---')
+  const deviceA = new Device('DeviceA', path.join(testDir, 'device-a'), true)
   await deviceA.init()
   await deviceA.createAutobase(null) // null = new autobase, becomes indexer
-  await deviceA.joinAutobaseTopic()
   
-  // Save key for Device B
-  fs.writeFileSync(keyFile, deviceA.autobase.key.toString('hex'))
-  console.log(`[DeviceA] Saved key to file`)
-  
-  // Add self as writer
-  await deviceA.addWriter(deviceA.autobase.local.key)
-  await deviceA.registerDevice()
-  await deviceA.sync()
-  
-  // Setup connection handler with automatic writer discovery
+  // Setup connection handler BEFORE joining topic
   deviceA.swarm.on('connection', (conn, info) => {
     const peerId = (conn.remotePublicKey || info.publicKey).toString('hex')
     console.log(`[DeviceA] Peer connected: ${peerId.slice(0, 16)}...`)
     
-    // Indexer: wait for writer request, then start replication
-    let handshakeDone = false
     let buffer = ''
+    let keySent = false
     
     const onData = (data) => {
-      if (handshakeDone) return
-      
       buffer += data.toString()
-      const idx = buffer.indexOf('\n')
-      
-      if (idx !== -1) {
+      let idx
+      while ((idx = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, idx).trim()
         buffer = buffer.slice(idx + 1)
         
-        if (line) {
-          try {
-            const msg = JSON.parse(line)
-            
-            if (msg.type === 'writer-request' && msg.key) {
-              console.log(`[DeviceA] Writer request from: ${msg.key.slice(0, 16)}...`)
-              
-              // Add writer
-              deviceA.addWriter(Buffer.from(msg.key, 'hex')).then(() => {
-                // Send confirmation
-                conn.write(JSON.stringify({ type: 'writer-added' }) + '\n')
-                console.log(`[DeviceA] Sent writer-added confirmation`)
-                
-                // Now start replication
-                handshakeDone = true
-                conn.removeListener('data', onData)
-                deviceA.store.replicate(conn)
-                console.log(`[DeviceA] Replication started`)
-              }).catch(err => {
-                console.error(`[DeviceA] Failed to add writer: ${err.message}`)
-              })
-            }
-          } catch {
-            // Not JSON, ignore
+        if (!line) continue
+        
+        try {
+          const msg = JSON.parse(line)
+          
+          // Send autobase key if requested
+          if (msg.type === 'get-key' && !keySent) {
+            const keyMsg = JSON.stringify({ 
+              type: 'autobase-key', 
+              key: deviceA.autobase.key.toString('hex') 
+            }) + '\n'
+            conn.write(keyMsg)
+            keySent = true
+            console.log(`[DeviceA] Sent autobase key: ${deviceA.autobase.key.toString('hex').slice(0, 16)}...`)
           }
+          
+          // Handle writer request
+          if (msg.type === 'writer-request' && msg.key) {
+            console.log(`[DeviceA] Writer request from: ${msg.key.slice(0, 16)}...`)
+            
+            deviceA.addWriter(Buffer.from(msg.key, 'hex')).then(() => {
+              conn.write(JSON.stringify({ type: 'writer-added' }) + '\n')
+              console.log(`[DeviceA] Sent writer-added confirmation`)
+              
+              // Start replication
+              conn.removeListener('data', onData)
+              deviceA.store.replicate(conn)
+              console.log(`[DeviceA] Replication started`)
+            })
+          }
+        } catch {
+          // Not JSON
         }
       }
     }
@@ -236,71 +238,108 @@ async function run() {
     conn.on('data', onData)
   })
   
+  await deviceA.joinDiscoveryTopic(discoveryTopic)
+  
+  // Add self as writer and register
+  await deviceA.addWriter(deviceA.autobase.local.key)
+  await deviceA.registerDevice()
+  await deviceA.sync()
+  
   console.log()
   
-  // --- Device B (second device) ---
-  console.log('--- Device B ---')
-  const deviceB = new Device('DeviceB', path.join(testDir, 'device-b'))
+  // ========================================
+  // DEVICE B (Non-Indexer)
+  // ========================================
+  console.log('--- Device B (Non-Indexer) ---')
+  const deviceB = new Device('DeviceB', path.join(testDir, 'device-b'), false)
   await deviceB.init()
   
-  // Read key from file
-  const keyHex = fs.readFileSync(keyFile, 'utf8')
-  const bootstrapKey = Buffer.from(keyHex, 'hex')
-  console.log(`[DeviceB] Read key from file: ${keyHex.slice(0, 16)}...`)
-  
-  await deviceB.createAutobase(bootstrapKey)
+  let autobaseKeyReceived = null
+  let writerAddedReceived = false
   
   // Setup connection handler BEFORE joining topic
   deviceB.swarm.on('connection', (conn, info) => {
     const peerId = (conn.remotePublicKey || info.publicKey).toString('hex')
     console.log(`[DeviceB] Peer connected: ${peerId.slice(0, 16)}...`)
     
-    // Non-indexer: send writer request, wait for confirmation, then start replication
-    let handshakeDone = false
     let buffer = ''
     
-    // Send writer request immediately
-    const localKey = deviceB.autobase.local.key.toString('hex')
-    conn.write(JSON.stringify({ type: 'writer-request', key: localKey }) + '\n')
-    console.log(`[DeviceB] Sent writer request: ${localKey.slice(0, 16)}...`)
-    
     const onData = (data) => {
-      if (handshakeDone) return
-      
       buffer += data.toString()
-      const idx = buffer.indexOf('\n')
-      
-      if (idx !== -1) {
+      let idx
+      while ((idx = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, idx).trim()
         buffer = buffer.slice(idx + 1)
         
-        if (line) {
-          try {
-            const msg = JSON.parse(line)
-            
-            if (msg.type === 'writer-added') {
-              console.log(`[DeviceB] Writer added confirmation received`)
-              
-              // Now start replication
-              handshakeDone = true
-              conn.removeListener('data', onData)
-              deviceB.store.replicate(conn)
-              console.log(`[DeviceB] Replication started`)
-            }
-          } catch {
-            // Not JSON, ignore
+        if (!line) continue
+        
+        try {
+          const msg = JSON.parse(line)
+          
+          // Receive autobase key
+          if (msg.type === 'autobase-key' && msg.key) {
+            autobaseKeyReceived = Buffer.from(msg.key, 'hex')
+            console.log(`[DeviceB] Received autobase key: ${msg.key.slice(0, 16)}...`)
           }
+          
+          // Receive writer-added confirmation
+          if (msg.type === 'writer-added') {
+            writerAddedReceived = true
+            console.log(`[DeviceB] Writer-added confirmation received`)
+            
+            // Start replication
+            conn.removeListener('data', onData)
+            deviceB.store.replicate(conn)
+            console.log(`[DeviceB] Replication started`)
+          }
+        } catch {
+          // Not JSON
         }
       }
     }
     
     conn.on('data', onData)
+    
+    // Request autobase key immediately
+    conn.write(JSON.stringify({ type: 'get-key' }) + '\n')
+    console.log(`[DeviceB] Sent get-key request`)
   })
   
-  // NOW join the topic
-  await deviceB.joinAutobaseTopic()
+  await deviceB.joinDiscoveryTopic(discoveryTopic)
   
-  // Wait for connection and writer addition
+  // Wait for autobase key
+  console.log(`[DeviceB] Waiting for autobase key...`)
+  for (let i = 0; i < 20; i++) {
+    if (autobaseKeyReceived) break
+    await new Promise(r => setTimeout(r, 500))
+  }
+  
+  if (!autobaseKeyReceived) {
+    console.log(`[DeviceB] ERROR: No autobase key received`)
+    console.log('TEST: ❌ FAILED')
+    return
+  }
+  
+  // Create autobase with received key
+  console.log(`[DeviceB] Creating autobase with received key...`)
+  await deviceB.createAutobase(autobaseKeyReceived)
+  
+  // Send writer request to indexer (need to reconnect or use existing connection)
+  // For simplicity, we'll wait for the indexer to process our request
+  // The connection handler already sent get-key, now we send writer-request
+  
+  // Find the connection and send writer request
+  const connections = deviceB.swarm.connections
+  if (connections.size > 0) {
+    const conn = connections.values().next().value
+    conn.write(JSON.stringify({ 
+      type: 'writer-request', 
+      key: deviceB.autobase.local.key.toString('hex') 
+    }) + '\n')
+    console.log(`[DeviceB] Sent writer request: ${deviceB.autobase.local.key.toString('hex').slice(0, 16)}...`)
+  }
+  
+  // Wait to become writable
   console.log(`[DeviceB] Waiting to become writable...`)
   for (let i = 0; i < 30; i++) {
     await deviceB.sync()
@@ -314,14 +353,15 @@ async function run() {
   if (!deviceB.autobase.writable) {
     console.log(`[DeviceB] ERROR: Not writable after timeout`)
   } else {
-    // Register device
     await deviceB.registerDevice()
     await deviceB.sync()
   }
   
   console.log()
   
-  // --- Final sync ---
+  // ========================================
+  // FINAL SYNC
+  // ========================================
   console.log('--- Final sync ---')
   await deviceA.sync()
   await deviceB.sync()
@@ -364,7 +404,11 @@ async function run() {
   // Cleanup
   await deviceA.close()
   await deviceB.close()
-  fs.rmSync(testDir, { recursive: true, force: true })
+  try {
+    fs.rmSync(testDir, { recursive: true, force: true })
+  } catch {
+    // Ignore cleanup errors on Windows
+  }
 }
 
 run().catch(err => {

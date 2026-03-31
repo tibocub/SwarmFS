@@ -116,6 +116,7 @@ export class UserDatabase extends ReadyResource {
   constructor(options = {}) {
     super()
     
+    this.options = options
     this.storagePath = options.storagePath
     this.identity = options.identity  // IdentityManager instance
     
@@ -147,14 +148,54 @@ export class UserDatabase extends ReadyResource {
     this.store = new Corestore(this.storagePath)
     await this.store.ready()
 
-    // Workshop pattern: derive bootstrap key deterministically from user identity
-    // All devices with same mnemonic join the SAME autobase - no key exchange needed
-    const bootstrapKey = this.identity.deriveAutobaseKey()
+    // Bootstrap key strategy:
+    // - Indexer (first device): null bootstrap = creates new autobase, becomes indexer
+    // - Non-indexer (subsequent devices): wait for key from network (key exchange)
     
-    console.log(`[USERDB] Using deterministic bootstrap key: ${bootstrapKey.toString('hex').slice(0, 16)}...`)
+    if (this.options.isIndexer) {
+      console.log(`[USERDB] Creating new autobase as indexer (null bootstrap)`)
+      await this._createAutobase(null)
+      this._isIndexerDevice = true
+    } else {
+      // Non-indexer: don't create autobase yet, wait for key from network
+      console.log(`[USERDB] Non-indexer mode - waiting for autobase key from network...`)
+      this._isIndexerDevice = false
+      this._autobaseKeyPromise = new Promise((resolve) => {
+        this._resolveAutobaseKey = resolve
+      })
+    }
+  }
 
-    // Create Autobase with deterministic key
-    await this._createAutobase(bootstrapKey)
+  /**
+   * Called by network layer when autobase key is received from indexer
+   */
+  async setAutobaseKey(key) {
+    console.log(`[USERDB] Received autobase key: ${key.toString('hex').slice(0, 16)}...`)
+    
+    if (this.autobase) {
+      console.log(`[USERDB] Autobase already created`)
+      return
+    }
+    
+    await this._createAutobase(key)
+    
+    if (this._resolveAutobaseKey) {
+      this._resolveAutobaseKey(key)
+    }
+  }
+
+  /**
+   * Wait for autobase key (non-indexers only)
+   */
+  async waitForAutobaseKey(timeout = 30000) {
+    if (this.autobase) return this.autobase.key
+    if (this._autobaseKeyPromise) {
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout waiting for autobase key')), timeout)
+      })
+      return Promise.race([this._autobaseKeyPromise, timeoutPromise])
+    }
+    return null
   }
 
   /**
