@@ -61,9 +61,14 @@ async function autoLogin() {
       await identity.initUser(null, password);
       await identity.initDevice();
       
+      // Use persisted isIndexer flag from device config
+      const isIndexer = identity.isDeviceIndexer();
+      console.log(`  Device role: ${isIndexer ? 'INDEXER' : 'NON-INDEXER'}`);
+      
       const userdb = new UserDatabase({
         storagePath: userdbPath,
-        identity
+        identity,
+        isIndexer
       });
       await userdb.ready();
       
