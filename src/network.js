@@ -177,6 +177,18 @@ export class SwarmNetwork extends EventEmitter {
       const peerConn = this.peerConnections.get(peerId);
       peerConn.conn = conn;
 
+      // If no topics attributed but we have user-discovery topic, attribute there
+      // (Hyperswarm doesn't always provide topic info on incoming connections)
+      if (attributedTopicKeys.length === 0 && this.autobaseTopic) {
+        const topic = this.topics.get(this.autobaseTopic);
+        if (topic) {
+          peerConn.topics.add(this.autobaseTopic);
+          topic.connections.set(peerId, conn);
+          console.log(`[NETWORK]    Topic: ${topic.name} (attributed manually)`);
+          this.emit('peer:connected', { conn, peerId, topicKey: Buffer.from(this.autobaseTopic, 'hex') });
+        }
+      }
+
       for (const t of attributedTopicKeys) {
         const topicKeyHex = t.toString('hex');
         const topic = this.topics.get(topicKeyHex);
