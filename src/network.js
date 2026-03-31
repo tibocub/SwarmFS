@@ -311,7 +311,7 @@ export class SwarmNetwork extends EventEmitter {
             // Writer request from non-indexer
             if (msg.type === 'writer-request' && msg.key) {
               console.log(`[NETWORK] INDEXER: Writer request from: ${msg.key.slice(0, 16)}...`)
-              this._handleWriterRequest(conn, msg.key)
+              this._handleWriterRequest(conn, msg.key, onData, replicationStarted)
             }
           }
           
@@ -340,6 +340,15 @@ export class SwarmNetwork extends EventEmitter {
             if (msg.type === 'writer-added') {
               console.log(`[NETWORK] NON-INDEXER: Writer-added confirmation received`)
               this._startReplication(conn, onData, replicationStarted)
+              
+              // Sync data from indexer after replication starts
+              setTimeout(async () => {
+                if (this.userDatabase.autobase) {
+                  console.log('[NETWORK] Syncing autobase data...')
+                  await this.userDatabase.autobase.update()
+                  console.log(`[NETWORK] Autobase synced, length: ${this.userDatabase.autobase.length}`)
+                }
+              }, 1000)
             }
           }
         } catch {
@@ -377,7 +386,7 @@ export class SwarmNetwork extends EventEmitter {
   /**
    * Handle writer request (indexer only)
    */
-  async _handleWriterRequest(conn, keyHex) {
+  async _handleWriterRequest(conn, keyHex, onData, replicationStarted) {
     try {
       await this.userDatabase.addWriter(Buffer.from(keyHex, 'hex'))
       console.log(`[NETWORK] Added writer: ${keyHex.slice(0, 16)}...`)
@@ -385,9 +394,8 @@ export class SwarmNetwork extends EventEmitter {
       conn.write(JSON.stringify({ type: 'writer-added' }) + '\n')
       console.log('[NETWORK] Sent writer-added confirmation')
       
-      // Start replication after adding writer
-      // Note: The connection is still in discovery protocol mode
-      // Replication will be started when writer-added is processed
+      // Start replication immediately after adding writer
+      this._startReplication(conn, onData, replicationStarted)
     } catch (err) {
       console.log(`[NETWORK] Failed to add writer: ${err.message}`)
     }
