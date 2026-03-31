@@ -463,6 +463,13 @@ export class UserDatabase extends ReadyResource {
    */
   async getAllDevices() {
     if (!this.opened) await this.ready()
+    
+    // Non-indexers may not have autobase yet (waiting for key)
+    if (!this.autobase) {
+      console.log('[USERDB] No autobase yet, cannot fetch devices')
+      return []
+    }
+    
     // Sync remote data before reading
     await this.autobase.update()
     const devices = []

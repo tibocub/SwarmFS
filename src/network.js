@@ -254,10 +254,10 @@ export class SwarmNetwork extends EventEmitter {
     console.log(`[NETWORK]   Has autobase: ${hasAutobase}`)
     
     let buffer = ''
-    let replicationStarted = false
+    const replicationStarted = { started: false }
     
     const onData = (data) => {
-      if (replicationStarted) return
+      if (replicationStarted.started) return
       
       buffer += data.toString()
       let idx
@@ -302,7 +302,6 @@ export class SwarmNetwork extends EventEmitter {
             if (msg.type === 'writer-added') {
               console.log(`[NETWORK] NON-INDEXER: Writer-added confirmation received`)
               this._startReplication(conn, onData, replicationStarted)
-              replicationStarted = true
             }
           }
         } catch {
@@ -330,10 +329,9 @@ export class SwarmNetwork extends EventEmitter {
     
     // Timeout: start replication anyway after 10s
     setTimeout(() => {
-      if (!replicationStarted && hasAutobase) {
+      if (!replicationStarted.started && hasAutobase) {
         console.log('[NETWORK] Handshake timeout, starting replication')
         this._startReplication(conn, onData, replicationStarted)
-        replicationStarted = true
       }
     }, 10000)
   }
@@ -344,16 +342,16 @@ export class SwarmNetwork extends EventEmitter {
   async _handleWriterRequest(conn, keyHex) {
     try {
       await this.userDatabase.addWriter(Buffer.from(keyHex, 'hex'))
-      debug(`[NETWORK] Added writer: ${keyHex.slice(0, 16)}...`)
+      console.log(`[NETWORK] Added writer: ${keyHex.slice(0, 16)}...`)
       
       conn.write(JSON.stringify({ type: 'writer-added' }) + '\n')
-      debug('[NETWORK] Sent writer-added confirmation')
+      console.log('[NETWORK] Sent writer-added confirmation')
       
       // Start replication after adding writer
       // Note: The connection is still in discovery protocol mode
       // Replication will be started when writer-added is processed
     } catch (err) {
-      debug(`[NETWORK] Failed to add writer: ${err.message}`)
+      console.log(`[NETWORK] Failed to add writer: ${err.message}`)
     }
   }
   
@@ -366,7 +364,7 @@ export class SwarmNetwork extends EventEmitter {
     
     conn.removeListener('data', dataHandler)
     this.userDatabase.store.replicate(conn)
-    debug('[NETWORK] Corestore replication active')
+    console.log('[NETWORK] Corestore replication active')
   }
 
   setupConnectionHandlers(conn, peerId) {
