@@ -517,11 +517,15 @@ export class SwarmNetwork extends EventEmitter {
     this.identity = identity;
 
     // Derive discovery topic from mnemonic (same for all devices with same mnemonic)
-    const mnemonic = identity.mnemonic || identity.getUserIdentity?.()
+    const mnemonic = identity.mnemonic
     if (!mnemonic) {
-      console.log('[NETWORK] No mnemonic, cannot derive discovery topic');
+      console.log('[NETWORK] ERROR: No mnemonic available for discovery topic');
+      console.log('[NETWORK] identity.mnemonic:', identity.mnemonic);
+      console.log('[NETWORK] identity has mnemonic:', !!identity.mnemonic);
       return null;
     }
+    
+    console.log(`[NETWORK] Using mnemonic: ${mnemonic.slice(0, 20)}...`);
     
     const crypto = await import('hypercore-crypto')
     const namespace = Buffer.from('swarmfs-user-discovery-v1')
