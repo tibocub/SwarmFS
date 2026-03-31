@@ -536,7 +536,9 @@ export class SwarmNetwork extends EventEmitter {
       return null;
     }
     
-    console.log(`[NETWORK] Using mnemonic: ${mnemonic.slice(0, 20)}...`);
+    // Debug: show full mnemonic to verify they match
+    console.log(`[NETWORK] DEBUG Full mnemonic: "${mnemonic}"`);
+    console.log(`[NETWORK] DEBUG mnemonic length: ${mnemonic.length}`);
     
     const crypto = await import('hypercore-crypto')
     const namespace = Buffer.from('swarmfs-user-discovery-v1')
