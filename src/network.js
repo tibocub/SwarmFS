@@ -296,6 +296,19 @@ export class SwarmNetwork extends EventEmitter {
             if (msg.type === 'autobase-key' && msg.key) {
               console.log(`[NETWORK] NON-INDEXER: Received autobase key: ${msg.key.slice(0, 16)}...`)
               this.emit('autobase-key-received', { key: Buffer.from(msg.key, 'hex'), peerId })
+              
+              // Send writer request immediately after receiving key
+              // We need to wait for the autobase to be created by the event handler
+              setTimeout(async () => {
+                if (this.userDatabase.autobase && this.userDatabase.autobase.local) {
+                  const writerKey = this.userDatabase.autobase.local.key.toString('hex')
+                  conn.write(JSON.stringify({
+                    type: 'writer-request',
+                    key: writerKey
+                  }) + '\n')
+                  console.log(`[NETWORK] NON-INDEXER: Sent writer request: ${writerKey.slice(0, 16)}...`)
+                }
+              }, 500) // Small delay to let autobase be created
             }
             
             // Writer added confirmation
