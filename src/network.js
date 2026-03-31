@@ -160,43 +160,35 @@ export class SwarmNetwork extends EventEmitter {
    * Handle new peer connection
    */
   setupSwarmHandlers() {
-    const handler = (conn, info) => {
-      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
-
+    const attachCommonHandlers = (conn, peerId) => {
       conn.on('error', (err) => {
         console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
       });
 
-      // Only attribute connection to topics explicitly listed by Hyperswarm.
-      // For dedicated swarms (user/autobase) this is sufficient and avoids one
-      // physical connection being treated as multiple topics.
-      const attributedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
+      conn.on('close', () => {
+        debug(`\n[NETWORK] ❌ Peer disconnected: ${peerId.substring(0, 16)}...`);
 
-      debug(`\n[NETWORK] 🔗 Peer connected: ${peerId.substring(0, 16)}...`);
+        const peerConn = this.peerConnections.get(peerId);
+        const topics = peerConn ? Array.from(peerConn.topics) : [];
 
-      if (attributedTopicKeys.length === 0) {
-        debug('[NETWORK]    Connection has no attributed topics');
-      }
+        for (const topicKeyHex of topics) {
+          const topic = this.topics.get(topicKeyHex);
+          if (topic) {
+            topic.connections.delete(peerId);
+          }
 
-      // Check if this is a user topic connection for key exchange
-      const isUserTopic = this.userTopic && attributedTopicKeys.some(t => t.toString('hex') === this.userTopic);
-      
-      // Check if this is an autobase replication connection
-      const isAutobaseTopic = this.autobaseTopic && attributedTopicKeys.some(t => t.toString('hex') === this.autobaseTopic);
-      
-      if (isUserTopic && this.userDatabase) {
-        debug(`[NETWORK]    Setting up key exchange for user topic`);
-        // Use workshop pattern: key exchange + store.replicate
-        const isIndexer = Boolean(this.userDatabase.autobase && this.userDatabase.autobase.isIndexer);
-        this._handleUserTopicConnection(conn, peerId, isIndexer);
-      }
-      
-      if (isAutobaseTopic && this.userDatabase) {
-        debug(`[NETWORK]    Setting up replication for autobase topic`);
-        // Just set up store replication for data sync
-        this.userDatabase.store.replicate(conn);
-      }
+          const topicKey = Buffer.from(topicKeyHex, 'hex');
+          this.emit('peer:disconnected', { peerId, topicKey });
+          this.emit('peer:disconnect', { peerId, topicKey });
+        }
 
+        if (peerConn && peerConn.conn === conn) {
+          this.peerConnections.delete(peerId);
+        }
+      });
+    };
+
+    const addConnToTopics = (conn, peerId, topicKeys) => {
       if (!this.peerConnections.has(peerId)) {
         this.peerConnections.set(peerId, { conn, topics: new Set() });
       }
@@ -204,38 +196,79 @@ export class SwarmNetwork extends EventEmitter {
       const peerConn = this.peerConnections.get(peerId);
       peerConn.conn = conn;
 
-      for (const t of attributedTopicKeys) {
+      for (const t of topicKeys) {
         const topicKeyHex = t.toString('hex');
         const topic = this.topics.get(topicKeyHex);
-        if (!topic) {
-          continue;
-        }
+        if (!topic) continue;
 
         peerConn.topics.add(topicKeyHex);
         topic.connections.set(peerId, conn);
 
         debug(`[NETWORK]    Topic: ${topic.name}`);
-
-        // Emit both event styles for compatibility across older/newer layers.
         this.emit('peer:connected', { conn, peerId, topicKey: t });
         this.emit('peer:connect', { conn, peerId, topicKey: t });
       }
+    };
 
+    const mainHandler = (conn, info) => {
+      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
+
+      attachCommonHandlers(conn, peerId);
+
+      // Main swarm: only attribute connection to topics explicitly listed by Hyperswarm.
+      const attributedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
+
+      debug(`\n[NETWORK] 🔗 Peer connected (mainSwarm): ${peerId.substring(0, 16)}...`);
+
+      if (attributedTopicKeys.length === 0) {
+        debug('[NETWORK]    Connection has no attributed topics');
+      }
+
+      addConnToTopics(conn, peerId, attributedTopicKeys);
+
+      // For mainSwarm connections that are not user/autobase topics, keep existing protocol handlers
       if (attributedTopicKeys.length === 0) {
         this.emit('peer:connected', { conn, peerId, topicKey: null });
         this.emit('peer:connect', { conn, peerId, topicKey: null });
       }
 
-      // Only set up data handlers for non-replication connections
-      // User topic and autobase topic replication is handled by corestore
-      if (!isUserTopic && !isAutobaseTopic) {
-        this.setupConnectionHandlers(conn, peerId);
+      this.setupConnectionHandlers(conn, peerId);
+    };
+
+    const userHandler = (conn, info) => {
+      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
+      attachCommonHandlers(conn, peerId);
+      debug(`\n[NETWORK] 🔗 Peer connected (userSwarm): ${peerId.substring(0, 16)}...`);
+
+      // Attribute this connection to the user-swarm topic explicitly
+      const topicKey = this.userTopic ? Buffer.from(this.userTopic, 'hex') : null;
+      if (topicKey) addConnToTopics(conn, peerId, [topicKey]);
+
+      if (this.userDatabase) {
+        debug(`[NETWORK]    userSwarm: key exchange handler active`);
+        const isIndexer = Boolean(this.userDatabase.autobase && this.userDatabase.autobase.isIndexer);
+        this._handleUserTopicConnection(conn, peerId, isIndexer);
       }
     };
 
-    this.mainSwarm.on('connection', handler);
-    this.userSwarm.on('connection', handler);
-    this.autobaseSwarm.on('connection', handler);
+    const autobaseHandler = (conn, info) => {
+      const peerId = (conn.remotePublicKey || info.publicKey).toString('hex');
+      attachCommonHandlers(conn, peerId);
+      debug(`\n[NETWORK] 🔗 Peer connected (autobaseSwarm): ${peerId.substring(0, 16)}...`);
+
+      // Attribute this connection to the autobase-replication topic explicitly
+      const topicKey = this.autobaseTopic ? Buffer.from(this.autobaseTopic, 'hex') : null;
+      if (topicKey) addConnToTopics(conn, peerId, [topicKey]);
+
+      if (this.userDatabase) {
+        debug(`[NETWORK]    autobaseSwarm: replication handler active`);
+        this.userDatabase.store.replicate(conn);
+      }
+    };
+
+    this.mainSwarm.on('connection', mainHandler);
+    this.userSwarm.on('connection', userHandler);
+    this.autobaseSwarm.on('connection', autobaseHandler);
   }
 
   _getSwarmForTopic(topicName) {
