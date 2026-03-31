@@ -139,7 +139,10 @@ export class SwarmNetwork extends EventEmitter {
 
   /**
    * Handle new peer connection
-   * Workshop pattern: single connection handler that replicates corestore on ALL connections
+   * Workshop pattern with automatic writer discovery:
+   * 1. Non-indexer sends writer-request immediately
+   * 2. Indexer adds writer and confirms
+   * 3. THEN replication starts (avoids mixing JSON with binary)
    */
   setupSwarmHandlers() {
     this.swarm.on('connection', (conn, info) => {
@@ -150,13 +153,6 @@ export class SwarmNetwork extends EventEmitter {
       conn.on('error', (err) => {
         console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
       });
-
-      // Workshop pattern: replicate corestore on ALL connections
-      // With deterministic bootstrap key, all connections are for data sync
-      if (this.userDatabase) {
-        this.userDatabase.store.replicate(conn);
-        debug('[NETWORK]    Corestore replication active');
-      }
 
       // Track topics for this connection
       const attributedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
@@ -203,9 +199,118 @@ export class SwarmNetwork extends EventEmitter {
         }
       });
 
-      // Setup data handlers
-      this.setupConnectionHandlers(conn, peerId);
+      // Automatic writer discovery handshake (before replication)
+      if (this.userDatabase && this.userDatabase.autobase) {
+        this._handleWriterHandshake(conn, peerId);
+      } else {
+        // No userdb yet, just setup data handlers
+        this.setupConnectionHandlers(conn, peerId);
+      }
     });
+  }
+
+  /**
+   * Handle writer handshake before replication
+   * Non-indexer: send writer-request, wait for writer-added, then replicate
+   * Indexer: wait for writer-request, add writer, send writer-added, then replicate
+   */
+  _handleWriterHandshake(conn, peerId) {
+    const autobase = this.userDatabase.autobase;
+    const isIndexer = autobase.isIndexer;
+    
+    let handshakeDone = false;
+    let buffer = '';
+    
+    const onHandshakeData = (data) => {
+      if (handshakeDone) return;
+      
+      buffer += data.toString();
+      let idx;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        
+        if (!line) continue;
+        
+        try {
+          const msg = JSON.parse(line);
+          
+          // Indexer receives writer request
+          if (msg.type === 'writer-request' && msg.key && isIndexer) {
+            debug(`[NETWORK] Writer request from: ${msg.key.slice(0, 16)}...`);
+            this.emit('user:writer-request', { key: Buffer.from(msg.key, 'hex'), peerId });
+            
+            // Add writer and confirm
+            this._addWriterAndConfirm(conn, msg.key);
+          }
+          
+          // Non-indexer receives confirmation
+          if (msg.type === 'writer-added' && !isIndexer) {
+            debug(`[NETWORK] Writer added confirmation received`);
+            this._startReplication(conn, handshakeState);
+          }
+        } catch {
+          // Not JSON, ignore
+        }
+      }
+    };
+    
+    const handshakeState = { done: false, buffer: '', onHandshakeData };
+    
+    // Non-indexer: send writer request immediately
+    if (!isIndexer && autobase.local && autobase.local.key) {
+      const localKey = autobase.local.key.toString('hex');
+      conn.write(JSON.stringify({ type: 'writer-request', key: localKey }) + '\n');
+      debug(`[NETWORK] Sent writer request: ${localKey.slice(0, 16)}...`);
+    }
+    
+    // Indexer: just listen for requests
+    conn.on('data', onHandshakeData);
+    
+    // Timeout: if no handshake in 5s, start replication anyway
+    setTimeout(() => {
+      if (!handshakeState.done) {
+        debug('[NETWORK] Handshake timeout, starting replication');
+        this._startReplication(conn, handshakeState);
+      }
+    }, 5000);
+  }
+  
+  /**
+   * Add writer and send confirmation
+   */
+  async _addWriterAndConfirm(conn, keyHex) {
+    try {
+      // Add writer via userdb
+      await this.userDatabase.addWriter(Buffer.from(keyHex, 'hex'));
+      debug(`[NETWORK] Added writer: ${keyHex.slice(0, 16)}...`);
+      
+      // Send confirmation
+      conn.write(JSON.stringify({ type: 'writer-added' }) + '\n');
+      debug('[NETWORK] Sent writer-added confirmation');
+      
+      // Start replication after adding writer
+      const peerId = (conn.remotePublicKey || conn.publicKey).toString('hex');
+      this._startReplication(conn, { done: false, onHandshakeData: () => {} });
+    } catch (err) {
+      debug(`[NETWORK] Failed to add writer: ${err.message}`);
+    }
+  }
+  
+  /**
+   * Start replication after handshake
+   */
+  _startReplication(conn, handshakeState) {
+    if (handshakeState.done) return;
+    handshakeState.done = true;
+    
+    conn.removeListener('data', handshakeState.onHandshakeData);
+    this.userDatabase.store.replicate(conn);
+    debug('[NETWORK] Corestore replication active');
+    
+    // Setup regular data handlers
+    const peerId = (conn.remotePublicKey || conn.publicKey).toString('hex');
+    this.setupConnectionHandlers(conn, peerId);
   }
 
 
