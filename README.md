@@ -149,6 +149,7 @@ Fundamentals done ! Can tracke local files to answer requests, share files over 
 - [ ] Better sharing controls (per-topic files allowlist/denylist and/or per-file topics allowlist/denylist, share entire virtual directories)
 - [x] Minimal ID system (required to develop other features such as multi-user directories, actually secure private topics, etc)
 - [ ] Mnemonic login (and replicate user data from other devices)
+- [ ] Use Localwatch to detect local file changes and automatically update the DB and virtual file system
 
 ### Planned
 

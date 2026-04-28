@@ -341,12 +341,18 @@ export class SwarmNetwork extends EventEmitter {
               console.log(`[NETWORK] NON-INDEXER: Writer-added confirmation received`)
               this._startReplication(conn, onData, replicationStarted)
               
-              // Sync data from indexer after replication starts
+              // Sync data from indexer after replication starts, then register our device
               setTimeout(async () => {
                 if (this.userDatabase.autobase) {
                   console.log('[NETWORK] Syncing autobase data...')
                   await this.userDatabase.autobase.update()
                   console.log(`[NETWORK] Autobase synced, length: ${this.userDatabase.autobase.length}`)
+                  
+                  // Now we're a writer - register our device
+                  if (this.userDatabase.autobase.writable) {
+                    console.log('[NETWORK] Now writable, registering device...')
+                    await this.userDatabase._registerThisDevice()
+                  }
                 }
               }, 1000)
             }

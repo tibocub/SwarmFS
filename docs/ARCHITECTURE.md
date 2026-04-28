@@ -4,16 +4,16 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                           CLI (cli.js)                               │
-│  Commands: add, share, browse, download, resume, status, verify      │
+│                           CLI (cli.js)                              │
+│  Commands: add, share, browse, download, resume, status, verify     │
 └─────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        SwarmFS (swarmfs.js)                          │
-│  - File management (add, verify, hash)                               │
-│  - Topic management (create, join, share)                            │
-│  - Download coordination                                              │
+│                        SwarmFS (swarmfs.js)                         │
+│  - File management (add, verify, hash)                              │
+│  - Topic management (create, join, share)                           │
+│  - Download coordination                                            │
 └─────────────────────────────────────────────────────────────────────┘
          │                    │                    │
          ▼                    ▼                    ▼
@@ -38,9 +38,9 @@
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          Disk Storage                                │
-│  - File data (actual files at their paths)                           │
-│  - swarmfs-data/swarmfs.db (SQLite database)                         │
+│                          Disk Storage                               │
+│  - File data (actual files at their paths)                          │
+│  - swarmfs-data/swarmfs.db (SQLite database)                        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -87,7 +87,7 @@ Requester                          Responder
                     └──────┬──────┘
                            │
                            ▼
-                    ┌─────────────┐
+                   ┌─────────────┐
           ┌────────│  DOWNLOAD   │◄───────┐
           │        │    LOOP     │        │
           │        └──────┬──────┘        │
@@ -95,7 +95,7 @@ Requester                          Responder
           │    ┌──────────┼──────────┐    │
           │    ▼          ▼          ▼    │
           │ ┌──────┐ ┌──────┐ ┌──────┐    │
-          │ │WAIT  │ │REQUEST│ │VERIFY│    │
+          │ │WAIT  │ │REQUEST││VERIFY│    │
           │ │SLOT  │ │CHUNK │ │CHUNK │    │
           │ └──┬───┘ └──┬───┘ └──┬───┘    │
           │    │        │        │        │
