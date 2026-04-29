@@ -92,6 +92,13 @@ async function autoLogin() {
           try {
             await userdb.setAutobaseKey(key);
             console.log(`[NETWORK] Autobase created with received key`);
+            
+            // Join autobase discovery topic for replication
+            if (userdb.autobase && userdb.autobase.discoveryKey) {
+              await swarmfs.network.joinTopic('autobase-replication', userdb.autobase.discoveryKey);
+              console.log(`[NETWORK] Joined autobase replication topic`);
+            }
+            
             console.log(`[NETWORK] Waiting for indexer to add us as writer...`);
           } catch (err) {
             console.log(`[NETWORK] Failed to create autobase: ${err.message}`);
@@ -105,6 +112,16 @@ async function autoLogin() {
         console.log(`  User swarm: ${topicKey.toString('hex').slice(0, 16)}...`);
       } catch (err) {
         console.log(`  User swarm: failed (${err.message})`);
+      }
+      
+      // Indexer: Join autobase discovery topic after autobase is created
+      if (isIndexer && userdb.autobase && userdb.autobase.discoveryKey) {
+        try {
+          await swarmfs.network.joinTopic('autobase-replication', userdb.autobase.discoveryKey);
+          console.log(`  Autobase replication topic joined`);
+        } catch (err) {
+          console.log(`  Autobase topic: failed (${err.message})`);
+        }
       }
       
       console.log('');
