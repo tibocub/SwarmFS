@@ -870,15 +870,15 @@ export class Protocol extends EventEmitter {
       return;
     }
 
-    const chunks = this.db.getFileChunks(file.id);
+    const chunkList = this.db.getFileChunks(file.id);
     const metadata = {
       merkleRoot,
       type: 'file',
       suggestedName: path.basename(share.share_path),
       size: file.size,
       chunkSize: file.chunk_size,
-      chunkCount: file.chunk_count,
-      chunks: chunks.map((chunk) => ({
+      chunks: file.chunk_count,
+      chunkList: chunkList.map((chunk) => ({
         hash: chunk.chunk_hash,
         offset: chunk.chunk_offset,
         size: chunk.chunk_size
