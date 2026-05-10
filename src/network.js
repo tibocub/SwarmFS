@@ -155,20 +155,18 @@ export class SwarmNetwork extends EventEmitter {
         console.error(`[NETWORK] ⚠️  Connection error with ${peerId.substring(0, 8)}:`, err.message);
       });
 
-      // Track topics for this connection
-      const attributedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
-      
-      // Debug: show what topics are being attributed
-      console.log(`[NETWORK] DEBUG info.topics count: ${(info.topics || []).length}`);
-      console.log(`[NETWORK] DEBUG this.topics count: ${this.topics.size}`);
-      console.log(`[NETWORK] DEBUG attributed topics: ${attributedTopicKeys.length}`);
-      
-      if ((info.topics || []).length > 0) {
-        for (const t of info.topics) {
-          const hex = t.toString('hex');
-          const hasIt = this.topics.has(hex);
-          console.log(`[NETWORK] DEBUG topic ${hex.slice(0, 16)}... tracked: ${hasIt}`);
-        }
+      // Hyperswarm v3: In client mode, peerInfo.topics is set.
+      // In server mode (incoming connections), peerInfo.topics can be empty.
+      // For our protocol, we still need to be able to broadcast per-topic requests
+      // to incoming peers, so we conservatively attribute server-mode connections
+      // to all currently joined topics.
+      const joinedTopicKeys = (info.topics || []).filter((t) => this.topics.has(t.toString('hex')));
+      const attributedTopicKeys = joinedTopicKeys.length > 0
+        ? joinedTopicKeys
+        : Array.from(this.topics.keys()).map((hex) => Buffer.from(hex, 'hex'));
+
+      if (attributedTopicKeys.length === 0) {
+        debug('[NETWORK]    No joined topics yet; connection will not be attributed to a topic');
       }
 
       if (!this.peerConnections.has(peerId)) {
@@ -177,17 +175,10 @@ export class SwarmNetwork extends EventEmitter {
       const peerConn = this.peerConnections.get(peerId);
       peerConn.conn = conn;
 
-      // If no topics attributed but we have user-discovery topic, attribute there
-      // (Hyperswarm doesn't always provide topic info on incoming connections)
-      if (attributedTopicKeys.length === 0 && this.autobaseTopic) {
-        const topic = this.topics.get(this.autobaseTopic);
-        if (topic) {
-          peerConn.topics.add(this.autobaseTopic);
-          topic.connections.set(peerId, conn);
-          console.log(`[NETWORK]    Topic: ${topic.name} (attributed manually)`);
-          this.emit('peer:connected', { conn, peerId, topicKey: Buffer.from(this.autobaseTopic, 'hex') });
-        }
-      }
+      // Determine if this connection belongs to the user-discovery topic
+      // and whether it also serves file-sharing topics
+      let isUserDiscoveryConnection = false;
+      let hasFileSharingTopic = false;
 
       for (const t of attributedTopicKeys) {
         const topicKeyHex = t.toString('hex');
@@ -197,44 +188,52 @@ export class SwarmNetwork extends EventEmitter {
         peerConn.topics.add(topicKeyHex);
         topic.connections.set(peerId, conn);
 
-        console.log(`[NETWORK]    Topic: ${topic.name}`);
+        debug(`[NETWORK]    Topic: ${topic.name}`);
+
+        // Emit both event styles for compatibility
         this.emit('peer:connected', { conn, peerId, topicKey: t });
         this.emit('peer:connect', { conn, peerId, topicKey: t });
+
+        if (topicKeyHex === this.autobaseTopic) {
+          isUserDiscoveryConnection = true;
+        } else {
+          hasFileSharingTopic = true;
+        }
       }
 
-      // Setup close handler
-      conn.on('close', () => {
-        debug(`\n[NETWORK] ❌ Peer disconnected: ${peerId.substring(0, 16)}...`);
+      if (attributedTopicKeys.length === 0) {
+        this.emit('peer:connected', { conn, peerId, topicKey: null });
+        this.emit('peer:connect', { conn, peerId, topicKey: null });
+      }
 
-        const peerConn = this.peerConnections.get(peerId);
-        const topics = peerConn ? Array.from(peerConn.topics) : [];
+      // Determine if this connection is exclusively for user-discovery
+      // (no file-sharing topics). The discovery protocol attaches a raw
+      // data listener that conflicts with Protomux, so we must NOT run
+      // it on connections that also serve file-sharing topics.
+      const isExclusiveUserDiscovery = isUserDiscoveryConnection && !hasFileSharingTopic;
 
-        for (const topicKeyHex of topics) {
-          const topic = this.topics.get(topicKeyHex);
-          if (topic) {
-            topic.connections.delete(peerId);
-          }
+      // Setup data and close handlers for all connections.
+      // For exclusive user-discovery connections, skip the data handler because
+      // the discovery protocol attaches its own data listener for the handshake.
+      // After the handshake completes, corestore.replicate() takes over the stream.
+      this.setupConnectionHandlers(conn, peerId, { skipDataHandler: isExclusiveUserDiscovery });
 
-          const topicKey = Buffer.from(topicKeyHex, 'hex');
-          this.emit('peer:disconnected', { peerId, topicKey });
-          this.emit('peer:disconnect', { peerId, topicKey });
-        }
-
-        if (peerConn && peerConn.conn === conn) {
-          this.peerConnections.delete(peerId);
-        }
-      });
-
-      // Handle discovery topic protocol (key exchange + writer handshake)
-      if (this.userDatabase) {
+      if (isExclusiveUserDiscovery && this.userDatabase) {
         this._handleDiscoveryProtocol(conn, peerId);
-      } else {
+      } else if (isExclusiveUserDiscovery && !this.userDatabase) {
         // Queue the connection - will be processed when joinUserTopic is called
-        console.log(`[NETWORK] Connection before userDatabase set, queuing...`)
+        console.log(`[NETWORK] User-discovery connection before userDatabase set, queuing...`)
         if (!this._pendingConnections) {
           this._pendingConnections = []
         }
         this._pendingConnections.push({ conn, peerId })
+      } else if (isUserDiscoveryConnection && hasFileSharingTopic && this.userDatabase) {
+        // Connection serves both user-discovery and file-sharing topics.
+        // Skip the discovery handshake (it conflicts with Protomux), but
+        // start corestore replication for autobase sync. store.replicate()
+        // uses Protomux internally and can coexist with the file-sharing protocol.
+        this.userDatabase.store.replicate(conn)
+        console.log('[NETWORK] Corestore replication active (shared connection)')
       }
     });
   }
@@ -419,22 +418,27 @@ export class SwarmNetwork extends EventEmitter {
     console.log('[NETWORK] Corestore replication active')
   }
 
-  setupConnectionHandlers(conn, peerId) {
-    conn.on('data', (data) => {
-      const peerConn = this.peerConnections.get(peerId);
-      const topics = peerConn ? Array.from(peerConn.topics) : [];
+  setupConnectionHandlers(conn, peerId, { skipDataHandler = false } = {}) {
+    // Data handler: emit peer:data for the protocol layer
+    // Skip for user-discovery connections that use the discovery handshake instead
+    if (!skipDataHandler) {
+      conn.on('data', (data) => {
+        const peerConn = this.peerConnections.get(peerId);
+        const topics = peerConn ? Array.from(peerConn.topics) : [];
 
-      // Emit only once per chunk. If topics are known, include them as metadata.
-      // Protocol currently ignores topicKey on peer:data anyway, and duplicating
-      // peer:data breaks message reassembly/decoding.
-      if (topics.length > 0) {
-        this.emit('peer:data', { conn, peerId, topicKeys: topics, data });
-        return;
-      }
+        // Emit only once per chunk. If topics are known, include them as metadata.
+        // Protocol currently ignores topicKey on peer:data anyway, and duplicating
+        // peer:data breaks message reassembly/decoding.
+        if (topics.length > 0) {
+          this.emit('peer:data', { conn, peerId, topicKeys: topics, data });
+          return;
+        }
 
-      this.emit('peer:data', conn, peerId, data);
-    });
+        this.emit('peer:data', conn, peerId, data);
+      });
+    }
 
+    // Close handler: always needed for cleanup
     conn.on('close', () => {
       debug(`\n[NETWORK] ❌ Peer disconnected: ${peerId.substring(0, 16)}...`);
 
