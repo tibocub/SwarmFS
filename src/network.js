@@ -100,6 +100,21 @@ export class SwarmNetwork extends EventEmitter {
     this.emit('topic:joined', topicName, topicKeyHex);
     debug(`[NETWORK] ✓ Joined topic: ${topicName}`);
     debug(`[NETWORK]   Discovering peers...`);
+
+    // Attribute existing peer connections to the newly joined topic.
+    // Hyperswarm reuses connections across topics, so peers already connected
+    // via other topics won't trigger a new 'connection' event, but they can
+    // still serve the new topic. Without this, the new topic's connections
+    // map stays empty → asymmetric visibility (one side sees the peer, other doesn't).
+    const topic = this.topics.get(topicKeyHex);
+    for (const [peerId, peerConn] of this.peerConnections) {
+      if (!peerConn.conn || peerConn.conn.destroyed) continue;
+      if (peerConn.topics.has(topicKeyHex)) continue; // already attributed
+
+      peerConn.topics.add(topicKeyHex);
+      topic.connections.set(peerId, peerConn.conn);
+      debug(`[NETWORK]   Re-attributed existing peer ${peerId.substring(0, 16)}... to topic ${topicName}`);
+    }
   }
 
   /**

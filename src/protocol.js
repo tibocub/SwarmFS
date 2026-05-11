@@ -782,7 +782,7 @@ export class Protocol extends EventEmitter {
             merkleRoot: share.merkle_root,
             type: 'file',
             size: file.size,
-            chunks: file.chunk_count
+            chunkCount: file.chunk_count
           });
         }
       } else if (share.share_type === 'vdir') {
@@ -876,21 +876,18 @@ export class Protocol extends EventEmitter {
       type: 'file',
       suggestedName: path.basename(share.share_path),
       size: file.size,
+      chunkCount: file.chunk_count,
       chunkSize: file.chunk_size,
-      chunks: file.chunk_count,
-      chunkList: chunkList.map((chunk) => ({
-        hash: chunk.chunk_hash,
-        offset: chunk.chunk_offset,
-        size: chunk.chunk_size
-      }))
+      chunkHashes: chunkList.map((chunk) => chunk.chunk_hash)
     };
 
     this.sendMetadataResponse(conn, requestId, metadata);
   }
 
   handleMetadataResponse(conn, peerId, payload) {
-    // Schema returns flat fields: requestId, merkleRoot, type, suggestedName, ...
-    const { requestId, merkleRoot, type, suggestedName, children, size, chunks, chunkSize } = payload;
+    // Codec returns: requestId, merkleRoot, type, suggestedName, ...
+    // For files: size, chunkCount, chunkSize, chunkHashes[]
+    const { requestId, merkleRoot, type, suggestedName, children, size, chunkCount, chunkSize, chunkHashes } = payload;
 
     const request = this.activeMetadataRequests.get(requestId);
     if (!request) {
@@ -906,14 +903,21 @@ export class Protocol extends EventEmitter {
     }
     this.activeMetadataRequests.delete(requestId);
 
-    // Build metadata object for event
+    // Build metadata object for event (matches DownloadSession constructor expectations)
     const metadata = { merkleRoot, type, suggestedName };
     if (type === 'vdir') {
       metadata.children = children;
     } else {
       metadata.size = size;
-      metadata.chunks = chunks;
+      metadata.chunkCount = chunkCount;
       metadata.chunkSize = chunkSize;
+      // Build chunks array with computed offsets/sizes from chunkHashes
+      // (offset/size can be derived from index * chunkSize, hash is authoritative)
+      metadata.chunks = (chunkHashes || []).map((hash, i) => {
+        const offset = i * chunkSize;
+        const chunkBytes = Math.min(chunkSize, Math.max(0, size - offset));
+        return { hash, offset, size: chunkBytes };
+      });
     }
 
     // Handle both file and vdir responses
@@ -921,7 +925,7 @@ export class Protocol extends EventEmitter {
       console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (vdir: ${children?.length || 0} children)`);
       this.emit('vdir:metadata', { requestId, peerId, metadata });
     } else {
-      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${chunks} chunks)`);
+      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${chunkCount} chunks)`);
       this.emit('metadata:response', { requestId, peerId, metadata });
     }
   }

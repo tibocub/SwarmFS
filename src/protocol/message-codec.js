@@ -97,6 +97,10 @@ const uint16 = c.uint16
 // uint8
 const uint8 = c.uint8
 
+// uint (variable-length, supports up to 2^53 - safe JS integer range)
+// Used for file sizes to support >4GB files
+const uint = c.uint
+
 // ============================================================================
 // Message schemas
 // ============================================================================
@@ -214,15 +218,15 @@ const fileEntrySchema = {
     
     // Type-specific fields
     if (typeNum === 0) {
-      // File: size, chunks
-      uint32.preencode(state, val.size || 0)
-      uint32.preencode(state, val.chunks || 0)
+      // File: size (uint for >4GB), chunkCount
+      uint.preencode(state, val.size || 0)
+      uint.preencode(state, val.chunkCount || 0)
     } else if (typeNum === 1) {
       // Vdir: childCount
       uint32.preencode(state, val.childCount || 0)
     } else {
-      // Directory: size
-      uint32.preencode(state, val.size || 0)
+      // Directory: size (uint for >4GB)
+      uint.preencode(state, val.size || 0)
     }
   },
   encode(state, val) {
@@ -233,12 +237,12 @@ const fileEntrySchema = {
     uint8.encode(state, typeNum)
     
     if (typeNum === 0) {
-      uint32.encode(state, val.size || 0)
-      uint32.encode(state, val.chunks || 0)
+      uint.encode(state, val.size || 0)
+      uint.encode(state, val.chunkCount || 0)
     } else if (typeNum === 1) {
       uint32.encode(state, val.childCount || 0)
     } else {
-      uint32.encode(state, val.size || 0)
+      uint.encode(state, val.size || 0)
     }
   },
   decode(state) {
@@ -251,8 +255,8 @@ const fileEntrySchema = {
     if (typeNum === 0) {
       return {
         name, path, merkleRoot, type,
-        size: uint32.decode(state),
-        chunks: uint32.decode(state)
+        size: uint.decode(state),
+        chunkCount: uint.decode(state)
       }
     } else if (typeNum === 1) {
       return {
@@ -262,7 +266,7 @@ const fileEntrySchema = {
     } else {
       return {
         name, path, merkleRoot, type,
-        size: uint32.decode(state)
+        size: uint.decode(state)
       }
     }
   }
@@ -331,12 +335,12 @@ const vdirChildSchema = {
     hex32.preencode(state, val.merkleRoot)
     uint8.preencode(state, val.type === 'vdir' ? 1 : 0) // 0=file, 1=vdir
     string.preencode(state, val.suggestedName || '')
-    // For files: size (uint32)
+    // For files: size (uint for >4GB)
     // For vdirs: hasChildren flag (uint8)
     if (val.type === 'vdir') {
       uint8.preencode(state, val.hasChildren ? 1 : 0)
     } else {
-      uint32.preencode(state, val.size || 0)
+      uint.preencode(state, val.size || 0)
     }
   },
   encode(state, val) {
@@ -346,7 +350,7 @@ const vdirChildSchema = {
     if (val.type === 'vdir') {
       uint8.encode(state, val.hasChildren ? 1 : 0)
     } else {
-      uint32.encode(state, val.size || 0)
+      uint.encode(state, val.size || 0)
     }
   },
   decode(state) {
@@ -359,7 +363,7 @@ const vdirChildSchema = {
       const hasChildren = uint8.decode(state) === 1
       return { merkleRoot, type, suggestedName, hasChildren }
     } else {
-      const size = uint32.decode(state)
+      const size = uint.decode(state)
       return { merkleRoot, type, suggestedName, size }
     }
   }
@@ -371,7 +375,7 @@ const vdirChildSchema = {
 //   - merkleRoot (required)
 //   - type: 'file' | 'vdir' (default 'file' for backward compat)
 //   - suggestedName: string (optional)
-//   - For files: size, chunks, chunkSize
+//   - For files: size (uint, >4GB safe), chunkCount, chunkSize, chunkHashes[]
 //   - For vdirs: children[] (shallow, depth=1)
 const metadataResponseSchema = {
   preencode(state, val) {
@@ -387,10 +391,15 @@ const metadataResponseSchema = {
         vdirChildSchema.preencode(state, child)
       }
     } else {
-      // File: size, chunks, chunkSize (existing fields)
-      uint32.preencode(state, val.size || 0)
-      uint32.preencode(state, val.chunks || 0)
-      uint32.preencode(state, val.chunkSize || 0)
+      // File: size (uint for >4GB), chunkCount, chunkSize, chunkHashes[]
+      uint.preencode(state, val.size || 0)
+      uint.preencode(state, val.chunkCount || 0)
+      uint.preencode(state, val.chunkSize || 0)
+      const hashes = val.chunkHashes || []
+      uint32.preencode(state, hashes.length)
+      for (const hash of hashes) {
+        hex32.preencode(state, hash)
+      }
     }
   },
   encode(state, val) {
@@ -405,9 +414,14 @@ const metadataResponseSchema = {
         vdirChildSchema.encode(state, child)
       }
     } else {
-      uint32.encode(state, val.size || 0)
-      uint32.encode(state, val.chunks || 0)
-      uint32.encode(state, val.chunkSize || 0)
+      uint.encode(state, val.size || 0)
+      uint.encode(state, val.chunkCount || 0)
+      uint.encode(state, val.chunkSize || 0)
+      const hashes = val.chunkHashes || []
+      uint32.encode(state, hashes.length)
+      for (const hash of hashes) {
+        hex32.encode(state, hash)
+      }
     }
   },
   decode(state) {
@@ -425,10 +439,15 @@ const metadataResponseSchema = {
       }
       return { requestId, merkleRoot, type, suggestedName, children }
     } else {
-      const size = uint32.decode(state)
-      const chunks = uint32.decode(state)
-      const chunkSize = uint32.decode(state)
-      return { requestId, merkleRoot, type: 'file', suggestedName, size, chunks, chunkSize }
+      const size = uint.decode(state)
+      const chunkCount = uint.decode(state)
+      const chunkSize = uint.decode(state)
+      const hashCount = uint32.decode(state)
+      const chunkHashes = []
+      for (let i = 0; i < hashCount; i++) {
+        chunkHashes.push(hex32.decode(state))
+      }
+      return { requestId, merkleRoot, type: 'file', suggestedName, size, chunkCount, chunkSize, chunkHashes }
     }
   }
 }
