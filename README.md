@@ -1,9 +1,13 @@
 ## ! Software still in ALPHA - breaking changes expected !
 
+## ! SwarmFS developement paused !
+The basic file-transfer demo works but incoming features (user/friends, multi-writer virtual directories, moderated file-swarms, etc) will depend on [hypergraph](https://github.com/tibocub/hypergraph), so my time is focus on hypergraph for now.
+
 # SwarmFS
 
-SwarmFS is a P2P file-sharing protocol that aims to be faster
-than IPFS and easier to setup and use than BitTorrent.
+SwarmFS is a P2P file-transfer protocol that can also be considered a decentralized file-system. You can think of it as an attempt to recreate google drive or a ftp server without servers.
+
+It aims to be faster to resolve than IPFS (because of context-scoped resolution) and easier to setup and use than BitTorrent (thanks to hyperswarm's efficient NAT transversal and holepunching techniques).
 
 At its core:
 
