@@ -5,18 +5,27 @@
 
 import { Database } from './sqlite.js';
 
+const SCHEMA_VERSION = 2;
+
 const SCHEMA = `
+-- Schema version marker
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER PRIMARY KEY
+);
+
 -- Files: Tracked files on filesystem
+-- Note: merkle_root + path must be unique (allows same content at multiple paths)
 
 CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  path TEXT UNIQUE NOT NULL,
   merkle_root TEXT NOT NULL,
+  path TEXT NOT NULL,
   size INTEGER NOT NULL,
   chunk_size INTEGER NOT NULL,
   chunk_count INTEGER NOT NULL,
   added_at INTEGER NOT NULL,
-  file_modified_at INTEGER NOT NULL
+  file_modified_at INTEGER NOT NULL,
+  UNIQUE(merkle_root, path)
 );
 
 -- File chunks: Maps files to their chunks in order
@@ -77,6 +86,7 @@ CREATE TABLE IF NOT EXISTS downloads (
 
 CREATE INDEX IF NOT EXISTS idx_file_chunks_hash ON file_chunks(chunk_hash);
 CREATE INDEX IF NOT EXISTS idx_files_merkle_root ON files(merkle_root);
+CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_topic_shares_topic ON topic_shares(topic_id);
 CREATE INDEX IF NOT EXISTS idx_downloads_completed ON downloads(completed_at);
 
@@ -107,12 +117,10 @@ CREATE TABLE IF NOT EXISTS vdir_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   parent_vdir_id TEXT NOT NULL,
   child_type INTEGER NOT NULL,
-  child_merkle_root TEXT NULL,
-  child_vdir_id TEXT NULL,
+  child_merkle_root TEXT NOT NULL,
   suggested_name TEXT NULL,
   added_at INTEGER NOT NULL,
-  FOREIGN KEY (parent_vdir_id) REFERENCES virtual_directories(id) ON DELETE CASCADE,
-  FOREIGN KEY (child_vdir_id) REFERENCES virtual_directories(id) ON DELETE CASCADE
+  FOREIGN KEY (parent_vdir_id) REFERENCES virtual_directories(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_vdir_entries_parent
@@ -127,10 +135,130 @@ export class SwarmDB {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL'); // Better concurrency
     this._initSchema();
+    this._migrateIfNeeded();
   }
 
   _initSchema() {
     this.db.exec(SCHEMA);
+  }
+
+  /**
+   * Handle schema migrations
+   */
+  _migrateIfNeeded() {
+    // Get current schema version
+    const row = this.db.prepare('SELECT version FROM schema_version').get();
+    const currentVersion = row?.version || 0;
+
+    if (currentVersion < 2) {
+      this._migrateV1toV2();
+    }
+
+    // Update schema version
+    this.db.prepare('INSERT OR REPLACE INTO schema_version (version) VALUES (?)').run(SCHEMA_VERSION);
+  }
+
+  /**
+   * Migrate from V1 (path UNIQUE) to V2 (merkle_root, path UNIQUE)
+   * Also removes child_vdir_id from vdir_entries
+   */
+  _migrateV1toV2() {
+    console.log('Migrating database schema from V1 to V2...');
+
+    // Check if files table has old schema (path UNIQUE)
+    const filesInfo = this.db.prepare("PRAGMA table_info(files)").all();
+    const hasOldFilesSchema = filesInfo.some(
+      col => col.name === 'path' && col.pk === 1 // In old schema, path was unique (marked as pk-like)
+    );
+
+    // Actually check by looking at the unique constraint
+    const filesIndexes = this.db.prepare("PRAGMA index_list(files)").all();
+    const hasPathUnique = filesIndexes.some(idx => idx.unique === 1 && idx.name.includes('path'));
+
+    if (hasPathUnique || hasOldFilesSchema) {
+      console.log('Migrating files table to allow multiple paths per merkle_root...');
+
+      // SQLite doesn't support ALTER TABLE to change constraints
+      // Must recreate table
+      this.db.exec(`
+        -- Backup existing data
+        CREATE TABLE files_backup AS SELECT * FROM files;
+
+        -- Drop old table and its indexes
+        DROP TABLE files;
+        DROP INDEX IF EXISTS idx_files_merkle_root;
+
+        -- Create new table with correct schema
+        CREATE TABLE files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merkle_root TEXT NOT NULL,
+          path TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          chunk_size INTEGER NOT NULL,
+          chunk_count INTEGER NOT NULL,
+          added_at INTEGER NOT NULL,
+          file_modified_at INTEGER NOT NULL,
+          UNIQUE(merkle_root, path)
+        );
+
+        -- Restore data (id will be re-generated, but that's ok)
+        INSERT INTO files (merkle_root, path, size, chunk_size, chunk_count, added_at, file_modified_at)
+        SELECT merkle_root, path, size, chunk_size, chunk_count, added_at, file_modified_at
+        FROM files_backup;
+
+        -- Recreate indexes
+        CREATE INDEX idx_files_merkle_root ON files(merkle_root);
+        CREATE INDEX idx_files_path ON files(path);
+
+        -- Drop backup
+        DROP TABLE files_backup;
+      `);
+
+      console.log('Files table migration complete.');
+    }
+
+    // Migrate vdir_entries: remove child_vdir_id column
+    const vdirEntriesInfo = this.db.prepare("PRAGMA table_info(vdir_entries)").all();
+    const hasChildVdirId = vdirEntriesInfo.some(col => col.name === 'child_vdir_id');
+
+    if (hasChildVdirId) {
+      console.log('Migrating vdir_entries table to remove child_vdir_id...');
+
+      this.db.exec(`
+        -- Backup existing data
+        CREATE TABLE vdir_entries_backup AS SELECT * FROM vdir_entries;
+
+        -- Drop old table
+        DROP TABLE vdir_entries;
+
+        -- Create new table without child_vdir_id
+        CREATE TABLE vdir_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          parent_vdir_id TEXT NOT NULL,
+          child_type INTEGER NOT NULL,
+          child_merkle_root TEXT NOT NULL,
+          suggested_name TEXT NULL,
+          added_at INTEGER NOT NULL,
+          FOREIGN KEY (parent_vdir_id) REFERENCES virtual_directories(id) ON DELETE CASCADE
+        );
+
+        -- Restore data
+        INSERT INTO vdir_entries (id, parent_vdir_id, child_type, child_merkle_root, suggested_name, added_at)
+        SELECT id, parent_vdir_id, child_type, child_merkle_root, suggested_name, added_at
+        FROM vdir_entries_backup;
+
+        -- Recreate indexes
+        CREATE INDEX idx_vdir_entries_parent ON vdir_entries(parent_vdir_id);
+        CREATE INDEX idx_vdir_entries_child_root ON vdir_entries(child_merkle_root);
+
+        -- Drop backup
+        DROP TABLE vdir_entries_backup;
+      `);
+
+      console.log('vdir_entries table migration complete.');
+    }
+
+    console.log('Database migration V1 -> V2 complete.');
   }
 
   ensureVfsRoot(rootId) {
@@ -190,13 +318,112 @@ export class SwarmDB {
     return stmt.all(parentVdirId);
   }
 
-  addVdirEntry(parentVdirId, childType, childMerkleRoot, childVdirId = null, suggestedName = null) {
+  addVdirEntry(parentVdirId, childType, childMerkleRoot, suggestedName = null) {
     const stmt = this.db.prepare(`
-      INSERT INTO vdir_entries (parent_vdir_id, child_type, child_merkle_root, child_vdir_id, suggested_name, added_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO vdir_entries (parent_vdir_id, child_type, child_merkle_root, suggested_name, added_at)
+      VALUES (?, ?, ?, ?, ?)
     `);
-    const res = stmt.run(parentVdirId, childType, childMerkleRoot, childVdirId, suggestedName, Date.now());
+    const res = stmt.run(parentVdirId, childType, childMerkleRoot, suggestedName, Date.now());
     return res.lastInsertRowid;
+  }
+
+  /**
+   * Remove an entry from a vdir
+   */
+  removeVdirEntry(parentVdirId, childMerkleRoot) {
+    const stmt = this.db.prepare(`
+      DELETE FROM vdir_entries 
+      WHERE parent_vdir_id = ? AND child_merkle_root = ?
+    `);
+    return stmt.run(parentVdirId, childMerkleRoot);
+  }
+
+  /**
+   * Update a vdir entry's child_merkle_root (used when child vdir gets its merkle root)
+   * @param {string} parentVdirId - Parent vdir UUID
+   * @param {string} oldRoot - Old value (UUID placeholder or old merkle root)
+   * @param {string} newRoot - New merkle root
+   */
+  updateVdirEntryMerkleRoot(parentVdirId, oldRoot, newRoot) {
+    const stmt = this.db.prepare(`
+      UPDATE vdir_entries 
+      SET child_merkle_root = ?
+      WHERE parent_vdir_id = ? AND child_merkle_root = ?
+    `);
+    return stmt.run(newRoot, parentVdirId, oldRoot);
+  }
+
+  /**
+   * Find all vdir_entries that reference a vdir by its UUID (as child_merkle_root placeholder)
+   * @param {string} vdirId - The vdir UUID to find references to
+   * @returns {Array} - Array of entries with parent_vdir_id
+   */
+  findVdirEntriesByChildId(vdirId) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM vdir_entries WHERE child_merkle_root = ?
+    `);
+    return stmt.all(vdirId);
+  }
+
+  /**
+   * Update a vdir's merkle root
+   */
+  updateVdirMerkleRoot(vdirId, merkleRoot) {
+    const stmt = this.db.prepare(`
+      UPDATE virtual_directories 
+      SET merkle_root = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    return stmt.run(merkleRoot, Date.now(), vdirId);
+  }
+
+  /**
+   * Get a vdir by its merkle root (for protocol lookup)
+   */
+  getVdirByMerkleRoot(merkleRoot) {
+    return this.db.prepare(
+      'SELECT * FROM virtual_directories WHERE merkle_root = ?'
+    ).get(merkleRoot);
+  }
+
+  /**
+   * Get enriched children data for protocol response
+   * Returns array with merkleRoot, type, suggestedName, size (for files), hasChildren (for vdirs)
+   */
+  getVdirChildren(vdirId) {
+    const entries = this.listVdirEntries(vdirId);
+    
+    return entries.map(e => {
+      const child = {
+        merkleRoot: e.child_merkle_root,
+        type: e.child_type === 0 ? 'file' : 'vdir',
+        suggestedName: e.suggested_name
+      };
+
+      if (e.child_type === 0) {
+        // File: lookup size
+        const file = this.getFileByMerkleRoot(e.child_merkle_root);
+        child.size = file?.size || 0;
+      } else {
+        // Vdir: check if has children
+        const childVdir = this.getVdirById(e.child_merkle_root);
+        if (childVdir) {
+          const childEntries = this.listVdirEntries(childVdir.id);
+          child.hasChildren = childEntries.length > 0;
+        } else {
+          // child_merkle_root is a UUID (empty vdir case)
+          const vdir = this.getVdirById(e.child_merkle_root);
+          if (vdir) {
+            const childEntries = this.listVdirEntries(vdir.id);
+            child.hasChildren = childEntries.length > 0;
+          } else {
+            child.hasChildren = false;
+          }
+        }
+      }
+
+      return child;
+    });
   }
 
   /**
@@ -215,23 +442,33 @@ export class SwarmDB {
 
   /**
    * Add a file to the database
+   * Note: Uses INSERT OR IGNORE to handle duplicate (merkle_root, path) pairs
    */
   addFile(filePath, merkleRoot, fileSize, chunkSize, chunkCount, fileModifiedAt) {
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO files 
-      (path, merkle_root, size, chunk_size, chunk_count, added_at, file_modified_at)
+      INSERT OR IGNORE INTO files 
+      (merkle_root, path, size, chunk_size, chunk_count, added_at, file_modified_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     
     const result = stmt.run(
-      filePath,
       merkleRoot,
+      filePath,
       fileSize,
       chunkSize,
       chunkCount,
       Date.now(),
       fileModifiedAt
     );
+    
+    // If no rows inserted, the (merkle_root, path) pair already exists
+    // Return the existing file's id
+    if (result.changes === 0) {
+      const existing = this.db.prepare(
+        'SELECT id FROM files WHERE merkle_root = ? AND path = ?'
+      ).get(merkleRoot, filePath);
+      return existing?.id;
+    }
     
     return result.lastInsertRowid;
   }
@@ -250,6 +487,14 @@ export class SwarmDB {
   getFileByMerkleRoot(merkleRoot) {
     const stmt = this.db.prepare('SELECT * FROM files WHERE merkle_root = ?');
     return stmt.get(merkleRoot);
+  }
+
+  /**
+   * Get all files by merkle root (for finding any available copy)
+   */
+  getFilesByMerkleRoot(merkleRoot) {
+    const stmt = this.db.prepare('SELECT * FROM files WHERE merkle_root = ? AND file_modified_at > 0 ORDER BY added_at DESC');
+    return stmt.all(merkleRoot);
   }
 
   /**

@@ -14,6 +14,35 @@ const CONFIG_FILE = path.join(__dirname, '..', 'swarmfs.config.json');
 let cachedConfig = null;
 
 /**
+ * Protocol configuration constants
+ */
+export const PROTOCOL_CONFIG = {
+  MAX_CONCURRENT_SUBTREE_SERVES: 8,    // Prevents memory exhaustion
+  MAX_SUBTREE_SERVE_QUEUE_SIZE: 100,   // Drop requests if exceeded
+  REQUEST_TIMEOUT_MS: 30000,           // Per-subtree request timeout
+  MERKLE_CACHE_MAX_SIZE: 10,           // Max cached merkle trees
+  BACKPRESSURE_THRESHOLD: 4 * 1024 * 1024, // 4MB pending bytes before backpressure
+}
+
+/**
+ * Download configuration constants
+ */
+export const DOWNLOAD_CONFIG = {
+  TARGET_SUBTREE_BYTES: 64 * 1024 * 1024,  // 64MB subtrees
+  MAX_CONCURRENT_REQUESTS: 8,
+  ENDGAME_THRESHOLD: 0.95,             // Switch to endgame at 95% complete
+  DEFAULT_SUBTREE_CHUNKS: 8,           // Default chunks per subtree request
+}
+
+/**
+ * Network configuration constants
+ */
+export const NETWORK_CONFIG = {
+  MAX_CONNECTIONS: 50,
+  FLUSH_TIMEOUT_MS: 30000,
+}
+
+/**
  * Load configuration from file
  */
 export function loadConfig() {
@@ -65,4 +94,26 @@ export function getChunkSize() {
 export function getIgnorePatterns() {
   const config = loadConfig();
   return config.ignorePatterns || [];
+}
+
+/**
+ * Get identity directory path
+ * Uses SWARMFS_IDENTITY env var if set, otherwise uses dataDir/identity
+ */
+export function getIdentityDir() {
+  if (process.env.SWARMFS_IDENTITY) {
+    return process.env.SWARMFS_IDENTITY;
+  }
+  return path.join(getDataDir(), 'identity');
+}
+
+/**
+ * Get userdb directory path
+ * Uses SWARMFS_USERDB env var if set, otherwise uses dataDir/userdb
+ */
+export function getUserdbDir() {
+  if (process.env.SWARMFS_USERDB) {
+    return process.env.SWARMFS_USERDB;
+  }
+  return path.join(getDataDir(), 'userdb');
 }

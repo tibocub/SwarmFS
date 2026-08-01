@@ -5,8 +5,14 @@
 
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 import terminalKit from 'terminal-kit'
+import readline from 'readline'
 import { VFS } from './vfs.js'
+import { IdentityManager } from './identity/index.js'
+import { UserDatabase } from './userdb/index.js'
+import { SwarmNetwork } from './network.js'
+import { getIdentityDir, getUserdbDir } from './config.js'
 
 const term = terminalKit.terminal;
 
@@ -57,6 +63,78 @@ function getVfs(swarmfs) {
 
 function isInteractivePromptAvailable() {
   return !!(process.stdin?.isTTY && process.stdout?.isTTY && typeof term.inputField === 'function');
+}
+
+/**
+ * Prompt for password - uses readline in REPL mode, terminal-kit in CLI mode
+ * This avoids terminal-kit escape code issues when running in the REPL
+ */
+async function promptPassword(promptText) {
+  if (process.env.SWARMFS_REPL === '1') {
+    // In REPL mode, we need to work with the existing readline
+    // The REPL's readline interface is controlling stdin, so we need to pause it
+    return new Promise((resolve) => {
+      process.stdout.write(promptText);
+      
+      // Store current raw mode state
+      const wasRaw = process.stdin.isRaw;
+      
+      // Pause any existing readline to release stdin
+      process.stdin.pause();
+      
+      // Enable raw mode for hidden input
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+      }
+      
+      let input = '';
+      
+      const onData = (char) => {
+        const c = char.toString('utf8');
+        if (c === '\n' || c === '\r' || c === '\u0004') {
+          // Done - restore state
+          process.stdin.off('data', onData);
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(wasRaw || false);
+          }
+          process.stdout.write('\n');
+          process.stdin.resume();
+          resolve(input);
+        } else if (c === '\u0003') {
+          // Ctrl-C
+          process.stdin.off('data', onData);
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(wasRaw || false);
+          }
+          process.stdout.write('\n');
+          process.exit();
+        } else if (c === '\u007f' || c === '\b') {
+          // Backspace
+          if (input.length > 0) {
+            input = input.slice(0, -1);
+            process.stdout.write('\b \b');
+          }
+        } else if (c.charCodeAt(0) >= 32) {
+          // Printable characters only
+          input += c;
+          process.stdout.write('*');
+        }
+      };
+      
+      process.stdin.on('data', onData);
+      process.stdin.resume();
+    });
+  } else {
+    // Use terminal-kit in CLI mode
+    return new Promise((resolve) => {
+      term(promptText);
+      term.inputField({ echo: false }, (err, input) => {
+        term('\n');
+        restoreTerminal();
+        resolve(input || '');
+      });
+    });
+  }
 }
 
 async function promptTrackMissingFile(localPath) {
@@ -206,7 +284,7 @@ export async function vdirAddCommand(swarmfs, ...args) {
       continue;
     }
 
-    const result = vfs.addLocalFile(vfsDirPath, absoluteLocal, suggestedName);
+    const result = await vfs.addFile(vfsDirPath, absoluteLocal, suggestedName);
     if (result?.file?.merkle_root) {
       console.log(result.file.merkle_root);
     }
@@ -214,6 +292,101 @@ export async function vdirAddCommand(swarmfs, ...args) {
   }
 
   return results.length === 1 ? results[0] : results;
+}
+
+/**
+ * Share a vdir in a topic - outputs the merkle root for sharing
+ */
+export async function vdirShareCommand(swarmfs, topicName, vfsPath) {
+  swarmfs.open();
+  const vfs = getVfs(swarmfs);
+  
+  // Check topic exists
+  const topic = swarmfs.db.getTopic(topicName);
+  if (!topic) {
+    throw new Error(`Topic "${topicName}" not found. Create it first with "topic create ${topicName}"`);
+  }
+  
+  const vdir = vfs.resolvePath(vfsPath || '/');
+  if (!vdir) {
+    throw new Error(`Vdir not found: ${vfsPath}`);
+  }
+
+  // Ensure merkle root is calculated
+  if (!vdir.merkle_root) {
+    await vfs.updateVdirMerkleRoot(vdir.id);
+    // Re-fetch to get updated merkle_root
+    const updated = vfs.db.getVdirById(vdir.id);
+    if (updated) {
+      vdir.merkle_root = updated.merkle_root;
+    }
+  }
+
+  if (!vdir.merkle_root) {
+    throw new Error('Vdir is empty - add files before sharing');
+  }
+
+  // Add to topic_shares
+  swarmfs.db.addTopicShare(topic.id, 'vdir', vdir.id, vdir.merkle_root);
+
+  console.log('✓ Vdir shared successfully');
+  console.log(`  Topic: ${topicName}`);
+  console.log(`  VFS Path: ${vfsPath || '/'}`);
+  console.log(`  Merkle Root: ${vdir.merkle_root}`);
+  
+  return vdir;
+}
+
+/**
+ * Show vdir info including merkle root and children
+ */
+export async function vdirInfoCommand(swarmfs, vfsPath) {
+  swarmfs.open();
+  const vfs = getVfs(swarmfs);
+  
+  const vdir = vfs.resolvePath(vfsPath || '/');
+  if (!vdir) {
+    throw new Error(`Vdir not found: ${vfsPath}`);
+  }
+
+  // Ensure merkle root is calculated
+  if (!vdir.merkle_root) {
+    await vfs.updateVdirMerkleRoot(vdir.id);
+    const updated = vfs.db.getVdirById(vdir.id);
+    if (updated) {
+      vdir.merkle_root = updated.merkle_root;
+    }
+  }
+
+  console.log(`Name: ${vdir.name}`);
+  console.log(`UUID: ${vdir.id}`);
+  console.log(`Merkle Root: ${vdir.merkle_root || '(empty)'}`);
+  console.log(`Parent: ${vdir.parent_id || '(root)'}`);
+  
+  const { dirs, entries } = vfs.ls(vfsPath || '/');
+  console.log(`Subdirectories: ${dirs?.length || 0}`);
+  console.log(`Files: ${entries?.length || 0}`);
+
+  return vdir;
+}
+
+/**
+ * Repair vdir entries for existing vdirs created before the fix
+ */
+export async function vdirRepairCommand(swarmfs) {
+  swarmfs.open();
+  const vfs = getVfs(swarmfs);
+  
+  const repaired = vfs.repairVdirEntries();
+  
+  if (repaired > 0) {
+    console.log(`Repaired ${repaired} missing vdir entries.`);
+    console.log('Run "vdir share" again to calculate merkle roots.');
+  } else {
+    console.log('No repairs needed - all vdir entries are correct.');
+  }
+  
+  return repaired;
 }
 
 
@@ -365,7 +538,7 @@ export function formatBytes(bytes) {
 }
 
 /**
- * Browse shared files in a topic
+ * Browse shared files and vdirs in a topic
  */
 export async function browseCommand(swarmfs, topicName, options = {}) {
   swarmfs.open();
@@ -377,22 +550,49 @@ export async function browseCommand(swarmfs, topicName, options = {}) {
   }
 
   console.log(`\nBrowsing topic "${topicName}"...`);
-  const files = await swarmfs.browseTopic(topicName, options.timeout || 5000);
+  const items = await swarmfs.browseTopic(topicName, options.timeout || 5000);
 
-  if (files.length === 0) {
-    console.log('No shared files found.');
-    return files;
+  if (items.length === 0) {
+    console.log('No shared content found.');
+    return items;
   }
 
-  console.log(`\nShared Files (${files.length}):\n`);
-  files.forEach((file) => {
-    console.log(`  ${file.name}`);
-    console.log(`    Size: ${formatBytes(file.size)}`);
-    console.log(`    Merkle Root: ${file.merkleRoot}`);
-    console.log('');
-  });
+  // Separate by type
+  const files = items.filter(i => i.type === 'file');
+  const vdirs = items.filter(i => i.type === 'vdir');
+  const dirs = items.filter(i => i.type === 'directory');
 
-  return files;
+  if (vdirs.length > 0) {
+    console.log(`\nVirtual Directories (${vdirs.length}):\n`);
+    vdirs.forEach((vdir) => {
+      console.log(`  ${vdir.name}/`);
+      console.log(`    Merkle Root: ${vdir.merkleRoot}`);
+      console.log(`    Children: ${vdir.childCount}`);
+      console.log('');
+    });
+  }
+
+  if (dirs.length > 0) {
+    console.log(`\nDirectories (${dirs.length}):\n`);
+    dirs.forEach((dir) => {
+      console.log(`  ${dir.name}/`);
+      console.log(`    Merkle Root: ${dir.merkleRoot}`);
+      console.log(`    Size: ${formatBytes(dir.size)}`);
+      console.log('');
+    });
+  }
+
+  if (files.length > 0) {
+    console.log(`\nFiles (${files.length}):\n`);
+    files.forEach((file) => {
+      console.log(`  ${file.name}`);
+      console.log(`    Size: ${formatBytes(file.size)}`);
+      console.log(`    Merkle Root: ${file.merkleRoot}`);
+      console.log('');
+    });
+  }
+
+  return items;
 }
 
 export function formatDate(timestamp) {
@@ -522,14 +722,40 @@ export async function statusCommand(swarmfs) {
     return;
   }
 
-  console.log(`\nTracked Files (${files.length}):\n`);
-  
+  // Group files by merkle_root
+  const byMerkleRoot = new Map();
   for (const file of files) {
-    console.log(`  ${file.path}`);
-    console.log(`    Size: ${formatBytes(file.size)}`);
-    console.log(`    Chunks: ${file.chunk_count}`);
-    console.log(`    Added: ${formatDate(file.added_at)}`);
-    console.log(`    Merkle Root: ${file.merkle_root.substring(0, 16)}...`);
+    const root = file.merkle_root;
+    if (!byMerkleRoot.has(root)) {
+      byMerkleRoot.set(root, []);
+    }
+    byMerkleRoot.get(root).push(file);
+  }
+
+  const uniqueContent = byMerkleRoot.size;
+  console.log(`\nTracked Content (${uniqueContent} unique, ${files.length} paths):\n`);
+  
+  // Sort by first added date of each group
+  const sortedRoots = [...byMerkleRoot.entries()].sort((a, b) => {
+    const aFirst = Math.min(...a[1].map(f => f.added_at));
+    const bFirst = Math.min(...b[1].map(f => f.added_at));
+    return bFirst - aFirst;
+  });
+  
+  for (const [merkleRoot, paths] of sortedRoots) {
+    const representative = paths[0];
+    console.log(`  Merkle Root: ${merkleRoot.substring(0, 16)}...`);
+    console.log(`    Size: ${formatBytes(representative.size)}`);
+    console.log(`    Chunks: ${representative.chunk_count}`);
+    
+    if (paths.length === 1) {
+      console.log(`    Path: ${paths[0].path}`);
+    } else {
+      console.log(`    Paths (${paths.length}):`);
+      for (const p of paths) {
+        console.log(`      - ${p.path}`);
+      }
+    }
     console.log('');
   }
 }
@@ -1019,7 +1245,7 @@ export async function requestCommand(swarmfs, topicName, chunkHash, options = {}
 }
 
 /**
- * Download a complete file by requesting all chunks
+ * Download a file or vdir by merkle root
  */
 export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath, options = {}) {
   swarmfs.open();
@@ -1031,9 +1257,44 @@ export async function downloadCommand(swarmfs, topicName, merkleRoot, outputPath
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
-  console.log(`\nDownloading file from topic "${topicName}"...`);
+  console.log(`\nDownloading from topic "${topicName}"...`);
   console.log(`Merkle Root: ${merkleRoot}`);
   console.log(`Output: ${outputPath}\n`);
+
+  // First, request metadata to determine type
+  const metadata = await swarmfs.requestMetadata(topicName, merkleRoot);
+
+  if (metadata.type === 'vdir') {
+    // Download vdir recursively
+    console.log(`Type: Virtual Directory (${metadata.children?.length || 0} children)\n`);
+
+    const result = await swarmfs.downloadVdir(topicName, merkleRoot, outputPath, {
+      onItemStart: (info) => {
+        if (info.type === 'file') {
+          console.log(`  Downloading: ${info.name} (${formatBytes(info.size)})`);
+        } else {
+          console.log(`\n📁 ${info.name}/`);
+        }
+      },
+      onItemComplete: (info) => {
+        if (info.type === 'file') {
+          console.log(`  ✓ ${info.name} (${formatBytes(info.size)})`);
+        }
+      }
+    });
+
+    console.log(`\n✅ Vdir downloaded successfully!`);
+    console.log(`  Path: ${result.path}`);
+    console.log(`  Files: ${result.files}`);
+    console.log(`  Subdirectories: ${result.vdirs}`);
+    console.log(`  Total Size: ${formatBytes(result.totalSize)}`);
+    console.log(`  Total Chunks: ${result.totalChunks}`);
+
+    return result;
+  }
+
+  // Download single file
+  console.log(`Type: File\n`);
 
   const enableProgressBar = process.stdout.isTTY && process.env.SWARMFS_REPL !== '1';
   let progressBar = null;
@@ -1169,10 +1430,439 @@ export async function networkCommand(swarmfs) {
 }
 
 // ============================================================================
+// IDENTITY COMMANDS
+// ============================================================================
+
+/**
+ * New login command - Create new identity and become indexer
+ * Creates new autobase with null bootstrap (becomes indexer)
+ * @param {Object} swarmfs - SwarmFS instance
+ * @param {string|null} deviceName - Optional device name
+ */
+export async function newLoginCommand(swarmfs, deviceName = null) {
+  const identityDir = getIdentityDir();
+  const userdbPath = getUserdbDir();
+  
+  // Check if already logged in
+  if (swarmfs.identity && swarmfs.identity.hasUserIdentity()) {
+    console.log('Already logged in. Use "logout" first.');
+    return swarmfs.identity;
+  }
+
+  // Check for existing identity
+  const identity = new IdentityManager({ identityDir });
+  if (identity.hasUserIdentity()) {
+    console.log('Existing identity found. Use "login" with mnemonic to join existing autobase.');
+    console.log('Or delete identity folder to create new identity.');
+    return null;
+  }
+
+  console.log('Creating new identity (this device will be the indexer)...\n');
+  
+  let password, passwordConfirm;
+  do {
+    password = await promptPassword('Create password: ');
+    passwordConfirm = await promptPassword('Confirm password: ');
+
+    if (password !== passwordConfirm) {
+      console.log('Passwords do not match. Try again.');
+    }
+  } while (password !== passwordConfirm);
+
+  await identity.initUser(null, password);
+  
+  console.log('\n⚠️  Save this mnemonic to login on other devices:');
+  console.log(`    ${identity.mnemonic}\n`);
+
+  // Initialize device
+  const deviceInfo = await identity.initDevice(deviceName);
+  console.log(`Device: ${deviceInfo.deviceName} (new)`);
+
+  // Initialize user database AS INDEXER
+  const userdb = new UserDatabase({
+    storagePath: userdbPath,
+    identity,
+    isIndexer: true  // This device becomes the indexer
+  });
+  await userdb.ready();
+
+  console.log(`Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
+  console.log(`isIndexer: ${userdb.autobase.isIndexer}`);
+
+  // Mark this device as indexer (persist for future sessions)
+  identity.markAsIndexer();
+
+  // Join autobase topic for replication
+  if (process.env.SWARMFS_REPL === '1') {
+    try {
+      if (!swarmfs.network) {
+        swarmfs.network = new SwarmNetwork(swarmfs.config);
+        await swarmfs.network.ready();
+      }
+      
+      await swarmfs.network.joinUserTopic(identity, userdb);
+      console.log(`Joined autobase topic - other devices can sync`);
+      console.log(`Running as indexer - will add new devices as writers automatically`);
+    } catch (err) {
+      console.warn(`Could not join autobase topic: ${err.message}`);
+    }
+  }
+
+  // Store on swarmfs instance
+  swarmfs.identity = identity;
+  swarmfs.userdb = userdb;
+
+  restoreTerminal();
+
+  console.log('\n✅ Created new identity and logged in as indexer!');
+  console.log(`  User ID: ${identity.getUserId()}`);
+  console.log(`  Device ID: ${identity.getDeviceId()}`);
+  console.log(`\n  Use "login <mnemonic>" on other devices to join this autobase.`);
+
+  return identity;
+}
+
+/**
+ * Login command - Join existing autobase with mnemonic
+ * Uses deterministic bootstrap key (not indexer, waits to be added as writer)
+ * @param {Object} swarmfs - SwarmFS instance
+ * @param {string} mnemonic - REQUIRED mnemonic for existing user
+ * @param {string|null} deviceName - Optional device name
+ */
+export async function loginCommand(swarmfs, mnemonic = null, deviceName = null) {
+  const identityDir = getIdentityDir();
+  const userdbPath = getUserdbDir();
+  
+  // Check if already logged in
+  if (swarmfs.identity && swarmfs.identity.hasUserIdentity()) {
+    console.log('Already logged in.');
+    console.log(`  User ID: ${swarmfs.identity.getUserId()}`);
+    console.log(`  Device: ${swarmfs.identity.deviceName}`);
+    return swarmfs.identity;
+  }
+
+  // Mnemonic is REQUIRED for login (use new-login to create new identity)
+  if (!mnemonic) {
+    console.log('Usage: login <mnemonic>');
+    console.log('  Login requires a mnemonic from an existing identity.');
+    console.log('  Use "new-login" to create a new identity.');
+    return null;
+  }
+
+  console.log('Logging in with mnemonic (joining existing autobase)...\n');
+  
+  const identity = new IdentityManager({ identityDir });
+  const password = await promptPassword('Create password for this device: ');
+
+  await identity.initUser(mnemonic, password);
+
+  // Initialize device
+  const deviceInfo = await identity.initDevice(deviceName);
+  console.log(`Device: ${deviceInfo.deviceName} ${deviceInfo.isNew ? '(new)' : '(existing)'}`);
+
+  // Initialize user database AS NON-INDEXER (will join existing autobase)
+  const userdb = new UserDatabase({
+    storagePath: userdbPath,
+    identity,
+    isIndexer: false  // This device joins existing autobase
+  });
+  await userdb.ready();
+
+  // Join discovery topic for key exchange
+  if (process.env.SWARMFS_REPL === '1') {
+    try {
+      if (!swarmfs.network) {
+        swarmfs.network = new SwarmNetwork(swarmfs.config);
+        await swarmfs.network.ready();
+      }
+      
+      // Listen for autobase key from indexer
+      swarmfs.network.on('autobase-key-received', async ({ key, peerId }) => {
+        console.log(`\n[NETWORK] Received autobase key from peer: ${peerId.slice(0, 16)}...`);
+        await userdb.setAutobaseKey(key);
+        
+        // Now send writer request
+        if (userdb.autobase && userdb.autobase.local) {
+          const localKey = userdb.autobase.local.key.toString('hex');
+          console.log(`[NETWORK] Sending writer request: ${localKey.slice(0, 16)}...`);
+        }
+      });
+      
+      await swarmfs.network.joinUserTopic(identity, userdb);
+      console.log(`Joined discovery topic - waiting for autobase key from indexer...`);
+      
+      // Wait for autobase key
+      try {
+        await userdb.waitForAutobaseKey(30000);
+        console.log(`\nAutobase key received!`);
+        console.log(`  Database key: ${userdb.key.toString('hex').substring(0, 16)}...`);
+        console.log(`  isIndexer: ${userdb.autobase.isIndexer}`);
+        console.log(`  writable: ${userdb.autobase.writable} (waiting for indexer to add this device...)`);
+      } catch (err) {
+        console.log(`\nTimeout waiting for autobase key. Is the indexer running?`);
+      }
+    } catch (err) {
+      console.warn(`Could not join discovery topic: ${err.message}`);
+    }
+  } else {
+    console.log(`Database ready (non-indexer mode)`);
+  }
+
+  // Store on swarmfs instance
+  swarmfs.identity = identity;
+  swarmfs.userdb = userdb;
+
+  restoreTerminal();
+
+  console.log('\n✅ Logged in successfully!');
+  console.log(`  User ID: ${identity.getUserId()}`);
+  console.log(`  Device ID: ${identity.getDeviceId()}`);
+
+  return identity;
+}
+
+/**
+ * Logout command - Clear identity from memory
+ * @param {Object} swarmfs - SwarmFS instance
+ */
+export async function logoutCommand(swarmfs) {
+  if (!swarmfs.identity) {
+    console.log('Not logged in.');
+    return;
+  }
+
+  // Clear sensitive data
+  swarmfs.identity.clear();
+
+  // Close user database
+  if (swarmfs.userdb) {
+    await swarmfs.userdb.close();
+  }
+
+  swarmfs.identity = null;
+  swarmfs.userdb = null;
+
+  console.log('Logged out.');
+}
+
+/**
+ * Helper to auto-load identity if it exists on disk
+ * Used by commands that need identity but may not have it in memory
+ */
+async function autoLoadIdentity(swarmfs) {
+  if (swarmfs.identity && swarmfs.identity.hasUserIdentity()) {
+    return true
+  }
+
+  const identityDir = getIdentityDir()
+  const userdbPath = getUserdbDir()
+  
+  // Check if identity exists on disk
+  const identity = new IdentityManager({ identityDir })
+  if (!identity.hasUserIdentity()) {
+    return false
+  }
+
+  // Need password to decrypt
+  console.log('Existing identity found. Enter password to continue.')
+  const password = await promptPassword('Enter password: ')
+
+  try {
+    await identity.initUser(null, password)
+    const deviceInfo = await identity.initDevice()
+    
+    // Use persisted isIndexer flag from device config
+    const isIndexer = identity.isDeviceIndexer()
+    console.log(`Device role: ${isIndexer ? 'INDEXER' : 'NON-INDEXER'}`)
+    
+    // Initialize user database with correct role
+    const userdb = new UserDatabase({
+      storagePath: userdbPath,
+      identity,
+      isIndexer
+    })
+    await userdb.ready()
+
+    // Join user topic for replication (only in REPL/shell mode)
+    if (process.env.SWARMFS_REPL === '1') {
+      try {
+        // Check if this is a new device waiting for key
+        const pendingAutobase = userdb._pendingAutobase
+        
+        // Join discovery topic first (to receive key if needed)
+        await swarmfs.network.joinUserTopic(identity, userdb)
+        
+        // Handle writer requests from new devices (indexer adds them automatically)
+        swarmfs.network.on('user:writer-request', async ({ key, peerId }) => {
+          console.log(`\n[NETWORK] New device requesting to join: ${key.toString('hex').slice(0, 16)}...`)
+          try {
+            await userdb.addWriter(key)
+            console.log(`[NETWORK] ✓ Added writer: ${key.toString('hex').slice(0, 16)}...`)
+          } catch (err) {
+            console.log(`[NETWORK] ✗ Failed to add writer: ${err.message}`)
+          }
+        })
+        
+        // Handle receiving autobase key from indexer (new device creates autobase)
+        swarmfs.network.on('user:autobase-key-received', async ({ key, peerId }) => {
+          console.log(`\n[NETWORK] Received autobase key from indexer`)
+          try {
+            // Create autobase with received key
+            await userdb.createWithReceivedKey(key)
+            console.log(`[NETWORK] ✓ Created autobase with received key`)
+            
+            // Now join the autobase discovery topic for replication
+            const autobaseDiscoveryKey = userdb.autobase.discoveryKey
+            if (autobaseDiscoveryKey) {
+              await swarmfs.network.joinTopic('autobase-replication', autobaseDiscoveryKey)
+              console.log(`[NETWORK] ✓ Joined autobase replication topic`)
+            }
+          } catch (err) {
+            console.log(`[NETWORK] ✗ Failed to create autobase: ${err.message}`)
+          }
+        })
+        
+        // If we were waiting for a key, wait a bit for it to arrive
+        if (pendingAutobase) {
+          console.log('[NETWORK] Waiting for autobase key from indexer...')
+          // Wait up to 10 seconds for the key
+          const timeout = new Promise(r => setTimeout(r, 10000))
+          await Promise.race([userdb._autobaseReady, timeout])
+          
+          if (!userdb.autobase) {
+            console.log('[NETWORK] No key received - creating new autobase as first device')
+            // No key received, create new autobase as first device
+            await userdb._createAutobase(null)
+            // Join the autobase discovery topic
+            const autobaseDiscoveryKey = userdb.autobase.discoveryKey
+            if (autobaseDiscoveryKey) {
+              await swarmfs.network.joinTopic('autobase-replication', autobaseDiscoveryKey)
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Could not join user swarm:', err.message)
+      }
+    }
+
+    swarmfs.identity = identity
+    swarmfs.userdb = userdb
+    return true
+  } catch (err) {
+    console.error('Failed to decrypt identity:', err.message)
+    return false
+  }
+}
+
+/**
+ * Devices command - List registered devices
+ * @param {Object} swarmfs - SwarmFS instance
+ */
+export async function devicesCommand(swarmfs) {
+  const loaded = await autoLoadIdentity(swarmfs)
+  if (!loaded) {
+    console.log('Not logged in. Use "login" first.')
+    return []
+  }
+
+  console.log('\n📱 Registered Devices:\n');
+
+  const devices = await swarmfs.userdb.getAllDevices();
+
+  if (devices.length === 0) {
+    console.log('  No devices registered yet.');
+    return [];
+  }
+
+  const currentDeviceId = swarmfs.identity.getDeviceId();
+
+  for (const device of devices) {
+    const isCurrent = device.deviceId === currentDeviceId;
+    const marker = isCurrent ? ' ← current' : '';
+    const lastSeen = device.lastSeen ? new Date(device.lastSeen).toLocaleString() : 'never';
+    
+    console.log(`  ${device.name}${marker}`);
+    console.log(`    ID: ${device.deviceId}`);
+    console.log(`    Last seen: ${lastSeen}`);
+    console.log('');
+  }
+
+  console.log(`Total: ${devices.length} device(s)`);
+
+  return devices;
+}
+
+/**
+ * Whoami command - Show current identity info
+ * @param {Object} swarmfs - SwarmFS instance
+ */
+export async function whoamiCommand(swarmfs) {
+  const loaded = await autoLoadIdentity(swarmfs)
+  if (!loaded) {
+    console.log('Not logged in. Use "login" first.')
+    return null
+  }
+
+  const status = swarmfs.identity.getStatus();
+
+  console.log('\n👤 Current Identity:\n');
+  console.log(`  User ID:    ${status.userId}`);
+  console.log(`  Device:     ${status.deviceName}`);
+  console.log(`  Device ID:  ${status.deviceId}`);
+
+  if (swarmfs.userdb) {
+    const dbStatus = swarmfs.userdb.getStatus();
+    console.log(`  DB Key:     ${dbStatus.key?.substring(0, 16)}...`);
+    console.log(`  Is Indexer: ${dbStatus.isIndexer}`);
+  }
+
+  return status;
+}
+
+// ============================================================================
+// DEVICE MANAGEMENT COMMANDS
+// ============================================================================
+
+/**
+ * Add a writer to the autobase
+ * This authorizes a new device to write to the shared database
+ * @param {Object} swarmfs - SwarmFS instance
+ * @param {string} writerKeyHex - Public key of the new writer (hex string)
+ */
+export async function addWriterCommand(swarmfs, writerKeyHex) {
+  if (!swarmfs.userdb) {
+    console.log('Not logged in. Run "login" first.');
+    return;
+  }
+
+  if (!writerKeyHex) {
+    console.log('Usage: add-writer <writer-public-key>');
+    console.log('The new device will show its public key when it tries to login.');
+    return;
+  }
+
+  const writerKey = Buffer.from(writerKeyHex, 'hex');
+  
+  try {
+    await swarmfs.userdb.addWriter(writerKey);
+    console.log(`✓ Added writer: ${writerKeyHex.slice(0, 16)}...`);
+    console.log('  The new device can now write to the database.');
+  } catch (err) {
+    console.log(`✗ Failed to add writer: ${err.message}`);
+  }
+}
+
+// ============================================================================
 // COMMAND REGISTRY
 // ============================================================================
 
 export const commands = {
+  // Identity commands
+  login: loginCommand,
+  logout: logoutCommand,
+  devices: devicesCommand,
+  whoami: whoamiCommand,
+  
   // File commands
   add: addCommand,
   rm: rmCommand,
@@ -1204,9 +1894,15 @@ export const commands = {
   'vdir.mkdir': vdirMkdirCommand,
   'vdir.ls': vdirLsCommand,
   'vdir.add': vdirAddCommand,
+  'vdir.share': vdirShareCommand,
+  'vdir.info': vdirInfoCommand,
+  'vdir.repair': vdirRepairCommand,
 
   // Top-level share
-  share: shareCommand
+  share: shareCommand,
+
+  // Device management
+  'add-writer': addWriterCommand
 };
 
 // Helper to get command by name (handles aliases)

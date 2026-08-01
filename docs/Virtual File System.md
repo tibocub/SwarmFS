@@ -2,14 +2,27 @@
 
 ## Overview
 
-SwarmFS's Virtual Filesystem (VFS) is an organizational layer that allows users to arrange tracked files into a hierarchical directory structure **without affecting the actual local filesystem**. It's purely metadata - a way to organize references to content-addressed files.
+SwarmFS's Virtual Filesystem (VFS) is an organizational layer that allows users to arrange tracked files into a hierarchical directory structure **independently from their actual file paths on the local filesystem**. It's purely metadata - a way to organize references to content-addressed files.
 
 **Key principle**: VFS provides the *illusion* of a filesystem while maintaining SwarmFS's core content-addressing model.
 
 
 ## Motivation
 
-Without VFS, all tracked files appear as a flat list identified only by their merkle roots. As users track dozens or hundreds of files, this becomes unmanageable. VFS solves this by letting users create familiar directory hierarchies for organization, while preserving all the benefits of content-addressing under the hood.
+### The Flat List Problem
+
+Without VFS, all tracked files appear as a flat list identified only by their merkle roots. For users who track dozens or hundreds of files, this becomes unmanageable. VFS solves this by letting users create familiar directory hierarchies for organization, while preserving all the benefits of content-addressing under the hood.
+
+### The Metadata Protocol Gap
+
+SwarmFS's existing metadata protocol allows peers to request file information by merkle root. However, this creates a UX problem: users must know and share specific merkle roots to download files. There's no way to browse available content or discover what's being shared.
+
+VFS bridges this gap by:
+1. **Grouping files into hierarchies** - Users can share a single vdir merkle root instead of N individual file roots
+2. **Enabling browse-before-download** - Recipients can explore the directory structure before choosing what to download
+3. **Providing human-readable names** - `suggested_name` fields give context to content-addressed data
+
+This transforms the sharing UX from "here's a list of 47 hex strings" to "here's my /photos/vacation/ folder, pick what you want."
 
 
 ## Core Concepts
@@ -43,11 +56,11 @@ Every virtual directory (vdir) has **two identifiers**:
 
 2. **Merkle Root** (Content Hash)
    - Calculated from vdir's contents
-   - Changes when children are added/removed
+   - Changes when children are added/modified/removed
    - Used for sharing, integrity verification, and content-addressing
    - `NULL` for empty vdirs
 
-**Why both?** UUID provides stability for user operations (rename, move), while merkle root enables content-addressing and sharing.
+UUID provides stability for user operations (rename, move), while merkle root enables content-addressing and sharing.
 
 
 ### Data Flow
@@ -155,18 +168,40 @@ Hash this = vdir merkle root
 
 ### Relationship to Existing `files` Table
 
-The `files` table remains unchanged:
+**Current schema limitation**: The existing `files` table has `path TEXT UNIQUE NOT NULL`, which prevents the same content from having multiple local paths. This needs to change.
+
+**Required schema change**:
 ```sql
-files:
-  - merkle_root (PRIMARY KEY)
-  - local_path
-  - size
-  - chunk_size
-  - chunk_count
-  - ... (other metadata)
+-- BEFORE (current)
+CREATE TABLE files (
+  path TEXT UNIQUE NOT NULL,  -- Problem: one path per content
+  merkle_root TEXT NOT NULL,
+  ...
+);
+
+-- AFTER (required)
+CREATE TABLE files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merkle_root TEXT NOT NULL,
+  path TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  chunk_size INTEGER NOT NULL,
+  chunk_count INTEGER NOT NULL,
+  added_at INTEGER NOT NULL,
+  file_modified_at INTEGER NOT NULL,
+  UNIQUE(merkle_root, path)  -- Allow multiple paths per merkle_root
+);
+
+CREATE INDEX idx_files_merkle_root ON files(merkle_root);
 ```
 
-**Key insight**: `vdir_entries` stores merkle roots, `files` table maps those to actual disk locations.
+**Why this matters**:
+- Same content can be downloaded to different local paths
+- Built-in deduplication detection (same merkle_root = same content)
+- Efficient lookup by merkle_root (already implemented: `getFilesByMerkleRoot()`)
+- Receiver can choose arbitrary download locations without conflict
+
+**Key insight**: `vdir_entries` stores merkle roots, `files` table maps those to actual disk locations. Multiple paths per merkle_root is essential for VFS to work correctly.
 
 
 ### Example Data
@@ -223,18 +258,29 @@ The same file can appear in multiple vdirs:
 /archive/2024/report.pdf → merkle: 0xabc...
 ```
 
-Both vdirs store `0xabc...` in their `vdir_entries`. The `files` table has one entry mapping `0xabc...` to the actual file path.
+Both vdirs store `0xabc...` in their `vdir_entries`. The `files` table can have multiple entries mapping `0xabc...` to different local paths (after schema fix).
 
 
 
 ## Sharing Protocol
 
-### Share Structure
+### Protocol Extension: VDIR_METADATA
 
-When sharing a vdir, transmit:
+VFS extends the existing `METADATA_REQUEST/RESPONSE` protocol. When a peer requests metadata for a merkle root:
+
+1. **Check if it's a file** - Query `files` table, return existing file metadata
+2. **Check if it's a vdir** - Query `virtual_directories` table, return vdir metadata
+3. **Return error** - If neither found
+
+This allows a single `METADATA_REQUEST` to handle both files and vdirs transparently.
+
+### Share Structure (Shallow, Depth=1)
+
+When sharing a vdir, transmit **one level of children** (not the full tree):
 ```json
 {
   "merkle_root": "0x7f3a...",
+  "type": "vdir",
   "metadata": {
     "suggested_name": "My Photos",
     "children": [
@@ -247,22 +293,56 @@ When sharing a vdir, transmit:
       {
         "merkle_root": "0x9c1d...",
         "type": "vdir",
-        "suggested_name": "vacation"
+        "suggested_name": "vacation",
+        "has_children": true
       }
     ]
   }
 }
 ```
 
+**Why shallow instead of full tree?**
+- Large directories (1000+ files) would create huge messages
+- Progressive browsing matches user mental model (don't load entire tree upfront)
+- Reduces unnecessary data transfer for uninterested branches
+- Client requests deeper levels on-demand with additional `METADATA_REQUEST`s
+
+**Note**: `has_children` flag indicates whether a vdir child has content, allowing UI to show expand arrows without fetching.
+
 
 ### Receiver Workflow
 
-1. **Receive share** with merkle root and metadata
+1. **Receive share** with merkle root and shallow metadata (one level)
 2. **Verify structure**: Calculate merkle root from children, compare to transmitted root
-3. **Browse recursively**: For each child vdir, can request its structure before downloading
-4. **Selective download**: Choose which files/subdirs to download
-5. **Rename locally**: All names are suggestions - receiver can rename anything
-6. **Download**: Request chunks for selected merkle roots (existing download protocol)
+3. **Display to user**: Show directory contents with suggested names
+4. **Browse deeper (optional)**: For vdir children, user can request deeper levels via additional `METADATA_REQUEST`
+5. **Select for download**: User chooses which files/subdirs to download
+6. **Choose local paths**: Receiver maps each selected item to a local filesystem path
+7. **Download**: Request chunks for selected merkle roots (existing download protocol)
+
+### Receiver-Side Path Mapping
+
+When a receiver downloads files from a vdir, they need to store the mapping between vdir entries and their chosen local paths:
+
+**Option A: Extend `files` table** (recommended)
+```
+files table stores: (merkle_root, path, ...)
+- Same merkle_root can have multiple path entries
+- Download creates new entry with receiver's chosen path
+- No new table needed, leverages existing dedup infrastructure
+```
+
+**Option B: Separate mapping table** (more complex)
+```sql
+CREATE TABLE vdir_download_mappings (
+  vdir_uuid TEXT NOT NULL,
+  child_merkle_root TEXT NOT NULL,
+  local_path TEXT NOT NULL,
+  downloaded_at INTEGER
+);
+```
+
+**Recommendation**: Use Option A (extend files table). It's simpler, enables dedup detection, and aligns with the content-addressed model.
 
 
 ### BitTorrent-Style Semantics
@@ -375,6 +455,19 @@ Updates needed:
 
 Traverse up the tree, recalculating at each level.
 
+### Performance Consideration: Lazy Updates
+
+For deep trees (10+ levels), eager updates could be slow. Future optimization:
+
+**Current approach**: Eager update (simple, always consistent)
+
+**Future optimization**: Mark vdirs as "dirty", recalculate on:
+- Next share operation
+- Next read operation
+- Periodic background batch
+
+**Tradeoff**: Lazy updates add complexity but improve performance for frequent small changes. Start with eager, optimize if needed.
+
 
 
 ## Design Decisions & Rationale
@@ -418,6 +511,54 @@ Traverse up the tree, recalculating at each level.
 **Share prevention**: Can't accidentally share structure with no content
 
 **Lazy calculation**: Only compute hashes when needed
+
+
+### Why single hash (not Merkle tree) for vdir root?
+
+**Directories are small**: A vdir with 1000 children is ~33KB of metadata (32 bytes × 1000 + type flags). Hashing this is trivial.
+
+**No partial proofs needed**: You need the entire directory to verify integrity. Partial verification doesn't make sense for directory metadata.
+
+**Consistency with file model**: Files use Merkle trees because chunks can be verified independently. Vdirs don't have "chunks" - they have children that are already content-addressed.
+
+**Alternative considered**: Build a Merkle tree from child entries. Rejected as over-engineering for small metadata structures.
+
+
+### Why shallow metadata (not full tree)?
+
+**Network efficiency**: Large directories shouldn't require huge messages
+
+**Progressive UX**: Users browse incrementally, not all-at-once
+
+**On-demand fetching**: Client requests deeper levels only if user expands that branch
+
+**Matches file browser paradigm**: No file browser loads the entire tree on open
+
+
+
+## Implementation Status
+
+### Current Code (Proof of Concept)
+
+The existing `src/vfs.js` and database tables are an early prototype with several gaps:
+
+| Feature | Doc Design | Current Code | Gap |
+|---------|------------|--------------|-----|
+| Column naming | `uuid`, `parent_uuid` | `id`, `parent_id` | Minor rename needed |
+| Child reference | `child_merkle_root` only | `child_merkle_root` + `child_vdir_id` | Remove `child_vdir_id` |
+| Files table | Multiple paths per merkle_root | Single path (UNIQUE constraint) | Schema change required |
+| Merkle calculation | Single hash of sorted children | Not implemented | Core feature missing |
+| Recursive update | Eager, propagate to ancestors | Not implemented | Core feature missing |
+| Protocol extension | METADATA_REQUEST handles vdirs | Not implemented | Protocol change needed |
+
+### Implementation Order
+
+1. **Schema migration**: Fix `files` table, remove `child_vdir_id`, rename columns
+2. **Merkle calculation**: Implement `calculateVdirMerkleRoot()`
+3. **Recursive updates**: Implement ancestor propagation on add/remove/move
+4. **Protocol extension**: Extend `handleMetadataRequest()` for vdirs
+5. **Receiver workflow**: Implement vdir browsing and selective download
+6. **CLI commands**: `vdir create`, `vdir add`, `vdir ls`, `vdir share`
 
 
 
@@ -509,6 +650,6 @@ Currently, VFS is single-user. Future:
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2024  
-**Status**: Design complete, implementation pending
+**Document Version**: 2.0  
+**Last Updated**: 2025  
+**Status**: Design refined, implementation plan defined

@@ -1,6 +1,9 @@
 /**
  * BitField - Compact representation of chunk availability
+ * Uses native Rust implementation when available, falls back to JS
  */
+
+import * as native from 'swarmfs-native'
 
 export class BitField {
   constructor(size) {
@@ -40,6 +43,12 @@ export class BitField {
   }
 
   getSetIndices() {
+    // Use native implementation if available
+    if (native.isNativeAvailable()) {
+      return native.bitfieldGetSetIndices(this.buffer);
+    }
+    
+    // Fallback to JS
     const indices = [];
     for (let i = 0; i < this.size; i++) {
       if (this.get(i)) {
@@ -50,6 +59,12 @@ export class BitField {
   }
 
   count() {
+    // Use native implementation if available (uses popcount)
+    if (native.isNativeAvailable()) {
+      return native.bitfieldCount(this.buffer);
+    }
+    
+    // Fallback to JS
     let total = 0;
     for (let i = 0; i < this.size; i++) {
       if (this.get(i)) {
@@ -64,12 +79,23 @@ export class BitField {
   }
 
   isEmpty() {
+    // Use native implementation if available
+    if (native.isNativeAvailable()) {
+      return native.bitfieldIsEmpty(this.buffer);
+    }
     return this.count() === 0;
   }
 
   static fromBase64(base64String, size) {
     const bitfield = new BitField(size);
     bitfield.buffer = Buffer.from(base64String, 'base64');
+    return bitfield;
+  }
+
+  static fromBuffer(buffer) {
+    const size = buffer.length * 8;
+    const bitfield = new BitField(size);
+    buffer.copy(bitfield.buffer);
     return bitfield;
   }
 

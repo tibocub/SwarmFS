@@ -11,7 +11,6 @@ import { SwarmDB } from './database.js'
 import { DEFAULT_CHUNK_SIZE } from './chunk.js'
 import { hashBuffer } from './hash.js'
 import { getMerkleRoot, buildMerkleTree, printMerkleTree } from './merkle.js'
-import { buildFileMerkleTreeParallel, buildMultipleFileMerkleTrees } from './merkle-tree-parallel.js'
 
 export class SwarmFS {
   constructor(dataDir) {
@@ -76,16 +75,15 @@ export class SwarmFS {
   }
 
   /**
-   * Add a file to SwarmFS using parallel merkle tree building
+   * Add a file to SwarmFS
    * @param {string} filePath - Path to file
    * @param {number} chunkSize - Chunk size in bytes
-   * @param {object} options - Options { useParallel, workerCount, onProgress }
+   * @param {object} options - Options { onProgress }
    */
   async addFile(filePath, chunkSize = null, options = {}) {
     const {
-      useParallel = false, //    <-- Not efficent enought (worst than single-threaded)
-      workerCount = null,
-      onProgress = null
+      onProgress = null,
+      force = false // Force re-hash even if already tracked
     } = options;
 
     // Resolve to absolute path
@@ -102,116 +100,80 @@ export class SwarmFS {
       throw new Error(`Not a file: ${absolutePath}`);
     }
 
+    // Check if already tracked (unless force)
+    const existing = this.db.getFile(absolutePath);
+    if (existing && !force) {
+      // Check if file modified since last track
+      const lastModified = Math.floor(stats.mtimeMs);
+      if (existing.file_modified_at >= lastModified) {
+        // Already tracked and not modified - return existing entry
+        return {
+          fileId: existing.id,
+          path: absolutePath,
+          size: existing.size,
+          chunks: existing.chunk_count,
+          merkleRoot: existing.merkle_root,
+          chunkHashes: null, // Not re-computed
+          skipped: true
+        };
+      }
+    }
+
     const fileSize = stats.size;
 
     // Fixed 1MB chunk size for constant memory usage
     // This simplifies streaming and ensures predictable memory footprint
     chunkSize = DEFAULT_CHUNK_SIZE;
 
-    // Decide whether to use parallel or single-threaded approach
-    const shouldUseParallel = useParallel && (fileSize > 1024 * 1024); // Use parallel for files > 1MB
-
     let chunkHashes;
     let chunkEntries;
     let merkleRoot;
 
-    if (shouldUseParallel) {
-      // Use parallel merkle tree builder
-      try {
-        const tree = await buildFileMerkleTreeParallel(
-          absolutePath,
-          chunkSize,
-          {
-            workerCount,
-            debug: true, // Enable debug logging
-            onProgress: (status) => {
-              if (onProgress && status.phase === 'hashing') {
-                const percent = (status.completed / status.total * 100).toFixed(1);
-                onProgress(`Hashing chunks: ${percent}%`);
-              }
-            }
-          }
-        );
+    // Use single-threaded streaming approach
+    chunkHashes = [];
+    chunkEntries = [];
+    let offset = 0
 
-        // Verify tree structure
-        if (!tree || !tree.levels || !Array.isArray(tree.levels[0]) || tree.levels[0].length === 0) {
-          throw new Error('Invalid merkle tree structure returned');
-        }
+    for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
+      const hash = await hashBuffer(buffer)
+      chunkHashes.push(hash)
+      chunkEntries.push({ hash, offset, size: buffer.length })
+      offset += buffer.length
 
-        // Extract chunk hashes from tree levels (level 0 = leaf hashes)
-        chunkHashes = tree.levels[0];
-        merkleRoot = tree.root;
-
-        // Build chunk entries with offset and size info
-        chunkEntries = chunkHashes.map((hash, index) => {
-          const offset = index * chunkSize;
-          const size = Math.min(chunkSize, fileSize - offset);
-          return { hash, offset, size };
-        });
-
-      } catch (parallelError) {
-        // Fallback to single-threaded if parallel fails
-        if (onProgress) {
-          onProgress('Parallel processing failed, falling back to single-threaded...');
-        }
-        console.warn(`Parallel processing failed: ${parallelError.message}, using fallback`);
-        
-        // Force single-threaded processing
-        chunkHashes = [];
-        chunkEntries = [];
-        let offset = 0;
-        const fd = fs.openSync(absolutePath, 'r');
-
-        try {
-          while (offset < fileSize) {
-            const length = Math.min(chunkSize, fileSize - offset);
-            let buffer = Buffer.allocUnsafe(length);
-            const bytesRead = fs.readSync(fd, buffer, 0, length, offset);
-
-            if (bytesRead !== length) {
-              buffer = buffer.subarray(0, bytesRead);
-            }
-
-            const hash = await hashBuffer(buffer);
-            chunkHashes.push(hash);
-            chunkEntries.push({ hash, offset, size: buffer.length });
-            offset += buffer.length;
-
-            if (onProgress && chunkEntries.length % 100 === 0) {
-              const percent = (offset / fileSize * 100).toFixed(1);
-              onProgress(`Hashing chunks: ${percent}%`);
-            }
-          }
-        } finally {
-          fs.closeSync(fd);
-        }
-
-        merkleRoot = await getMerkleRoot(chunkHashes);
+      if (onProgress && chunkEntries.length % 100 === 0) {
+        const percent = (offset / fileSize * 100).toFixed(1)
+        onProgress(`Hashing chunks: ${percent}%`)
       }
-
-    } else {
-      // Use single-threaded approach (original implementation)
-      chunkHashes = [];
-      chunkEntries = [];
-      let offset = 0
-
-      for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
-        const hash = await hashBuffer(buffer)
-        chunkHashes.push(hash)
-        chunkEntries.push({ hash, offset, size: buffer.length })
-        offset += buffer.length
-
-        if (onProgress && chunkEntries.length % 100 === 0) {
-          const percent = (offset / fileSize * 100).toFixed(1)
-          onProgress(`Hashing chunks: ${percent}%`)
-        }
-      }
-
-      // Build Merkle tree
-      merkleRoot = await getMerkleRoot(chunkHashes);
     }
 
-    // Add file to database
+    // Build Merkle tree
+    merkleRoot = await getMerkleRoot(chunkHashes);
+
+    // Check if this content already exists (same merkle_root at different path)
+    const existingContent = this.db.getFileByMerkleRoot(merkleRoot);
+    if (existingContent) {
+      // Content already tracked - just add new path entry, skip chunks
+      const fileId = this.db.addFile(
+        absolutePath,
+        merkleRoot,
+        fileSize,
+        chunkSize,
+        chunkEntries.length,
+        Math.floor(stats.mtimeMs)
+      );
+      
+      return {
+        fileId,
+        path: absolutePath,
+        size: fileSize,
+        chunks: chunkEntries.length,
+        merkleRoot,
+        chunkHashes,
+        duplicateContent: true
+      };
+    }
+
+    // New content - add file and chunks
     const fileId = this.db.addFile(
       absolutePath,
       merkleRoot,
@@ -392,10 +354,9 @@ export class SwarmFS {
   }
 
   /**
-   * Verify a file's integrity using parallel merkle tree building
+   * Verify a file's integrity
    */
-  async verifyFile(filePath, options = {}) {
-    const { useParallel = false, workerCount = null } = options;
+  async verifyFile(filePath) {
     const absolutePath = path.resolve(filePath);
     const fileInfo = this.getFileInfo(absolutePath);
 
@@ -422,33 +383,15 @@ export class SwarmFS {
     }
 
     // Rebuild merkle tree and compare
-    let currentRoot;
-    let currentHashes;
-
-    if (useParallel && stats.size > 1024 * 1024) {
-      // Use parallel verification
-      const tree = await buildFileMerkleTreeParallel(
-        absolutePath,
-        fileInfo.chunk_size,
-        { workerCount }
-      );
-      currentRoot = tree.root;
-      currentHashes = tree.levels[0];
-    } else {
-      // Use streaming verification to handle files >2GB
-      // (fs.readFileSync fails with ERR_FS_FILE_TOO_LARGE for large files)
-      currentHashes = [];
-      const chunkSize = fileInfo.chunk_size;
-      let offset = 0;
-      
-      for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
-        const hash = await hashBuffer(buffer);
-        currentHashes.push(hash);
-        offset += buffer.length;
-      }
-      
-      currentRoot = await getMerkleRoot(currentHashes);
+    const currentHashes = [];
+    const chunkSize = fileInfo.chunk_size;
+    
+    for await (const buffer of this._readFileChunksStream(absolutePath, chunkSize)) {
+      const hash = await hashBuffer(buffer);
+      currentHashes.push(hash);
     }
+    
+    const currentRoot = await getMerkleRoot(currentHashes);
 
     // Compare Merkle roots
     if (currentRoot !== fileInfo.merkle_root) {
@@ -519,10 +462,15 @@ export class SwarmFS {
     if (this.db) {
       this.db.close();
     }
+    if (this.userdb) {
+      await this.userdb.close();
+    }
 
     this.protocol = null;
     this.network = null;
     this.db = null;
+    this.userdb = null;
+    this.identity = null;
   }
 
   // ============================================================================
@@ -821,7 +769,7 @@ export class SwarmFS {
   }
 
   /**
-   * Request metadata for a file by merkle root
+   * Request metadata for a file or vdir by merkle root
    */
   async requestMetadata(topicName, merkleRoot, timeout = 10000) {
     const topic = this.db.getTopic(topicName);
@@ -837,7 +785,15 @@ export class SwarmFS {
     const requestId = this.protocol.requestMetadata(topicKey, merkleRoot, timeout);
 
     return new Promise((resolve, reject) => {
-      const onMetadata = (info) => {
+      const onFileMetadata = (info) => {
+        if (info.requestId !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(info.metadata);
+      };
+
+      const onVdirMetadata = (info) => {
         if (info.requestId !== requestId) {
           return;
         }
@@ -854,11 +810,13 @@ export class SwarmFS {
       };
 
       const cleanup = () => {
-        this.protocol.removeListener('metadata:response', onMetadata);
+        this.protocol.removeListener('metadata:response', onFileMetadata);
+        this.protocol.removeListener('vdir:metadata', onVdirMetadata);
         this.protocol.removeListener('metadata:timeout', onTimeout);
       };
 
-      this.protocol.on('metadata:response', onMetadata);
+      this.protocol.on('metadata:response', onFileMetadata);
+      this.protocol.on('vdir:metadata', onVdirMetadata);
       this.protocol.on('metadata:timeout', onTimeout);
     });
   }
@@ -990,6 +948,83 @@ export class SwarmFS {
       reject(error);
     });
   });
+}
+
+/**
+ * Download a vdir recursively - downloads all files and sub-vdirs
+ * @param {string} topicName - Topic name
+ * @param {string} merkleRoot - Vdir merkle root
+ * @param {string} outputPath - Local path to recreate the vdir
+ * @param {object} options - Options { onProgress, onItemStart, onItemComplete }
+ */
+async downloadVdir(topicName, merkleRoot, outputPath, options = {}) {
+  if (!this.protocol) {
+    throw new Error('Not connected to network. Join a topic first.');
+  }
+
+  const absoluteOutputPath = path.resolve(outputPath);
+  const results = { files: [], vdirs: [], totalSize: 0, totalChunks: 0 };
+
+  // Recursive download function
+  const downloadRecursive = async (vdirMerkleRoot, currentPath) => {
+    // Request vdir metadata
+    const metadata = await this.requestMetadata(topicName, vdirMerkleRoot);
+    
+    if (metadata.type !== 'vdir') {
+      throw new Error(`Expected vdir, got ${metadata.type}`);
+    }
+
+    // Ensure directory exists
+    if (!fs.existsSync(currentPath)) {
+      fs.mkdirSync(currentPath, { recursive: true });
+    }
+
+    if (options.onItemStart) {
+      options.onItemStart({ type: 'vdir', path: currentPath, name: metadata.suggestedName });
+    }
+
+    // Process children
+    for (const child of metadata.children || []) {
+      const childPath = path.join(currentPath, child.suggestedName);
+
+      if (child.type === 'vdir') {
+        // Recursively download sub-vdir
+        await downloadRecursive(child.merkleRoot, childPath);
+        results.vdirs.push({ merkleRoot: child.merkleRoot, path: childPath });
+      } else if (child.type === 'file') {
+        // Download file
+        if (options.onItemStart) {
+          options.onItemStart({ type: 'file', path: childPath, name: child.suggestedName, size: child.size });
+        }
+
+        const fileResult = await this.downloadFile(topicName, child.merkleRoot, childPath, {
+          onProgress: options.onFileProgress
+        });
+
+        results.files.push({ merkleRoot: child.merkleRoot, path: childPath, size: fileResult.size });
+        results.totalSize += fileResult.size;
+        results.totalChunks += fileResult.totalChunks;
+
+        if (options.onItemComplete) {
+          options.onItemComplete({ type: 'file', path: childPath, size: fileResult.size });
+        }
+      }
+    }
+
+    if (options.onItemComplete) {
+      options.onItemComplete({ type: 'vdir', path: currentPath });
+    }
+  };
+
+  await downloadRecursive(merkleRoot, absoluteOutputPath);
+
+  return {
+    path: absoluteOutputPath,
+    files: results.files.length,
+    vdirs: results.vdirs.length,
+    totalSize: results.totalSize,
+    totalChunks: results.totalChunks
+  };
 }
 }
 

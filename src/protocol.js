@@ -12,36 +12,19 @@ import { hashBuffer } from './hash.js'
 import { buildMerkleTree, generateSubtreeProofFromTree } from './merkle.js'
 import Protomux from 'protomux'
 import c from 'compact-encoding'
+import { PROTOCOL_VERSION, MSG_TYPE, encodeMessage, decodeMessage } from './protocol/message-codec.js'
+import { MerkleTreeCache } from './protocol/merkle-cache.js'
+import { RequestTracker } from './protocol/request-tracker.js'
+import { SubtreeServer } from './protocol/subtree-server.js'
+import { debug } from './logger.js'
 
 const VERBOSE = process.env.SWARMFS_VERBOSE === '1' || process.env.SWARMFS_VERBOSE === 'true'
-const debug = (...args) => {
-  if (VERBOSE) {
-    console.log(...args)
-  }
-};
 
-// Protocol version
-export const PROTOCOL_VERSION = 1
-
-// Message types
-export const MSG_TYPE = {
-  REQUEST: 0x01,            // Request a chunk by hash
-  OFFER: 0x02,              // Offer to provide chunk (with Merkle proof)
-  DOWNLOAD: 0x03,           // Accept offer and start download
-  CHUNK_DATA: 0x04,         // Actual chunk bytes
-  CANCEL: 0x05,             // Cancel request
-  ERROR: 0x06,              // Error response
-  FILE_LIST_REQUEST: 0x07,  // Request list of shared files in topic
-  FILE_LIST_RESPONSE: 0x08, // Response with shared files
-  METADATA_REQUEST: 0x09,   // Request file metadata by merkle root
-  METADATA_RESPONSE: 0x0a,  // Response with file metadata
-  HAVE: 0x0b,               // Announce single chunk
-  BITFIELD: 0x0c,           // Send complete bitfield
-  BITFIELD_REQUEST: 0x0d,   // Request peer's bitfield
-  SUBTREE_REQUEST: 0x0e,
-  SUBTREE_DATA: 0x0f,
-  SUBTREE_PROOF: 0x10
-}
+// Re-export for backward compatibility
+export { PROTOCOL_VERSION, MSG_TYPE } from './protocol/message-codec.js'
+export { MerkleTreeCache } from './protocol/merkle-cache.js'
+export { RequestTracker } from './protocol/request-tracker.js'
+export { SubtreeServer } from './protocol/subtree-server.js'
 
 export class Protocol extends EventEmitter {
   constructor(network, database) {
@@ -55,17 +38,29 @@ export class Protocol extends EventEmitter {
     this.network = network;
     this.db = database;
     
-    // Track active requests
-    this.activeRequests = new Map(); // requestId -> { chunkHash, timeout, offers }
-    this.activeDownloads = new Map(); // requestId -> { chunkHash, peerId, data }
-    this.activeFileListRequests = new Map(); // requestId -> { topicKey, timeout }
-    this.activeMetadataRequests = new Map(); // requestId -> { merkleRoot, topicKey, timeout }
+    // Request tracking (encapsulated)
+    this._requestTracker = new RequestTracker();
+    
+    // Expose for backward compatibility (delegates to tracker)
+    Object.defineProperty(this, 'activeRequests', {
+      get: () => this._requestTracker.activeRequests
+    });
+    Object.defineProperty(this, 'activeDownloads', {
+      get: () => this._requestTracker.activeDownloads
+    });
+    Object.defineProperty(this, 'activeFileListRequests', {
+      get: () => this._requestTracker.activeFileListRequests
+    });
+    Object.defineProperty(this, 'activeMetadataRequests', {
+      get: () => this._requestTracker.activeMetadataRequests
+    });
 
     // Cache merkle trees for serving subtree proofs with LRU eviction.
-    // merkleRoot(hex) -> { root, levels, leafCount, timestamp }
     // Limit to 10 trees to bound memory usage (~10-15MB max for large files)
-    this._merkleTreeCache = new Map();
-    this._merkleTreeCacheMaxSize = 10;
+    this._merkleTreeCache = new MerkleTreeCache(10);
+
+    // Subtree server with backpressure
+    this._subtreeServer = new SubtreeServer(this.db, this._merkleTreeCache);
 
     // Protomux integration
     this._muxByConn = new WeakMap(); // conn -> mux
@@ -78,13 +73,6 @@ export class Protocol extends EventEmitter {
     
     // Backpressure state per connection (to avoid listener accumulation)
     this._backpressureByConn = new WeakMap(); // conn -> { pendingBytes, drainCallback }
-    
-    // Backpressure: limit concurrent subtree serves to prevent memory exhaustion
-    this._activeSubtreeServes = 0;
-    this._maxConcurrentSubtreeServes = 8;
-    this._subtreeServeQueue = [];
-    this._maxSubtreeServeQueueSize = 100; // Drop requests if queue exceeds this
-    this._activeSubtreeServeRequests = new Map(); // requestId -> { cancelled: boolean }
     
     // Setup network event handlers
     debug('[PROTOCOL] Setting up peer handler...');
@@ -198,24 +186,27 @@ export class Protocol extends EventEmitter {
     return null;
   }
 
-  _readChunkBytes(chunkLocation) {
+  async _readChunkBytes(chunkLocation) {
     let chunkData = Buffer.allocUnsafe(chunkLocation.chunk_size);
-    const fd = fs.openSync(chunkLocation.path, 'r');
+    const fh = await fs.promises.open(chunkLocation.path, 'r')
     try {
-      const bytesRead = fs.readSync(
-        fd,
+      const { bytesRead } = await fh.read(
         chunkData,
         0,
         chunkLocation.chunk_size,
         chunkLocation.chunk_offset
-      );
+      )
       if (bytesRead !== chunkLocation.chunk_size) {
-        chunkData = chunkData.subarray(0, bytesRead);
+        chunkData = chunkData.subarray(0, bytesRead)
       }
     } finally {
-      fs.closeSync(fd);
+      try {
+        await fh.close()
+      } catch {
+        // Ignore close errors
+      }
     }
-    return chunkData;
+    return chunkData
   }
   
   onPeerConnected(conn, peerId, topicKey) {
@@ -316,6 +307,7 @@ export class Protocol extends EventEmitter {
     const subtreeBegin = channel.addMessage({
       encoding: c.string,
       onmessage: async (json) => {
+        console.log(`[MUX] Received BEGIN message from ${peerId.substring(0, 8)}`)
         try {
           const msg = JSON.parse(json)
           const { requestId, merkleRoot, startChunk, chunkCount, totalBytes } = msg || {}
@@ -355,6 +347,7 @@ export class Protocol extends EventEmitter {
     const subtreePart = channel.addMessage({
       encoding: c.binary,
       onmessage: async (buf) => {
+        console.log(`[MUX] Received PART message: ${buf?.length || 0} bytes from ${peerId.substring(0, 8)}`)
         // part format: [16 bytes requestId][payload]
         if (!Buffer.isBuffer(buf) || buf.length < 16) {
           return
@@ -417,7 +410,7 @@ export class Protocol extends EventEmitter {
    * Request bitfield from peer (learn what chunks they have)
    */
   requestBitfield(conn, peerId, merkleRoot = null) {
-    const message = this.encodeMessage(MSG_TYPE.BITFIELD_REQUEST, {
+    const message = encodeMessage(MSG_TYPE.BITFIELD_REQUEST, {
       requestId: crypto.randomBytes(16).toString('hex'),
       merkleRoot
     });
@@ -431,186 +424,12 @@ export class Protocol extends EventEmitter {
   sendBitfield(conn, session) {
     const bitfield = session.ourBitfield;
     
-    const message = this.encodeMessage(MSG_TYPE.BITFIELD, {
+    const message = encodeMessage(MSG_TYPE.BITFIELD, {
       merkleRoot: session.merkleRoot,
-      bitfield: bitfield.buffer.toString('base64'),
-      chunkCount: session.totalChunks
+      bitfield: bitfield.buffer
     });
 
     void this._enqueueWrite(conn, message);
-  }
-
-  /**
-   * Encode a message to binary
-   */
-  encodeMessage(type, payload) {
-    if (type === MSG_TYPE.CHUNK_DATA) {
-      const { requestId, chunkHash, chunkData } = payload || {}
-      if (typeof requestId !== 'string' || typeof chunkHash !== 'string' || !Buffer.isBuffer(chunkData)) {
-        throw new TypeError('CHUNK_DATA payload must be { requestId: string, chunkHash: string, chunkData: Buffer }')
-      }
-
-      const requestIdBytes = Buffer.from(requestId, 'hex')
-      const chunkHashBytes = Buffer.from(chunkHash, 'hex')
-      if (requestIdBytes.length !== 16) {
-        throw new Error(`Invalid requestId hex length: expected 16 bytes, got ${requestIdBytes.length}`)
-      }
-      if (chunkHashBytes.length !== 32) {
-        throw new Error(`Invalid chunkHash hex length: expected 32 bytes, got ${chunkHashBytes.length}`)
-      }
-
-      const payloadLen = 1 + 16 + 32 + 4 + chunkData.length
-      const message = Buffer.allocUnsafe(6 + payloadLen)
-      message.writeUInt8(PROTOCOL_VERSION, 0)
-      message.writeUInt8(type, 1)
-      message.writeUInt32BE(payloadLen, 2)
-
-      let off = 6
-      message.writeUInt8(0x01, off)
-      off += 1
-      requestIdBytes.copy(message, off)
-      off += 16
-      chunkHashBytes.copy(message, off)
-      off += 32
-      message.writeUInt32BE(chunkData.length, off)
-      off += 4
-      chunkData.copy(message, off)
-      return message
-    }
-
-    if (type === MSG_TYPE.SUBTREE_DATA) {
-      const { requestId, merkleRoot, startChunk, chunkCount, data } = payload || {}
-      if (typeof requestId !== 'string' || typeof merkleRoot !== 'string' || !Number.isInteger(startChunk) || !Number.isInteger(chunkCount) || !Buffer.isBuffer(data)) {
-        throw new TypeError('SUBTREE_DATA payload must be { requestId: string, merkleRoot: string, startChunk: number, chunkCount: number, data: Buffer }')
-      }
-
-      const requestIdBytes = Buffer.from(requestId, 'hex')
-      const merkleRootBytes = Buffer.from(merkleRoot, 'hex')
-      if (requestIdBytes.length !== 16) {
-        throw new Error(`Invalid requestId hex length: expected 16 bytes, got ${requestIdBytes.length}`)
-      }
-      if (merkleRootBytes.length !== 32) {
-        throw new Error(`Invalid merkleRoot hex length: expected 32 bytes, got ${merkleRootBytes.length}`)
-      }
-
-      const payloadLen = 1 + 16 + 32 + 4 + 2 + 4 + data.length
-      const message = Buffer.allocUnsafe(6 + payloadLen)
-      message.writeUInt8(PROTOCOL_VERSION, 0)
-      message.writeUInt8(type, 1)
-      message.writeUInt32BE(payloadLen, 2)
-
-      let off = 6
-      message.writeUInt8(0x01, off)
-      off += 1
-      requestIdBytes.copy(message, off)
-      off += 16
-      merkleRootBytes.copy(message, off)
-      off += 32
-      message.writeUInt32BE(startChunk >>> 0, off)
-      off += 4
-      message.writeUInt16BE(chunkCount & 0xffff, off)
-      off += 2
-      message.writeUInt32BE(data.length >>> 0, off)
-      off += 4
-      data.copy(message, off)
-      return message
-    }
-
-    const payloadJson = JSON.stringify(payload);
-    const payloadBuffer = Buffer.from(payloadJson, 'utf8');
-    
-    // Message format: [version:1][type:1][length:4][payload:n]
-    const message = Buffer.allocUnsafe(6 + payloadBuffer.length);
-    message.writeUInt8(PROTOCOL_VERSION, 0);
-    message.writeUInt8(type, 1);
-    message.writeUInt32BE(payloadBuffer.length, 2);
-    payloadBuffer.copy(message, 6);
-    
-    return message;
-  }
-
-  /**
-   * Decode a message from binary
-   */
-  decodeMessage(buffer) {
-    if (buffer.length < 6) {
-      throw new Error('Message too short');
-    }
-    
-    const version = buffer.readUInt8(0);
-    const type = buffer.readUInt8(1);
-    const length = buffer.readUInt32BE(2);
-    
-    if (buffer.length < 6 + length) {
-      throw new Error('Incomplete message');
-    }
-    
-    const payloadBuffer = buffer.subarray(6, 6 + length);
-
-    if (type === MSG_TYPE.CHUNK_DATA) {
-      // Alpha: CHUNK_DATA is always binary with a magic byte 0x01.
-      if (payloadBuffer.length < 1 + 16 + 32 + 4) {
-        throw new Error('Invalid CHUNK_DATA payload (too short)')
-      }
-      if (payloadBuffer[0] !== 0x01) {
-        throw new Error('Invalid CHUNK_DATA payload (missing magic byte)')
-      }
-
-      const requestId = payloadBuffer.subarray(1, 17).toString('hex')
-      const chunkHash = payloadBuffer.subarray(17, 49).toString('hex')
-      const dataLen = payloadBuffer.readUInt32BE(49)
-      const expected = 1 + 16 + 32 + 4 + dataLen
-      if (payloadBuffer.length !== expected) {
-        throw new Error(`Invalid CHUNK_DATA payload length: expected ${expected}, got ${payloadBuffer.length}`)
-      }
-      const chunkData = payloadBuffer.subarray(53, 53 + dataLen)
-
-      return {
-        version,
-        type,
-        payload: {
-          requestId,
-          chunkHash,
-          chunkData
-        }
-      }
-    }
-
-    if (type === MSG_TYPE.SUBTREE_DATA) {
-      if (payloadBuffer.length < 1 + 16 + 32 + 4 + 2 + 4) {
-        throw new Error('Invalid SUBTREE_DATA payload (too short)')
-      }
-      if (payloadBuffer[0] !== 0x01) {
-        throw new Error('Invalid SUBTREE_DATA payload (missing magic byte)')
-      }
-
-      const requestId = payloadBuffer.subarray(1, 17).toString('hex')
-      const merkleRoot = payloadBuffer.subarray(17, 49).toString('hex')
-      const startChunk = payloadBuffer.readUInt32BE(49)
-      const chunkCount = payloadBuffer.readUInt16BE(53)
-      const dataLen = payloadBuffer.readUInt32BE(55)
-      const expected = 1 + 16 + 32 + 4 + 2 + 4 + dataLen
-      if (payloadBuffer.length !== expected) {
-        throw new Error(`Invalid SUBTREE_DATA payload length: expected ${expected}, got ${payloadBuffer.length}`)
-      }
-      const data = payloadBuffer.subarray(59, 59 + dataLen)
-
-      return {
-        version,
-        type,
-        payload: {
-          requestId,
-          merkleRoot,
-          startChunk,
-          chunkCount,
-          data
-        }
-      }
-    }
-
-    const payload = JSON.parse(payloadBuffer.toString('utf8'));
-    
-    return { version, type, payload };
   }
 
   /**
@@ -621,7 +440,7 @@ export class Protocol extends EventEmitter {
       // Debug: Log that we received data
       debug(`[DEBUG] handleMessage called, data length: ${data.length}`);
       
-      const { version, type, payload } = this.decodeMessage(data);
+      const { version, type, payload } = decodeMessage(data);
 
       if (VERBOSE) {
         console.log(`[DEBUG] Decoded message - version: ${version}, type: ${type}`);
@@ -875,206 +694,17 @@ export class Protocol extends EventEmitter {
   }
 
   async handleSubtreeRequest(conn, peerId, payload) {
-    const { requestId, merkleRoot, startChunk, chunkCount, topicKey } = payload || {}
-    if (typeof requestId !== 'string' || typeof merkleRoot !== 'string' || !Number.isInteger(startChunk) || !Number.isInteger(chunkCount)) {
-      this.sendError(conn, requestId || '00000000000000000000000000000000', 'Invalid subtree request')
-      return
+    const context = {
+      mux: this._muxByConn.get(conn),
+      beginMsg: this._subtreeBeginByConn.get(conn),
+      partMsg: this._subtreePartByConn.get(conn),
+      backpressureState: this._backpressureByConn.get(conn),
+      stream: this._muxByConn.get(conn)?.stream,
+      enqueueWrite: (c, data) => this._enqueueWrite(c, data),
+      sendError: (c, requestId, error) => this.sendError(c, requestId, error)
     }
-
-    // Backpressure: queue request if at capacity
-    if (this._activeSubtreeServes >= this._maxConcurrentSubtreeServes) {
-      // Check queue size limit - drop request if overloaded
-      if (this._subtreeServeQueue.length >= this._maxSubtreeServeQueueSize) {
-        console.warn(`[PROTOCOL] Subtree request dropped - queue full (${this._subtreeServeQueue.length}), active=${this._activeSubtreeServes}/${this._maxConcurrentSubtreeServes}`)
-        this.sendError(conn, requestId, 'Server overloaded, please retry')
-        return
-      }
-      this._subtreeServeQueue.push({ conn, peerId, payload })
-      debug('[PROTOCOL] Subtree request queued (active: %d, max: %d)', this._activeSubtreeServes, this._maxConcurrentSubtreeServes)
-      return
-    }
-
-    this._activeSubtreeServes++
-    this._activeSubtreeServeRequests.set(requestId, { cancelled: false })
-    try {
-      await this._serveSubtreeRequest(conn, peerId, payload)
-    } finally {
-      this._activeSubtreeServes--
-      this._activeSubtreeServeRequests.delete(requestId)
-      // Process next queued request if any
-      if (this._subtreeServeQueue.length > 0 && this._activeSubtreeServes < this._maxConcurrentSubtreeServes) {
-        const next = this._subtreeServeQueue.shift()
-        // Fire-and-forget to avoid blocking
-        this.handleSubtreeRequest(next.conn, next.peerId, next.payload).catch(() => {})
-      }
-    }
-  }
-
-  async _serveSubtreeRequest(conn, peerId, payload) {
-    const { requestId, merkleRoot, startChunk, chunkCount, topicKey } = payload || {}
-    
-    let file = null
-    if (typeof topicKey === 'string' && topicKey.length > 0) {
-      const topic = this.db.getTopicByKey(topicKey)
-      if (topic) {
-        const share = this.db.getTopicShareByMerkleRoot(topic.id, merkleRoot)
-        if (share && share.share_type === 'file' && typeof share.share_path === 'string') {
-          const byPath = this.db.getFile(share.share_path)
-          if (byPath && byPath.file_modified_at > 0) {
-            file = byPath
-          }
-        }
-      }
-    }
-
-    if (!file) {
-      const byRoot = this.db.getFileByMerkleRoot(merkleRoot)
-      if (byRoot && byRoot.file_modified_at > 0) {
-        file = byRoot
-      }
-    }
-
-    if (!file) {
-      this.sendError(conn, requestId, 'File not found')
-      return
-    }
-
-    const endChunk = Math.min(file.chunk_count - 1, startChunk + chunkCount - 1)
-    if (startChunk < 0 || startChunk >= file.chunk_count || endChunk < startChunk) {
-      this.sendError(conn, requestId, 'Invalid subtree range')
-      return
-    }
-
-    // Subtree proofs require aligned power-of-two subtrees.
-    const isPowerOfTwo = (n) => n > 0 && (n & (n - 1)) === 0
-    if (!isPowerOfTwo(chunkCount) || (startChunk % chunkCount) !== 0) {
-      this.sendError(conn, requestId, 'Subtree request must be aligned power-of-two')
-      return
-    }
-
-    // Fetch only the chunks we need for serving (not the entire file)
-    const slice = this.db.getFileChunksRange(file.id, startChunk, endChunk)
-
-    let total = 0
-    for (const ch of slice) {
-      total += ch.chunk_size
-    }
-
-    // Send a subtree proof first (JSON frame), then stream chunks via Protomux.
-    try {
-      let tree = this._merkleTreeCache.get(merkleRoot)
-      if (!tree) {
-        // Only fetch all chunks if we need to build the tree (will be cached)
-        const chunks = this.db.getFileChunks(file.id)
-        const leafHashes = chunks.map((ch) => ch.chunk_hash)
-        tree = await buildMerkleTree(leafHashes)
-        tree.timestamp = Date.now() // LRU tracking
-        
-        // LRU eviction: remove oldest entry if cache is full
-        if (this._merkleTreeCache.size >= this._merkleTreeCacheMaxSize) {
-          let oldestKey = null
-          let oldestTime = Infinity
-          for (const [key, value] of this._merkleTreeCache) {
-            if (value.timestamp < oldestTime) {
-              oldestTime = value.timestamp
-              oldestKey = key
-            }
-          }
-          if (oldestKey) {
-            this._merkleTreeCache.delete(oldestKey)
-          }
-        }
-        this._merkleTreeCache.set(merkleRoot, tree)
-      } else {
-        // Update timestamp for LRU
-        tree.timestamp = Date.now()
-      }
-
-      const level = Math.round(Math.log2(chunkCount))
-      const index = Math.floor(startChunk / chunkCount)
-      const proofObj = generateSubtreeProofFromTree(tree, level, index)
-
-      const proofMsg = this.encodeMessage(MSG_TYPE.SUBTREE_PROOF, {
-        requestId,
-        merkleRoot,
-        startChunk,
-        chunkCount,
-        level: proofObj.level,
-        index: proofObj.index,
-        node: proofObj.node,
-        proof: proofObj.proof
-      })
-
-      void this._enqueueWrite(conn, proofMsg)
-    } catch (err) {
-      this.sendError(conn, requestId, `Failed to generate subtree proof: ${err?.message || String(err)}`)
-      return
-    }
-
-    const fd = fs.openSync(file.path, 'r')
-    console.log(`[SUBTREE] Serving ${slice.length} chunks from ${file.path} for req=${requestId.substring(0, 8)}`)
-    try {
-      // Protomux streaming mode: send a begin control message then stream chunks.
-      const begin = this._subtreeBeginByConn.get(conn)
-      const part = this._subtreePartByConn.get(conn)
-      console.log(`[SUBTREE] begin=${!!begin} part=${!!part} for req=${requestId.substring(0, 8)}`)
-      if (!begin || !part) {
-        this.sendError(conn, requestId, 'Protomux required for streaming')
-        return
-      }
-
-      console.log(`[SUBTREE] Sending BEGIN for req=${requestId.substring(0, 8)} chunks=${slice.length} totalBytes=${total}`)
-      begin.send(JSON.stringify({ requestId, merkleRoot, startChunk, chunkCount: slice.length, totalBytes: total }))
-
-      const requestIdBytes = Buffer.from(requestId, 'hex')
-      
-      // Zero-copy: reuse a single 1MB buffer (chunk size) for all reads
-      // This ensures constant memory usage regardless of file size
-      const CHUNK_SIZE = 1024 * 1024
-      const chunkBuf = Buffer.allocUnsafe(16 + CHUNK_SIZE)
-      requestIdBytes.copy(chunkBuf, 0)
-
-      // Backpressure: use shared per-connection state (drain listener set up in _setupMux)
-      const BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024 // 4MB pending
-      const bp = this._backpressureByConn.get(conn)
-      const mux = this._muxByConn.get(conn)
-      const stream = mux?.stream
-
-      for (const ch of slice) {
-        // Check if this request was cancelled
-        const serveState = this._activeSubtreeServeRequests.get(requestId)
-        if (serveState?.cancelled) {
-          console.log(`[SUBTREE] Request ${requestId.substring(0, 8)} cancelled, stopping stream`)
-          break
-        }
-        
-        console.log(`[SUBTREE] Streaming chunk ${ch.chunk_index} size=${ch.chunk_size}`)
-        let remaining = ch.chunk_size
-        let localOff = 0
-        while (remaining > 0) {
-          // Backpressure check: wait if too many bytes pending
-          if (bp && bp.pendingBytes >= BACKPRESSURE_THRESHOLD && stream?.writable !== false) {
-            console.log(`[SUBTREE] Backpressure wait: ${bp.pendingBytes} bytes pending`)
-            await new Promise(resolve => { bp.drainCallback = resolve })
-          }
-          
-          const toRead = Math.min(remaining, CHUNK_SIZE)
-          const bytesRead = fs.readSync(fd, chunkBuf, 16, toRead, ch.chunk_offset + localOff)
-          if (bytesRead <= 0) {
-            throw new Error(`Short read: expected=${ch.chunk_size} got=${localOff} chunk_index=${ch.chunk_index}`)
-          }
-          localOff += bytesRead
-          remaining -= bytesRead
-          // Send immediately - no accumulation
-          part.send(chunkBuf.subarray(0, 16 + bytesRead))
-          if (bp) bp.pendingBytes += bytesRead
-        }
-      }
-    } catch (err) {
-      this.sendError(conn, requestId, `Failed to read subtree data: ${err?.message || String(err)}`)
-    } finally {
-      fs.closeSync(fd)
-    }
+    console.log(`[SUBTREE] handleSubtreeRequest: beginMsg=${!!context.beginMsg} partMsg=${!!context.partMsg} mux=${!!context.mux}`)
+    await this._subtreeServer.handleRequest(conn, peerId, payload, context)
   }
 
   handleSubtreeProof(conn, peerId, payload) {
@@ -1104,71 +734,84 @@ export class Protocol extends EventEmitter {
     this.activeDownloads.delete(requestId);
     
     // Cancel in-progress subtree serving
-    const serveState = this._activeSubtreeServeRequests.get(requestId)
-    if (serveState) {
-      serveState.cancelled = true
-      console.log(`[PROTOCOL] Marked subtree serve ${requestId.substring(0, 8)} as cancelled`)
-    }
-    
-    // Remove from subtree serve queue if pending
-    const queueIndex = this._subtreeServeQueue.findIndex(item => item.payload?.requestId === requestId)
-    if (queueIndex !== -1) {
-      this._subtreeServeQueue.splice(queueIndex, 1)
-      console.log(`[PROTOCOL] Removed request ${requestId.substring(0, 8)} from subtree queue`)
-    }
+    this._subtreeServer.cancel(requestId);
   }
 
   /**
    * ERROR: Error response
    */
   handleError(peerId, payload) {
-    const { requestId, error } = payload;
-    console.error(`ERROR from ${peerId.substring(0, 8)}: ${error}`);
+    const { requestId, message } = payload;
+    console.error(`ERROR from ${peerId.substring(0, 8)}: ${message}`);
 
     const req = requestId ? this.activeRequests.get(requestId) : null
     if (req && req.chunkHash == null) {
-      this.emit('subtree:error', { requestId, error })
+      this.emit('subtree:error', { requestId, error: message })
       return
     }
 
-    this.emit('chunk:error', { requestId, error });
+    this.emit('chunk:error', { requestId, error: message });
   }
 
   /**
-   * FILE_LIST_REQUEST: Peer requests list of shared files in topic
+   * FILE_LIST_REQUEST: Peer requests list of shared files and vdirs in topic
    */
   async handleFileListRequest(conn, peerId, payload) {
     const { requestId, topicKey } = payload;
 
     console.log(`FILE_LIST_REQUEST from ${peerId.substring(0, 8)}...`);
 
-    const topic = this.db.getTopicByKey(topicKey);
+    // topicKey is a buffer from compact-encoding, convert to hex for DB lookup
+    const topicKeyHex = topicKey ? topicKey.toString('hex') : null;
+    const topic = this.db.getTopicByKey(topicKeyHex);
     if (!topic) {
       console.log(`Unknown topic key`);
       return;
     }
 
     const shares = this.db.getTopicShares(topic.id);
-    const files = shares
-      .filter((share) => share.share_type === 'file')
-      .map((share) => {
+    const items = [];
+
+    for (const share of shares) {
+      if (share.share_type === 'file') {
         const file = this.db.getFile(share.share_path);
-        if (!file || file.file_modified_at <= 0) {
-          return null;
+        if (file && file.file_modified_at > 0) {
+          items.push({
+            name: path.basename(share.share_path),
+            path: share.share_path,
+            merkleRoot: share.merkle_root,
+            type: 'file',
+            size: file.size,
+            chunkCount: file.chunk_count
+          });
         }
+      } else if (share.share_type === 'vdir') {
+        const vdir = this.db.getVdirById(share.share_path);
+        if (vdir && vdir.merkle_root) {
+          const children = this.db.getVdirChildren(vdir.id);
+          items.push({
+            name: vdir.name,
+            path: share.share_path,
+            merkleRoot: vdir.merkle_root,
+            type: 'vdir',
+            childCount: children.length
+          });
+        }
+      } else if (share.share_type === 'directory') {
+        const dir = this.db.getDirectory(share.share_path);
+        if (dir && dir.merkle_root) {
+          items.push({
+            name: path.basename(share.share_path),
+            path: share.share_path,
+            merkleRoot: share.merkle_root,
+            type: 'directory',
+            size: dir.size
+          });
+        }
+      }
+    }
 
-        return {
-          name: path.basename(share.share_path),
-          path: share.share_path,
-          merkleRoot: share.merkle_root,
-          size: file.size,
-          chunkSize: file.chunk_size,
-          chunkCount: file.chunk_count
-        };
-      })
-      .filter(Boolean);
-
-    this.sendFileListResponse(conn, requestId, topicKey, files);
+    this.sendFileListResponse(conn, requestId, topicKey, items);
   }
 
   handleFileListResponse(conn, peerId, payload) {
@@ -1184,22 +827,40 @@ export class Protocol extends EventEmitter {
   }
 
   /**
-   * METADATA_REQUEST: Peer requests metadata for a file
+   * METADATA_REQUEST: Peer requests metadata for a file or vdir
    */
   async handleMetadataRequest(conn, peerId, payload) {
     const { requestId, merkleRoot, topicKey } = payload;
 
     console.log(`METADATA_REQUEST from ${peerId.substring(0, 8)}: ${merkleRoot.substring(0, 16)}...`);
 
-    const topic = this.db.getTopicByKey(topicKey);
+    // topicKey is a buffer from compact-encoding, convert to hex for DB lookup
+    const topicKeyHex = topicKey ? topicKey.toString('hex') : null;
+    const topic = this.db.getTopicByKey(topicKeyHex);
     if (!topic) {
       this.sendError(conn, requestId, 'Unknown topic');
       return;
     }
 
+    // First, check if this is a vdir
+    const vdir = this.db.getVdirByMerkleRoot(merkleRoot);
+    if (vdir) {
+      // Return vdir metadata
+      const children = this.db.getVdirChildren(vdir.id);
+      const metadata = {
+        merkleRoot,
+        type: 'vdir',
+        suggestedName: vdir.name,
+        children
+      };
+      this.sendMetadataResponse(conn, requestId, metadata);
+      return;
+    }
+
+    // Fall back to file handling
     const share = this.db.getTopicShareByMerkleRoot(topic.id, merkleRoot);
     if (!share) {
-      this.sendError(conn, requestId, 'File not shared in topic');
+      this.sendError(conn, requestId, 'Content not found in topic');
       return;
     }
 
@@ -1209,33 +870,31 @@ export class Protocol extends EventEmitter {
       return;
     }
 
-    const chunks = this.db.getFileChunks(file.id);
+    const chunkList = this.db.getFileChunks(file.id);
     const metadata = {
       merkleRoot,
-      name: path.basename(share.share_path),
-      path: share.share_path,
+      type: 'file',
+      suggestedName: path.basename(share.share_path),
       size: file.size,
-      chunkSize: file.chunk_size,
       chunkCount: file.chunk_count,
-      chunks: chunks.map((chunk) => ({
-        hash: chunk.chunk_hash,
-        offset: chunk.chunk_offset,
-        size: chunk.chunk_size
-      }))
+      chunkSize: file.chunk_size,
+      chunkHashes: chunkList.map((chunk) => chunk.chunk_hash)
     };
 
     this.sendMetadataResponse(conn, requestId, metadata);
   }
 
   handleMetadataResponse(conn, peerId, payload) {
-    const { requestId, metadata } = payload;
+    // Codec returns: requestId, merkleRoot, type, suggestedName, ...
+    // For files: size, chunkCount, chunkSize, chunkHashes[]
+    const { requestId, merkleRoot, type, suggestedName, children, size, chunkCount, chunkSize, chunkHashes } = payload;
 
     const request = this.activeMetadataRequests.get(requestId);
     if (!request) {
       return;
     }
 
-    if (metadata.merkleRoot !== request.merkleRoot) {
+    if (merkleRoot !== request.merkleRoot) {
       return;
     }
 
@@ -1244,8 +903,31 @@ export class Protocol extends EventEmitter {
     }
     this.activeMetadataRequests.delete(requestId);
 
-    console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${metadata.chunkCount} chunks)`);
-    this.emit('metadata:response', { requestId, peerId, metadata });
+    // Build metadata object for event (matches DownloadSession constructor expectations)
+    const metadata = { merkleRoot, type, suggestedName };
+    if (type === 'vdir') {
+      metadata.children = children;
+    } else {
+      metadata.size = size;
+      metadata.chunkCount = chunkCount;
+      metadata.chunkSize = chunkSize;
+      // Build chunks array with computed offsets/sizes from chunkHashes
+      // (offset/size can be derived from index * chunkSize, hash is authoritative)
+      metadata.chunks = (chunkHashes || []).map((hash, i) => {
+        const offset = i * chunkSize;
+        const chunkBytes = Math.min(chunkSize, Math.max(0, size - offset));
+        return { hash, offset, size: chunkBytes };
+      });
+    }
+
+    // Handle both file and vdir responses
+    if (type === 'vdir') {
+      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (vdir: ${children?.length || 0} children)`);
+      this.emit('vdir:metadata', { requestId, peerId, metadata });
+    } else {
+      console.log(`METADATA_RESPONSE from ${peerId.substring(0, 8)} (${chunkCount} chunks)`);
+      this.emit('metadata:response', { requestId, peerId, metadata });
+    }
   }
 
  /**
@@ -1264,13 +946,13 @@ export class Protocol extends EventEmitter {
    * BITFIELD: Peer sends their complete bitfield
    */
   handleBitfield(conn, peerId, payload) {
-    const { merkleRoot, bitfield, chunkCount } = payload;
+    const { merkleRoot, bitfield } = payload;
     
-    console.log(`BITFIELD from ${peerId.substring(0, 8)}: ${chunkCount} chunks`);
+    console.log(`BITFIELD from ${peerId.substring(0, 8)}: ${bitfield.length * 8} chunks`);
     
     // Import BitField
     import('./bitfield.js').then(({ BitField }) => {
-      const peerBitfield = BitField.fromBase64(bitfield, chunkCount);
+      const peerBitfield = BitField.fromBuffer(bitfield);
       
       // Emit event for download sessions
       this.emit('peer:bitfield', { peerId, bitfield: peerBitfield, merkleRoot });
@@ -1280,14 +962,28 @@ export class Protocol extends EventEmitter {
   /**
    * BITFIELD_REQUEST: Peer requests our bitfield
    */
-  async handleBitfieldRequest(conn, peerId, payload) {
+  // INVARIANT: Content-addressed - find ANY file with matching merkle root that exists on disk
+// Sharing status is irrelevant, only merkle root + disk access matters
+async handleBitfieldRequest(conn, peerId, payload) {
     const { requestId, merkleRoot } = payload;
     
     console.log(`BITFIELD_REQUEST from ${peerId.substring(0, 8)} merkleRoot=${merkleRoot?.substring(0, 8)}`);
     
     // If we have the file, respond with a full bitfield (all chunks available)
     if (merkleRoot) {
-      const file = this.db.getFileByMerkleRoot(merkleRoot);
+      // Find any available file with this merkle root (content-addressed)
+      const candidates = this.db.getFilesByMerkleRoot(merkleRoot);
+      let file = null;
+      for (const candidate of candidates || []) {
+        try {
+          fs.accessSync(candidate.path, fs.constants.R_OK);
+          file = candidate;
+          break;
+        } catch {
+          // File not accessible, try next
+        }
+      }
+      
       if (file && file.chunk_count > 0) {
         // Create a bitfield with all chunks set (we have the complete file)
         const { BitField } = await import('./bitfield.js');
@@ -1296,14 +992,13 @@ export class Protocol extends EventEmitter {
           bitfield.set(i);
         }
         
-        const message = this.encodeMessage(MSG_TYPE.BITFIELD, {
+        const message = encodeMessage(MSG_TYPE.BITFIELD, {
           merkleRoot,
-          bitfield: bitfield.buffer.toString('base64'),
-          chunkCount: file.chunk_count
+          bitfield: bitfield.buffer
         });
         
         void this._enqueueWrite(conn, message);
-        console.log(`BITFIELD sent to ${peerId.substring(0, 8)}: ${file.chunk_count} chunks`);
+        console.log(`BITFIELD sent to ${peerId.substring(0, 8)}: ${file.chunk_count} chunks from ${file.path}`);
         return;
       }
     }
@@ -1341,7 +1036,7 @@ export class Protocol extends EventEmitter {
     });
     
     // Broadcast REQUEST to topic
-    const message = this.encodeMessage(MSG_TYPE.REQUEST, {
+    const message = encodeMessage(MSG_TYPE.REQUEST, {
       requestId,
       chunkHash
     });
@@ -1388,7 +1083,7 @@ export class Protocol extends EventEmitter {
       throw new Error(`Peer not connected in topic: ${peerId.substring(0, 8)}`);
     }
 
-    const message = this.encodeMessage(MSG_TYPE.REQUEST, {
+    const message = encodeMessage(MSG_TYPE.REQUEST, {
       requestId,
       chunkHash
     });
@@ -1423,12 +1118,12 @@ export class Protocol extends EventEmitter {
       throw new Error(`Peer not connected in topic: ${peerId.substring(0, 8)}`);
     }
 
-    const message = this.encodeMessage(MSG_TYPE.SUBTREE_REQUEST, {
+    const message = encodeMessage(MSG_TYPE.SUBTREE_REQUEST, {
       requestId,
       merkleRoot,
       startChunk,
       chunkCount,
-      topicKey: topicKey.toString('hex')
+      topicKey
     });
 
     void this._enqueueWrite(conn, message);
@@ -1451,9 +1146,9 @@ export class Protocol extends EventEmitter {
       }, timeout)
     });
 
-    const message = this.encodeMessage(MSG_TYPE.FILE_LIST_REQUEST, {
+    const message = encodeMessage(MSG_TYPE.FILE_LIST_REQUEST, {
       requestId,
-      topicKey: topicKeyHex
+      topicKey
     });
 
     this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
@@ -1464,7 +1159,7 @@ export class Protocol extends EventEmitter {
    * Send OFFER
    */
   sendOffer(conn, requestId, chunkHash, chunkSize) {
-    const message = this.encodeMessage(MSG_TYPE.OFFER, {
+    const message = encodeMessage(MSG_TYPE.OFFER, {
       requestId,
       chunkHash,
       chunkSize
@@ -1477,7 +1172,7 @@ export class Protocol extends EventEmitter {
   }
 
   sendFileListResponse(conn, requestId, topicKey, files) {
-    const message = this.encodeMessage(MSG_TYPE.FILE_LIST_RESPONSE, {
+    const message = encodeMessage(MSG_TYPE.FILE_LIST_RESPONSE, {
       requestId,
       topicKey,
       files
@@ -1503,10 +1198,10 @@ export class Protocol extends EventEmitter {
       }, timeout)
     });
 
-    const message = this.encodeMessage(MSG_TYPE.METADATA_REQUEST, {
+    const message = encodeMessage(MSG_TYPE.METADATA_REQUEST, {
       requestId,
       merkleRoot,
-      topicKey: topicKeyHex
+      topicKey // Pass as Buffer, not hex string
     });
 
     this.network.broadcast(topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
@@ -1532,7 +1227,7 @@ export class Protocol extends EventEmitter {
     }
     
     // Send DOWNLOAD message
-    const message = this.encodeMessage(MSG_TYPE.DOWNLOAD, {
+    const message = encodeMessage(MSG_TYPE.DOWNLOAD, {
       requestId,
       chunkHash: request.chunkHash
     });
@@ -1561,7 +1256,7 @@ export class Protocol extends EventEmitter {
    * Send chunk data
    */
   async sendChunkData(conn, requestId, chunkHash, chunkData) {
-    const message = this.encodeMessage(MSG_TYPE.CHUNK_DATA, {
+    const message = encodeMessage(MSG_TYPE.CHUNK_DATA, {
       requestId,
       chunkHash,
       chunkData
@@ -1571,9 +1266,9 @@ export class Protocol extends EventEmitter {
   }
 
   sendMetadataResponse(conn, requestId, metadata) {
-    const message = this.encodeMessage(MSG_TYPE.METADATA_RESPONSE, {
+    const message = encodeMessage(MSG_TYPE.METADATA_RESPONSE, {
       requestId,
-      metadata
+      ...metadata
     });
 
     void this._enqueueWrite(conn, message);
@@ -1583,9 +1278,9 @@ export class Protocol extends EventEmitter {
    * Send error
    */
   sendError(conn, requestId, error) {
-    const message = this.encodeMessage(MSG_TYPE.ERROR, {
+    const message = encodeMessage(MSG_TYPE.ERROR, {
       requestId,
-      error
+      message: error
     });
 
     void this._enqueueWrite(conn, message);
@@ -1603,7 +1298,7 @@ export class Protocol extends EventEmitter {
     console.log(`Cancelling request: ${requestId.substring(0, 16)}...`);
     
     // Broadcast CANCEL
-    const message = this.encodeMessage(MSG_TYPE.CANCEL, { requestId });
+    const message = encodeMessage(MSG_TYPE.CANCEL, { requestId });
     this.network.broadcast(request.topicKey, message, (conn, data) => this._enqueueWrite(conn, data));
     
     // Cleanup
@@ -1673,7 +1368,7 @@ export class Protocol extends EventEmitter {
       activeDownloads: this.activeDownloads.size,
       subtreeRxBuffers: this._subtreeRx.size,
       merkleTreeCache: this._merkleTreeCache.size,
-      subtreeServeQueue: this._subtreeServeQueue.length,
+      subtreeServeQueue: this._subtreeServer.getStats().queueLength,
       memory: {
         heapUsed: this._formatBytes(mem.heapUsed),
         heapTotal: this._formatBytes(mem.heapTotal),

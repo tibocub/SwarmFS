@@ -137,6 +137,35 @@ program
   .action(wrapCommand(cmd.statsCommand));
 
 // ============================================================================
+// IDENTITY COMMANDS
+// ============================================================================
+
+program
+  .command('new-login [device-name]')
+  .description('Create new identity and become indexer (first device)')
+  .action(wrapCommand(cmd.newLoginCommand));
+
+program
+  .command('login <mnemonic> [device-name]')
+  .description('Login with existing identity mnemonic (join existing autobase)')
+  .action(wrapCommand(cmd.loginCommand));
+
+program
+  .command('logout')
+  .description('Clear identity from memory')
+  .action(wrapCommand(cmd.logoutCommand));
+
+program
+  .command('devices')
+  .description('List registered devices')
+  .action(wrapCommand(cmd.devicesCommand));
+
+program
+  .command('whoami')
+  .description('Show current identity info')
+  .action(wrapCommand(cmd.whoamiCommand));
+
+// ============================================================================
 // TOPIC COMMANDS
 // ============================================================================
 
@@ -465,6 +494,21 @@ vdirCmd
   .description('Add local file(s) into a VFS directory (last arg is vfs dir path)')
   .option('--name <name>', 'Suggested display name (does not affect hashing)')
   .action(wrapCommand(cmd.vdirAddCommand));
+
+vdirCmd
+  .command('share <topic> [vfsPath]')
+  .description('Share a vdir in a topic (outputs merkle root)')
+  .action(wrapCommand(cmd.vdirShareCommand));
+
+vdirCmd
+  .command('info [vfsPath]')
+  .description('Show vdir info including merkle root')
+  .action(wrapCommand(cmd.vdirInfoCommand));
+
+vdirCmd
+  .command('repair')
+  .description('Repair vdir entries for vdirs created before the fix')
+  .action(wrapCommand(cmd.vdirRepairCommand));
 
 
 // ============================================================================

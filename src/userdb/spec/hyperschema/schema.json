@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "schema": [
+    {
+      "name": "device",
+      "namespace": "userdb",
+      "compact": false,
+      "flagsPosition": 6,
+      "fields": [
+        {
+          "name": "deviceId",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "name",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "publicKey",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "userIdentity",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "proof",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "addedAt",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "lastSeen",
+          "required": false,
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "friend",
+      "namespace": "userdb",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "identityKey",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "name",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "addedAt",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "proof",
+          "required": false,
+          "type": "buffer",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "setting",
+      "namespace": "userdb",
+      "compact": false,
+      "flagsPosition": -1,
+      "fields": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "value",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "updatedAt",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    }
+  ]
+}
