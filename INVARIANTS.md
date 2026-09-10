@@ -11,7 +11,7 @@ These are rules that must NEVER be violated. Any code change that breaks these i
 ## Download Mechanics
 
 - **chunksInFlight counts subtree requests, not chunks** - Each subtree request = 1 in-flight, regardless of how many chunks it contains
-- **maxConcurrentRequests limits concurrent subtree requests** - Default is 8, scales with peer count
+- **maxConcurrentRequests limits concurrent subtree requests** - Default is 4, scales up to `max(4, peerCount*8)` as peers are discovered
 - **file_modified_at > 0 means complete** - Only files with `file_modified_at > 0` are servable
 
 ## Protocol Flow
@@ -33,9 +33,9 @@ Download Request Flow:
 
 ## Backpressure
 
-- **_activeSubtreeServes limits concurrent serves** - Default 8, prevents memory exhaustion
+- **_activeServes limits concurrent serves** (in `SubtreeServer`, `src/protocol/subtree-server.js`) - Default 8 (`PROTOCOL_CONFIG.MAX_CONCURRENT_SUBTREE_SERVES`, `src/config.js`), prevents memory exhaustion
 - **_subtreeServeQueue holds overflow requests** - Dropped with "Server overloaded" if queue full
-- **CANCEL must decrement _activeSubtreeServes** - Otherwise slots leak and server appears overloaded
+- **CANCEL must decrement _activeServes** - Otherwise slots leak and server appears overloaded
 
 ## Database
 

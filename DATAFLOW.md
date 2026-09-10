@@ -168,7 +168,7 @@ Requester receives BITFIELD:
 - File not servable until `file_modified_at` updated (sync DB write)
 
 ⚠️ **Backpressure queue** (async):
-- Subtree requests queued when `_activeSubtreeServes >= max`
+- Subtree requests queued when `_activeServes >= max` (in `SubtreeServer`, `src/protocol/subtree-server.js`)
 - Queue processed as active serves complete
 - CANCEL must clean up both active serves and queued requests
 
