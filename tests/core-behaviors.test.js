@@ -127,4 +127,4 @@ test('getFilesByMerkleRoot returns empty array for unknown merkle root', async (
   }
 });
 
-console.log('Run with: node --test test/core-behaviors.test.js');
+console.log('Run with: node --test tests/core-behaviors.test.js');
