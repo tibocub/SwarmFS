@@ -58,3 +58,13 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Claude Code local state (may contain machine-local permissions/session data).
+# .claude/skills/ (the spec-kit workflow itself) stays tracked.
+.claude/settings.local.json
+.claude/.credentials.json
+
+# Byproducts of spec-kit's Python-based tooling scripts (.specify/scripts/python/) —
+# generated on every /speckit-* invocation, not something to commit.
+__pycache__/
+*.pyc
