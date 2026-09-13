@@ -11,8 +11,8 @@ SwarmFS is a P2P file-sharing system using content-addressed storage (merkle roo
 moderated swarms — rather than duplicating that work here. See `README.md`'s top note and
 constitution Principle III before starting anything that depends on those.
 
-Working branch is **`dev`**, not `master` (note that `CLAUDE.md`'s branch-per-feature convention
-says "merge back to `master`" — confirm the intended target before merging anything).
+Main branch is **`main`** (not `master`). `dev` was merged into it on 2026-09-13; new work starts
+from `main` on its own feature branch.
 
 While paused, the useful work is correctness/documentation upkeep, not new features. If you pick
 the project back up, replace this section with the actual current focus — a blank template here

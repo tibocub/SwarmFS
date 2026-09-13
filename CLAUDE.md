@@ -40,8 +40,8 @@ SwarmFS is one of five sibling P2P projects under `E:\Code\P2P\`. **Canonical ma
 ⚠ `E:\Code\P2P\` also contains `SwarmFS-main\`, `SwarmFS-copy\`, `SwarmFS.old\`, and
 `SwarmFS-0.1\`. **This directory is the live one**; those are not. Confirm your path before editing.
 
-Note: the working branch here is **`dev`**, not `master` — confirm the intended merge target before
-following the branch-per-feature convention below.
+The main branch here is **`main`** (not `master`). `dev` was merged into it on 2026-09-13; work from
+`main` with a branch per feature, as described below.
 
 ## Tooling
 
@@ -53,5 +53,5 @@ retry as `python .specify/scripts/...` (some Windows setups only expose `python`
 
 No spec-kit git extension is installed, so branch creation isn't automatic. After
 `/speckit-specify` creates `specs/<NNN-name>/`, run `git checkout -b <NNN-name>` (same name as
-the spec directory). Merge back to `master` once that feature's `/speckit-implement` is done and
+the spec directory). Merge back to `main` once that feature's `/speckit-implement` is done and
 its tests pass.
