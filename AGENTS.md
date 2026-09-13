@@ -2,6 +2,16 @@
 
 This file helps LLMs work effectively with the SwarmFS codebase. Reference this file at the start of any session.
 
+## Spec-Kit
+
+This project also has a spec-kit setup (`.specify/`, `.claude/skills/speckit-*`, and
+`.specify/memory/constitution.md`) for new/changed work — `/speckit-specify` → `/speckit-plan` →
+`/speckit-tasks` → `/speckit-implement`. The constitution defers to this file, `INVARIANTS.md`,
+`AI_CONTEXT.md`, and `DATAFLOW.md` for domain rules rather than restating them — it only adds
+spec-kit's own governance (versioning, the Constitution Check gate, `specs/` as the record of
+new work). See `CLAUDE.md` for the short version. This note follows this file's own
+Self-Improvement protocol below: spec-kit is new project workflow, so it's recorded here too.
+
 ## Quick Start for Testing
 
 ### Commands That Exit Cleanly (Use These)
@@ -46,14 +56,15 @@ See `INVARIANTS.md` for full details. Key points:
 1. **Content-addressed serving**: File lookup is by merkle root ONLY. Sharing status never affects serving.
 2. **chunksInFlight counts subtrees**: Each subtree request = 1 in-flight, not 8 for 8 chunks.
 3. **file_modified_at > 0 means complete**: Only these files are servable.
-4. **CANCEL must decrement _activeSubtreeServes**: Otherwise slots leak.
+4. **CANCEL must decrement _activeServes**: Otherwise slots leak. (In `SubtreeServer`,
+   `src/protocol/subtree-server.js` — the old name `_activeSubtreeServes` no longer exists.)
 
 ## Testing a New Feature
 
 ### Step 1: Write Unit Tests
 ```bash
 # Run existing tests
-node --test test/core-behaviors.test.js
+node --test tests/core-behaviors.test.js
 ```
 
 ### Step 2: Test with CLI (Single Machine)
@@ -109,7 +120,7 @@ docker run -it -v swarmfs-data:/data --network host swarmfs sh -c "
 1. Check `chunksInFlight` usage - must be per-subtree
 2. Check `onSubtreeComplete` and `onSubtreeTimeout` - must decrement
 3. Check `handleCancel` - must decrement and clean up
-4. Run `node --test test/core-behaviors.test.js`
+4. Run `node --test tests/core-behaviors.test.js`
 
 ### Adding Database Fields
 
@@ -142,9 +153,10 @@ cat /tmp/swarmfs-logs/<session-id>.log
 | Issue                         | Cause                                             | Fix                                      |
 |-------------------------------|---------------------------------------------------|------------------------------------------|
 | Download stalls at 8 subtrees | chunksInFlight counted per-chunk                  | Count per-subtree                        |
-| "Server overloaded" errors    | _activeSubtreeServes not decremented on cancel    | Fix handleCancel                         |
+| "Server overloaded" errors    | _activeServes not decremented on cancel           | Fix handleCancel                         |
 | "File not found" from peer with file | Sharing lookup used instead of merkle root | Use getFilesByMerkleRoot                 |
 | Post-completion streaming     | CANCEL not stopping in-progress serves            | Add cancelled flag check                 |
+| A "fixed" invariant bug reappears | An old, shadowed implementation of the same class (e.g. a second `DownloadSession`) still exists elsewhere in the file/repo, unreachable but not deleted, and someone wires it back up later | Grep for the class name repo-wide before trusting one call site is the only one; delete the dead copy instead of leaving it next to the correct one (found and removed once already — src/swarmfs.js used to carry its own dead `DownloadSession`/`ChunkScheduler` that counted chunksInFlight per-chunk) |
 
 ## File Structure
 
@@ -159,7 +171,7 @@ src/
 ├── merkle.js        # Merkle tree utilities
 └── bitfield.js      # Chunk availability tracking
 
-test/
+tests/
 └── core-behaviors.test.js  # Tests for invariants
 
 docs/
@@ -173,7 +185,7 @@ AGENTS.md            # This file
 
 If you discover a new invariant, testing pattern, or common mistake:
 1. Add it to `INVARIANTS.md`
-2. Add test case to `test/core-behaviors.test.js`
+2. Add test case to `tests/core-behaviors.test.js`
 3. Update this file with the pattern
 
 This file is meant to evolve with the project.
