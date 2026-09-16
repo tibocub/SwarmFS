@@ -1,7 +1,9 @@
 ## ! Software still in ALPHA - breaking changes expected !
 
 ## ! SwarmFS developement paused !
-The basic file-transfer demo works but incoming features (user/friends, multi-writer virtual directories, moderated file-swarms, etc) will depend on [hypergraph](https://github.com/tibocub/hypergraph), so my time is focus on hypergraph for now.
+The basic file-transfer demo kinda works but incoming features (user/friends, multi-writer virtual directories, moderated swarms, etc) will depend on [hypergraph](https://github.com/tibocub/hypergraph), so my time is focused on hypergraph for now.
+Instead of being a standalone app with a TUI and a daemon, SwarmFS should be refactored as only a hypergraph-powered decentralized filesystem. It's TUI, daemon and other interfaces should be splitted into their own repos to keep this repo
+focused on the filesystem and its protocols. The TUI and daemon might also get abandonned to focus on embedding SwarmFS in [HyperBBS](https://github.com/tibocub/HyperBBS).
 
 # SwarmFS
 
@@ -23,7 +25,7 @@ At its core:
 - Plug-n-play, easy to use
 - Cryptographically-verified downloads (you can only get what you asked for)
 - Resume downloads and repair files at chunk level
-- Multi-peer downloads and endgame mode
+- Multi-peer downloads
 - Topic-scoped content discovery (browse what peers in a topic share publicly)
 
 ## Non-goals
@@ -154,22 +156,22 @@ Fundamental features done ! SwamrFS can track local files to answer requests, sh
 
 ### Planned
 
+- [ ] Refactor to use hypergraph as main DB
+- [ ] Rewrite the vfs with hypergraph (wire hypergraph's user ID and moderation systems in SwarmFS)
+- [ ] Split the project in more scoped sub-modules (user interfaces, transfer protocol, vfs, dns)
 - [ ] Use Localwatch to detect local file changes and automatically update the DB and virtual file system
+- [ ] Deeper analysis of the bittorrent protocol to improve SwarmFS efficiency and reliability
 - [ ] Smarter peer selection and rate limiting
-- [ ] Local DB simple password encryption
+- [ ] Server mode (unlike client mode, focused on improving the network health and maintaining 24/7 availability of either specific files/dirs or an entire topic)
+- [ ] Config system to tweak settings, allow limited space to specific topics/directories or system-wide (user config in ~/.config/swarmfs.conf and per-topic/directory as metadata), etc.
+- [ ] Per-topic/per-directory keep-available auto replication (maybe we could cache data in hyperblobs to leverable holepunch's blind-peer to avoid writing our own replication strategy)
+- [ ] Proper file/dir metadata to implement advanced features (could have an 'availability' or 'health' score and an 'keep-available' value which would let clients and servers individually choose when to replicate to keep the file available. I.e: when 'keep-available' = 0: don't keep available, when 1: servers help keep availability at 100%, when 2: everyone try to keep it available 24/7)
+- [ ] Deeper analysis of decentralized file systems such as the google file system to improve data availability
+- [ ] IPNS-like domain name system (HyperDNS ?) for mutable data
+- [ ] Private topics (autopass-based secure invites)
 - [ ] Virtual directories (manage your tracked files, links and virtual directories in the SwarmFS virtual file-system) 
 - [ ] Basic GUI for terminal-allergic early users and maybe to start the base of our latter mobile UI (pear + electron)
 
-### Ideas
-
-- [ ] Multi-writer virtual directories with Autobase
-- [ ] Refactor current browsing system (request every user's shared files and aggregate localy) ((with Autobase ?))
-- [ ] IPNS-like topic-based domains (permanent addresses with editable endpoints) ((HyperDNS ?))
-- [ ] Make a separate P2P user ID and friends system I could use for all my other P2P projects (would keep ID and registered friends across different P2P apps)
-- [ ] Implement a SwarmFS daemon and IPC for 24/7 swarming and to easily make apps for SwarmFS in any language
-- [ ] Treat public topics as public gateways
-    Disable file sharing in public topics and only use public topics as a common interrest with untrusted peers to share content-addressed requests
-    
 
 ### Known issues / drawbacks
 
