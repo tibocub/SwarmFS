@@ -143,8 +143,8 @@ folder, pair a device, list, fetch, rescan.
 - **A file changed on disk but not rescanned yet**: a peer asking for the old content gets "not
   available" from this device, never wrong bytes.
 - **Two files with the same name in one folder** (added from two devices): both listed.
-- **Removing a folder while the other device adds a file into it offline**: the orphan file is listed
-  at the top of the space, never lost.
+- **Removing a folder while the other device adds a file into it offline**: the orphan entry is moved
+  to the top of the space at the next rescan of the device that added it, never lost.
 - **A pairing code used twice, expired, or wrong**: refused, nothing changed.
 - **Fetching to a path that already exists**: refused; SwarmFS never overwrites a local file.
 - **A device removed from the account** (lost phone): it no longer receives new entries or bytes.
