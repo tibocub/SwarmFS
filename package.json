@@ -1,0 +1,28 @@
+{
+  "name": "swarmfs",
+  "version": "0.0.0",
+  "description": "A decentralized filesystem: folders and files as hypergraph records, bytes through swarmwire, served in place.",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "imports": {
+    "fs": { "bare": "bare-fs", "default": "fs" },
+    "path": { "bare": "bare-path", "default": "path" },
+    "os": { "bare": "bare-os", "default": "os" },
+    "process": { "bare": "bare-process", "default": "process" }
+  },
+  "scripts": {
+    "test": "brittle-node test/*.test.js",
+    "test:bare": "brittle-bare test/*.test.js",
+    "test:all": "npm test && npm run test:bare"
+  },
+  "dependencies": {
+    "hypergraph": "file:../hypergraph",
+    "swarmwire": "file:../swarmwire"
+  },
+  "engines": {
+    "bare": ">=1.27",
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules
+package-lock.json.bak
+coverage
+# test and local instance folders
+tmp/
+.swarmfs/
+
+# Claude Code local state; .claude/skills/ (spec-kit) stays tracked
+.claude/settings.local.json
+.claude/.credentials.json
+.claude/worktrees/
+
+# spec-kit python byproducts
+__pycache__/
+*.pyc
