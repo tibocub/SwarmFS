@@ -86,6 +86,20 @@ test('rename, move and remove from the phone: the PC sees them, its files untouc
   t.is(await names(drive), '', 'a rescan does not bring removed entries back')
 })
 
+test('a folder cannot move into itself or its own subtree', async (t) => {
+  const pc = await device(t, 'pc')
+  const disk = writeTree(tmpDir(t, 'disk'), { 'docs/sub/deep/c.txt': 'c' })
+  const drive = await pc.createSpace('My files')
+  const docs = await drive.add(path.join(disk, 'docs'))
+  const sub = (await drive.list(docs.id)).items[0]
+  const deep = (await drive.list(sub.id)).items[0]
+
+  t.is(await codeOf(drive.move(docs.id, docs.id)), 'MOVE_INTO_SELF', 'into itself')
+  t.is(await codeOf(drive.move(docs.id, deep.id)), 'MOVE_INTO_SELF', 'into its subtree')
+  await drive.move(deep.id, drive.top)
+  t.is(await names(drive), 'folder:deep folder:docs', 'a move out still works')
+})
+
 test('offline: both add, then reconnect; two renames end the same on both', async (t) => {
   t.timeout(90000)
   let { pc, phone, disk, drive, docs } = await setup(t, { 'docs/a.txt': 'aaaa' })
