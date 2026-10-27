@@ -2,6 +2,7 @@
 // devices and paired devices. Pattern of hypergraph's test/next/helpers.js.
 
 import fs from 'fs'
+import b4a from 'b4a'
 import path from 'path'
 import os from 'os'
 import createTestnet from 'hyperdht/testnet.js'
@@ -107,4 +108,31 @@ export function snapshot (dir) {
   }
   walk(dir)
   return out
+}
+
+// Bytes that don't repeat by group (a filled buffer would hash the same everywhere).
+export function bytes (n, seed = 1) {
+  const b = b4a.alloc(n)
+  let x = seed
+  for (let i = 0; i < n; i++) b[i] = (x = (x * 1103515245 + 12345) >>> 0) >>> 24
+  return b
+}
+
+// The PC makes a space and adds `files` (written to a disk dir) first; the phone is paired
+// after (hypergraph H5) and sees them with the PC online. `byName`: the phone's entries.
+export async function filesOnPC (t, files, phoneOpts = {}) {
+  const pc = await device(t, 'pc')
+  const disk = writeTree(tmpDir(t, 'disk'), files)
+  const drive = await pc.createSpace('My files')
+  for (const name of Object.keys(files)) await drive.add(path.join(disk, name))
+  const { code, added } = await pc.addDevice()
+  const phone = await device(t, 'phone', { joinCode: code, ...phoneOpts })
+  await added
+  const pd = await eventually(() => phone.spaces().find((s) => s.key === drive.key) && phone.space(drive.key))
+  const online = await eventually(async () => {
+    const { items } = await pd.list(undefined, { timeout: 1000 })
+    return items.length === Object.keys(files).length && items.every((i) => i.holders.some((h) => h.online)) && items
+  }, 15000)
+  const byName = Object.fromEntries((online || []).map((i) => [i.name, i]))
+  return { pc, phone, drive, pd, disk, byName, out: tmpDir(t, 'out') }
 }

@@ -87,20 +87,21 @@ its implementation. Every test runs on Node and Bare (constitution III).
 
 ## Phase 5: User Story 3 — Fetch a file from the other device (P1)
 
-**Blocked on hypergraph H1 (member streams) and swarmwire S2 + S5** (`resolve`, no-announce mode,
-`.part` downloads), all being built. Nothing here meanwhile.
+**Blocked on swarmwire S7** (2026-10-28): H1, S2, S5 landed and are used; two devices' swarmwire
+channels never open over member streams (`specs/requests-to-swarmwire.md`). T015–T016 built; with S7's
+fix applied locally `test/fetch.test.js` and the 100 MB test pass on Node and Bare.
 
 **Goal**: fetch a file the PC holds, verified, resumable; nothing downloaded if held locally.
 **Independent Test**: `test/fetch.test.js`, two devices.
 
-- [ ] T014 [US3] Write `test/fetch.test.js` (failing): story 3 scenarios 1–5 — bytes equal, phone
+- [X] T014 [US3] Write `test/fetch.test.js` (failing): story 3 scenarios 1–5 — bytes equal, phone
   listed as holder on both; held locally → `{ bytes: 0 }` and the existing path; existing target →
   `EXISTS`; PC offline → `NOT_AVAILABLE` at once; PC closed mid-fetch → `NOT_AVAILABLE`, nothing at
   the target path (only the `.part`), reopened → fetch again resumes and completes (shallow swarmwire
   window); a file changed on the PC after hashing → not served (`NOT_AVAILABLE` within
   `fetchTimeout`), never wrong bytes; no DHT topic joined for any file (the adapter's `join` is never
   called with an announce); the phone paired after the space was made gets the PC's member stream
-  (hypergraph H5). A 100 MB case (SC-003) in a separate `slow` test
+  (hypergraph H5). A 100 MB case (SC-003) in a separate `slow` test (`test/slow/`, `npm run test:slow`)
 - [ ] T015 [US3] `lib/transfer.js`: one `Swarmwire({ swarm: adapter, resolve })`; the adapter:
   `join()` → `{ destroy () {} }`, `connection` re-emits each files space's member streams (H1) once
   per stream; `resolve` = own `held` lookup of T008 with a size/mtime check (S2)

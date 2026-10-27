@@ -10,6 +10,8 @@ these and doesn't edit hypergraph; the lead conversation decides.
   talks only to the space's members, over hypergraph's connections, with no topic of its own.
   Replaces the first draft's `addProtocol` route (and swarmwire S1). Needed: each stream with the
   peer's device key (swarmwire's peer id), for streams open now and later, and its close.
+  **Done in hypergraph (`member-connection`, `member-disconnection`, `memberConnections()`); used** in
+  `lib/transfer.js`. Story 3 still blocked, on swarmwire S7 (see H11).
 - **H2 — An event when `hg.spaces()` changes.** A space created or joined on another device of the
   identity (or left) appears in `hg.spaces()`, but nothing tells the app. SwarmFS must hand each new
   files space's member streams to swarmwire and show the space; without an event it can only poll or
@@ -29,6 +31,8 @@ these and doesn't edit hypergraph; the lead conversation decides.
   **Checked 2026-10-27** (`test/devices.test.js`): combine as expected, on Node and Bare.
 - **H5 — Member streams of a private space** include the person's newly paired device once it holds
   the key.
+  **Checked 2026-10-28** (`test/fetch.test.js`, phone paired after the space was made): its stream
+  comes on both sides, on Node and Bare (with S7's fix applied locally).
 
 ## Found while building (2026-10-27)
 
@@ -39,6 +43,20 @@ these and doesn't edit hypergraph; the lead conversation decides.
   phone take 10–40 s in tests. Meanwhile rescan passes `{ timeout: 200 }` and acts on anything
   depending on others' records (a removed folder) only when `complete`. Wanted: own-device queries
   complete without waiting, or a documented `{ timeout: 0 }` "what is here" read.
+  **Done in hypergraph; used**: own `held`/`added` reads have no bound now; entry reads keep the short
+  one. Checked: a fetch with the PC offline answers `NOT_AVAILABLE` in ~0.5 s (`test/fetch.test.js`).
+
+## Found while building (2026-10-28)
+
+- **H11 — docs/next/api.md's swarmwire example doesn't work.** Two gaps:
+  - `net.emit('connection', m.stream)` passes no peer info: swarmwire's peer id is
+    `info.publicKey`, else `'unknown'`, so every peer becomes one. Needs
+    `net.emit('connection', stream, { publicKey: stream.remotePublicKey })`.
+  - Each side gets a member stream at a different moment (when it has proven the other). The side
+    first to open its channel is turned down by the other's Protomux (no channel, no `pair` there
+    yet), and its channel closes; the later side's open is then turned down too. No peer ever
+    connects. hypergraph's own `network.js` and member-streams test use `mux.pair` for this. The fix
+    belongs in swarmwire (S7); the example should say so, or show the `pair`.
 
 ## For later stories (not blocking v1)
 

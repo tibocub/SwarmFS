@@ -1,6 +1,6 @@
 # Requests to swarmwire
 
-What SwarmFS needs from `swarmwire-lib` (branch `main`, 0.5.0; app contract `docs/contract.md`), with
+What SwarmFS needs from `swarmwire-lib` (branch `main`, 0.7.0; app contract `docs/contract.md`), with
 why. SwarmFS doesn't work around these and doesn't edit swarmwire; the lead conversation decides.
 None makes swarmwire import hypergraph.
 
@@ -22,7 +22,37 @@ None makes swarmwire import hypergraph.
 - **S5 — Downloads under a temporary name** (being built; Tibo: yes): bytes go to a `.part` name and
   are renamed at the end, so nothing half-written sits at the target path.
 
-## New
+## Status (2026-10-28, swarmwire-lib 0.7.0)
+
+- **S2, S5: done; used** (`resolve`, `download(..., { announce: false })`, `temporary`). Checked in
+  `test/fetch.test.js` (with S7 applied locally): no `join` call for any file; only a `.part` after a
+  fetch cut short; a file rewritten keeping size and mtime is not served.
+- **S3's gap: done** (`stalled` when every peer said unavailable): a changed file answers
+  `NOT_AVAILABLE` in ~0.5 s.
+- **S6: half done.** `hashFile(path)` gives the root only; SwarmFS also needs the size of the same
+  bytes, so it keeps `ContentSource.open` (unstable) for now. Wanted: `hashFile` → `{ root, size }`.
+
+## New (2026-10-28) — blocks story 3
+
+- **S7 — Accept a channel the remote opens first.** With an app-supplied network whose streams
+  already carry a Protomux (hypergraph's member streams), swarmwire's `openChannel` only creates its
+  channel; a remote open arriving before it is rejected by Protomux, and this side's own open is
+  rejected if the remote's channel is already gone. Member streams reach each side at different
+  moments, so two SwarmFS devices never complete the swarmwire handshake. With Hyperswarm it works
+  by luck of timing (both sides open at `connection`).
+  Smallest repro (no network; swarmwire `main`, 0.7.0):
+  ```js
+  // two piped streamx Duplexes sa/sb; Protomux.from(sa); Protomux.from(sb) (the app's mux)
+  // A.emit('connection', sa, { publicKey: k2 }); later B.emit('connection', sb, { publicKey: k1 })
+  // → peer-connected 0 of 2 (also with "later" = setTimeout 0). Without the pre-existing mux: 2 of 2.
+  ```
+  Script: `specs/repro-s7-late-open.mjs` (`node specs/repro-s7-late-open.mjs`).
+  Fix tried locally (not committed): `Protomux.from(stream).pair({ protocol: 'swarmwire/0' }, () =>
+  reopen on that stream)` when a stream is handed over. With it, `test/fetch.test.js` and the 100 MB
+  test pass on Node and Bare. Belongs in swarmwire's `_onPeer`/`openChannel` (and `unpair` when the
+  peer is gone), not in each app.
+
+## Earlier
 
 - **S6 — A stable "hash this file"**. SwarmFS hashes each added file once (the hash is the entry).
   The stable `rootOf(bytes)` needs the whole file in memory; `ContentSource.open(path)` streams it but is

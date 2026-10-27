@@ -15,10 +15,12 @@
   "scripts": {
     "test": "brittle-node test/*.test.js",
     "test:bare": "brittle-bare test/*.test.js",
-    "test:all": "npm test && npm run test:bare"
+    "test:all": "npm test && npm run test:bare",
+    "test:slow": "brittle-node test/slow/*.test.js && brittle-bare test/slow/*.test.js"
   },
   "dependencies": {
     "hypergraph": "file:../hypergraph",
+    "protomux": "^3.12.1",
     "swarmwire-lib": "file:../swarmwire",
     "b4a": "^1.9.0",
     "bare-fs": "^4.8.4",
