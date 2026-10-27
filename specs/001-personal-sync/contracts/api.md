@@ -12,6 +12,8 @@ const sfs = await SwarmFS.open('./data', {
   joinCode,        // open as a new device of an existing account
   deviceName,      // 'phone'
   bootstrap,       // DHT nodes (tests)
+  readTimeout,     // hypergraph's read bound, ms (default 5000; tests use less)
+  joinTimeout,     // how long a joinCode is tried, ms (hypergraph's default)
   fetchTimeout     // ms without progress before a fetch gives up (default 30000)
 })                 // connected; member streams handed to swarmwire; rescan() run once
 sfs.hg             // sync: the Hypergraph (recoveryPhrase, protectRecoveryPhrase, removeDevice…)

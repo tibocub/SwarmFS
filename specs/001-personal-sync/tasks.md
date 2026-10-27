@@ -19,22 +19,22 @@ its implementation. Every test runs on Node and Bare (constitution III).
 
 ## Phase 1: Setup
 
-- [ ] T001 Add devDependencies to `package.json`: `brittle` (as swarmwire/hypergraph use it, with
+- [X] T001 Add devDependencies to `package.json`: `brittle` (as swarmwire/hypergraph use it, with
   `brittle-node`/`brittle-bare`), `bare`, `bare-fs`, `bare-path`, `bare-os`, `bare-process`, `b4a`,
   `hyperdht` pinned `6.32.0` (testnet; also as `overrides` like hypergraph); run `npm install`; check
   `hypergraph` and `swarmwire-lib` are junctions (`cmd //c "dir /AL node_modules"`), not copies
-- [ ] T002 [P] `index.js` exporting `SwarmFS` and `SwarmFSError`; empty `lib/` files from plan.md
-- [ ] T003 [P] `test/helpers.js`: tmp dir per test (removed at teardown), a local DHT per test from
+- [X] T002 [P] `index.js` exporting `SwarmFS` and `SwarmFSError`; empty `lib/` files from plan.md
+- [X] T003 [P] `test/helpers.js`: tmp dir per test (removed at teardown), a local DHT per test from
   `hyperdht/testnet` (loopback), `device(t, label, opts)` opening a `SwarmFS`, `pair(t)` giving a
   paired `{ pc, phone }`; plus a smoke test `test/smoke.test.js` (`SwarmFS.open` + `close`), green with
   `npm test` and `npm run test:bare`
 
 ## Phase 2: Foundational
 
-- [ ] T004 `lib/types.js`: the four types and two rules of data-model.md; a unit test
+- [X] T004 `lib/types.js`: the four types and two rules of data-model.md; a unit test
   `test/types.test.js` that `Hypergraph.open` accepts them and the rules refuse a bad name and a
   digest not matching `src` (RULE_REJECTED)
-- [ ] T005 `lib/swarmfs.js`: `SwarmFS.open(dir, opts)` → `Hypergraph.open(dir, { types, rules,
+- [X] T005 `lib/swarmfs.js`: `SwarmFS.open(dir, opts)` → `Hypergraph.open(dir, { types, rules,
   password, joinCode, deviceName, bootstrap })`, `hg.connectToSwarm()`; `hg`, `device`, `close()`;
   `SwarmFSError` with `code`
 
@@ -47,15 +47,15 @@ its implementation. Every test runs on Node and Bare (constitution III).
 **Goal**: one device: create a space, add a folder in place, list the tree.
 **Independent Test**: `test/tree.test.js`, no second device.
 
-- [ ] T006 [US1] Write `test/tree.test.js` (failing): story 1 scenarios 1–3 — tree of `photos/` with a
+- [X] T006 [US1] Write `test/tree.test.js` (failing): story 1 scenarios 1–3 — tree of `photos/` with a
   nested folder; a duplicate file is one hash held at two paths; after `add`, no new file anywhere
   outside the instance folder and the added files' bytes and mtimes unchanged; `INVALID_NAME`
-- [ ] T007 [US1] `lib/swarmfs.js`: `createSpace(name)` (`hg.createSpace({ name, private: true })`),
+- [X] T007 [US1] `lib/swarmfs.js`: `createSpace(name)` (`hg.createSpace({ name, private: true })`),
   `spaces()`, `space(key)` returning a `Drive`
-- [ ] T008 [US1] `lib/holdings.js`: `hash(path)` (`ContentSource.open` → `{ root, size }`, `close()`);
+- [X] T008 [US1] `lib/holdings.js`: `hash(path)` (`ContentSource.open` → `{ root, size }`, `close()`);
   `recordHeld({ root, path, size, mtime, space, entry })` and `recordAdded()` (`hg.personal.put`);
   `localPath(root)` (`hg.personal.query('held').where({ root }).fromDevice(me)` + stat check)
-- [ ] T009 [US1] `lib/drive.js`: `add(path, { parent })` (walk with `fs`; `put('folder')`,
+- [X] T009 [US1] `lib/drive.js`: `add(path, { parent })` (walk with `fs`; `put('folder')`,
   `put('file')` with the ref of research R2; holdings via T008), `list(folder, { limit, after,
   timeout })` (`query('folder'|'file').where({ parent }).latest()`, folders first then by name),
   `get(id)`, `top`; T006 green on Node and Bare
@@ -69,17 +69,17 @@ its implementation. Every test runs on Node and Bare (constitution III).
 **Goal**: pair a phone; it lists the tree and who holds what, also with the PC offline.
 **Independent Test**: `test/devices.test.js`, two devices on the local DHT.
 
-- [ ] T010 [US2] Write `test/devices.test.js` (failing): story 2 scenarios 1–4 — pair by code (wrong
+- [X] T010 [US2] Write `test/devices.test.js` (failing): story 2 scenarios 1–4 — pair by code (wrong
   and reused codes refused); phone lists the space and the tree within 10 s (SC-002); holders show
   `pc` online; PC closed → entries still listed, `online: false`; a stranger's `space(key)` is
   `NOT_FOUND`
-- [ ] T011 [US2] `lib/swarmfs.js`: `addDevice({ password })` (`hg.addDevice`), `devices()`
+- [X] T011 [US2] `lib/swarmfs.js`: `addDevice({ password })` (`hg.addDevice`), `devices()`
   (`hg.devices()` + `online` from the files spaces' `peers()`); spaces re-read after open (H2 pending:
   test documents that a space created on the other device appears after reopening)
-- [ ] T012 [US2] `lib/drive.js`: `holders` in `list`/`get` — `hg.personal.query('held').where({ root })`
+- [X] T012 [US2] `lib/drive.js`: `holders` in `list`/`get` — `hg.personal.query('held').where({ root })`
   → `record.device`, names from `hg.devices()`, `online` from `space.peers()`, `path` only for this
   device; `on('change')` from the space's `change` event; T010 green on Node and Bare
-- [ ] T013 [US2] Check hypergraph request H4 (where + fromDevice) in these tests; record results in `specs/requests-to-hypergraph.md`
+- [X] T013 [US2] Check hypergraph request H4 (where + fromDevice) in these tests; record results in `specs/requests-to-hypergraph.md`
 
 **Checkpoint**: v1's "see on the phone what the PC holds" works.
 
@@ -117,14 +117,14 @@ its implementation. Every test runs on Node and Bare (constitution III).
 **Goal**: rescan follows the disk; rename, move, remove entries; local files never touched.
 **Independent Test**: `test/changes.test.js`, two devices.
 
-- [ ] T017 [US4] Write `test/changes.test.js` (failing): story 4 scenarios 1–5 and the edge cases
+- [X] T017 [US4] Write `test/changes.test.js` (failing): story 4 scenarios 1–5 and the edge cases
   "both offline then reconnect", "two renames offline → same winner on both", "folder removed while the
   other adds into it → moved to the top at that device's rescan"; every local file byte- and
   mtime-identical after `remove`/`rename`/`move` (SC-006); checks hypergraph H3 (moves leave the old
   folder's listing)
-- [ ] T018 [US4] `lib/drive.js`: `rename(id, name)`, `move(id, folder)` (`edit`), `remove(id)` (subtree
+- [X] T018 [US4] `lib/drive.js`: `rename(id, name)`, `move(id, folder)` (`edit`), `remove(id)` (subtree
   deepest first, `del`)
-- [ ] T019 [US4] `lib/holdings.js` + `lib/swarmfs.js`: `rescan()` per data-model.md transitions (own
+- [X] T019 [US4] `lib/holdings.js` + `lib/swarmfs.js`: `rescan()` per data-model.md transitions (own
   `held`/`added` pages via `fromDevice(me)`; rehash changed files; `del` missing held; new files in added
   folders; orphans to the top); run once in `open`; T017 green on Node and Bare
 

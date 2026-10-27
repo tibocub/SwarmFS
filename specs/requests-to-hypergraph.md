@@ -30,6 +30,16 @@ these and doesn't edit hypergraph; the lead conversation decides.
 - **H5 — Member streams of a private space** include the person's newly paired device once it holds
   the key.
 
+## Found while building (2026-10-27)
+
+- **H10 — A read of this device's own records that doesn't wait.** After a restart with the other
+  device offline, every read is incomplete ("hasn't looked at another member's list of logs") and
+  waits the full `readTimeout` — also `personal.query('held').fromDevice(me)`, whose answer is all
+  local. SwarmFS's rescan (run at every open) does dozens of such reads: 5 s each made opening a
+  phone take 10–40 s in tests. Meanwhile rescan passes `{ timeout: 200 }` and acts on anything
+  depending on others' records (a removed folder) only when `complete`. Wanted: own-device queries
+  complete without waiting, or a documented `{ timeout: 0 }` "what is here" read.
+
 ## For later stories (not blocking v1)
 
 - **H6 — Read-only members.** Community archives (later story 2) want readers who don't upload. A role
