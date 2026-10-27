@@ -245,6 +245,10 @@ Named so v1 doesn't block them; each gets its own spec.
 - The person's devices are on ordinary home connections; figures are measured on a local test network.
 - v1 has one person per space; spaces are private (only the person's devices read them).
 - Fetching is explicit (no automatic download in v1); the caller (app or CLI) chooses the path.
+- A device hosts everything it holds; nothing is announced or hashed per file for serving: peers
+  meet on the space's one topic, and a file is opened only when a peer asks for it (Tibo,
+  2026-10-27). Adding a file hashes it once, because the hash is the entry.
+- A partial download stays under a temporary name until complete and verified.
 - Changes on disk are picked up by a rescan (asked by the app, and at open), not by watching folders.
 - Budgets and storage policies of hypergraph cover the records, not the files (hypergraph FR-027).
 - Hypergraph's latest-wins settles concurrent edits of one entry; v1 shows the winner only.

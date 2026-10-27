@@ -40,29 +40,42 @@ spec 011. Newer documents win.
   only, so paths there are nobody else's business. In shared spaces (later story 1) holdings are
   published as hashes only.
 
-## R4. Bytes: swarmwire over the space's own connections
+## R4. Bytes: swarmwire over the space's own member connections
 
-- **Decision**: one swarmwire node per SwarmFS instance, carried by `space.addProtocol('swarmwire/0',
-  …)` on each files space: peers are exactly the space's devices, already connected and proven. No
-  DHT announce, no content topic. Serving resolves a requested root through this device's `held`
-  records, checks the file's size and change time, then lets swarmwire hash and serve it in place.
-- **Why**: Q22/Q25/Q27: one topic per space (hypergraph's), swarmwire on the same connections. Only
-  space peers can ask (FR-012).
-- **Needs**: swarmwire today owns a swarm and opens its channel on raw streams, and serves only what was
-  `serve()`d (which announces on the DHT): requests S1 and S2 in `../requests-to-swarmwire.md`.
+Source: swarmwire `main` (package `swarmwire-lib` 0.5.0, ESM), its app contract `docs/contract.md`.
+
+- **Design rule (Tibo, 2026-10-27)**: a device hosts everything it holds; nothing per file is
+  announced or hashed up front. Discovery is the space's one topic (hypergraph's); swarmwire answers
+  only over member connections; a file is opened (and hashed for serving) only when a peer asks.
+- **Decision**: one `Swarmwire` node per SwarmFS instance, given a tiny network adapter instead of a
+  Hyperswarm (contract §2 "the application supplies the network connection", §3.6): `join()` is a
+  no-op returning `{ destroy () {} }`; its `connection` event re-emits the streams hypergraph gives for
+  each files space's **proven members** (hypergraph request H1, being built). A device in several
+  spaces has one connection: the adapter emits each stream once. swarmwire's peer id is the
+  connection's remote key, i.e. the device key `held` records carry.
+- Serving: swarmwire's `resolve(root)` (being built in swarmwire) is this device's `held` lookup plus
+  a size/mtime check; swarmwire opens and hashes the file only then, and answers "unavailable" if its
+  root differs. Downloads use swarmwire's no-announce mode (being built) and `download(…, { announce:
+  false })`. No content topic, no per-file DHT entry.
+- **Hashing at add is not "up front" serving**: the hash is the entry's identity, so `add` hashes each
+  file once to write its record (FR-002); rescan rehashes only files whose size or mtime changed.
+- **Why**: Q22/Q25/Q27 (one topic per space; swarmwire on the same connections); only space members
+  reach swarmwire (FR-012), so swarmwire's planned admission (contract §3.2) isn't needed in v1.
+- **Replaces** the first draft's swarmwire S1 (run over `space.addProtocol` messages): no swarmwire
+  change; hypergraph hands over member streams instead.
 - **Conflict with Q25 (c)**: the content-topic fallback for holders outside the space is left to a
   later story (5): v1 fetches from the person's own devices only.
 
 ## R5. Spaces are private
 
-- **Decision**: `hg.createSpace({ name, private: true })`.
+- **Decision** (confirmed by Tibo 2026-10-27): `hg.createSpace({ name, private: true })`.
 - **Why**: file names are personal; a closed space is readable by anyone holding its key. Private costs
   nothing in the API; a new device reads once a device holding the key is online (it must be, to pair).
   Later shared workspaces need removed members cut off, which only private gives.
 
 ## R6. Changes on disk: rescan, no watcher
 
-- **Decision**: `rescan()` (at open and on demand) walks the folders this device added (`added`
+- **Decision** (confirmed by Tibo 2026-10-27): `rescan()` (at open and on demand) walks the folders this device added (`added`
   records in the personal space: `{ path, space, folder }`) and its `held` records: new file → entry +
   held; changed (size or mtime differ) → rehash, edit the entry's content, new held; missing → del
   held, entry kept; an own entry whose parent folder is gone → moved to the top.
@@ -70,7 +83,7 @@ spec 011. Newer documents win.
 
 ## R7. Concurrent edits: latest wins in v1
 
-- **Decision**: v1 shows hypergraph's latest version of an entry; nothing on disk is lost (each device
+- **Decision** (confirmed by Tibo 2026-10-27): v1 shows hypergraph's latest version of an entry; nothing on disk is lost (each device
   keeps its files and their `held` records).
 - **Conflict with Q11** ("keep both", Dropbox-style conflicted copies): moved to later story 1 (shared
   workspaces), where it matters. Possible without hypergraph changes: an edit carries `base` (the
@@ -82,21 +95,22 @@ spec 011. Newer documents win.
 
 - **Decision**: `fetch(entry, path)`: (1) own `held` for the root with the file still matching →
   return that path, 0 bytes; (2) refuse an existing `path`; (3) holders = `held` records of the root
-  whose device is in `space.peers()`; none → `NOT_AVAILABLE` at once; (4) swarmwire download over the
-  space's channel, bounded (`fetchTimeout`, default 30 s without progress) → on timeout stop, keep the
-  partial file and its resume sidecar; (5) on completion `put('held')`.
+  whose device is in `space.peers()`; none → `NOT_AVAILABLE` at once; (4) `swarmwire.download({ root,
+  size }, path, { announce: false })` over the member connections; the `Download`'s `stalled` event
+  (no usable peer left, nothing in flight) or `fetchTimeout` without a `progress` event (default 30 s:
+  covers holders that only answer "unavailable", which doesn't raise `stalled`) → `stop()`,
+  `NOT_AVAILABLE`, resume state kept; (5) on completion `put('held')`.
 - **Why**: FR-009–FR-013; "look locally first" is the old SwarmFS feature Tibo kept (Q6 follow-up).
 - **Conflict with Q9** (prompt / per-space paths / local search): v1 takes a path from the caller
   (the CLI asks); path rules and searching the disk are later story 4.
-- A partial download sits at the target path with swarmwire's sidecar; the edge case "nothing left
-  half-written" is met by the sidecar marking it partial, and by `held` being written only on
-  completion. (If Tibo wants no file at the path until complete, swarmwire would need a temporary
-  name — not requested yet.)
+- **Partial downloads under a temporary name** (Tibo 2026-10-27; swarmwire S5, being built): nothing
+  sits at the target path until the content is complete and verified; `held` is written only then.
 
 ## R9. Language, runtimes, tests
 
-- **Decision**: ESM (as swarmwire), `import hypergraph from 'hypergraph/next'` (CommonJS default
-  import works on Node and Bare); `brittle` on Node (`brittle-node`) and Bare (`brittle-bare`);
+- **Decision** (ESM confirmed by Tibo 2026-10-27): ESM (as swarmwire),
+  `import hypergraph from 'hypergraph/next'` (CommonJS default import, to check on Bare in T003),
+  `import { Swarmwire } from 'swarmwire-lib'`; `brittle` on Node (`brittle-node`) and Bare (`brittle-bare`);
   `imports` map for `fs`/`path`/`os`/`process`; local DHT from `hyperdht/testnet` (a dependency
   hypergraph already uses, pinned 6.32.0 like hypergraph), servers bound to loopback.
 - **Why**: Principle III; hypergraph's tests use the same testnet.

@@ -22,7 +22,7 @@ its implementation. Every test runs on Node and Bare (constitution III).
 - [ ] T001 Add devDependencies to `package.json`: `brittle` (as swarmwire/hypergraph use it, with
   `brittle-node`/`brittle-bare`), `bare`, `bare-fs`, `bare-path`, `bare-os`, `bare-process`, `b4a`,
   `hyperdht` pinned `6.32.0` (testnet; also as `overrides` like hypergraph); run `npm install`; check
-  `hypergraph` and `swarmwire` are junctions (`cmd //c "dir /AL node_modules"`), not copies
+  `hypergraph` and `swarmwire-lib` are junctions (`cmd //c "dir /AL node_modules"`), not copies
 - [ ] T002 [P] `index.js` exporting `SwarmFS` and `SwarmFSError`; empty `lib/` files from plan.md
 - [ ] T003 [P] `test/helpers.js`: tmp dir per test (removed at teardown), a local DHT per test from
   `hyperdht/testnet` (loopback), `device(t, label, opts)` opening a `SwarmFS`, `pair(t)` giving a
@@ -74,13 +74,12 @@ its implementation. Every test runs on Node and Bare (constitution III).
   `pc` online; PC closed → entries still listed, `online: false`; a stranger's `space(key)` is
   `NOT_FOUND`
 - [ ] T011 [US2] `lib/swarmfs.js`: `addDevice({ password })` (`hg.addDevice`), `devices()`
-  (`hg.devices()` + `online` from the files spaces' `peers()`); spaces re-read after open (H1 pending:
+  (`hg.devices()` + `online` from the files spaces' `peers()`); spaces re-read after open (H2 pending:
   test documents that a space created on the other device appears after reopening)
 - [ ] T012 [US2] `lib/drive.js`: `holders` in `list`/`get` — `hg.personal.query('held').where({ root })`
   → `record.device`, names from `hg.devices()`, `online` from `space.peers()`, `path` only for this
   device; `on('change')` from the space's `change` event; T010 green on Node and Bare
-- [ ] T013 [US2] Check hypergraph requests H3 (where + fromDevice) and H4 (private space, second
-  device) in these tests; record results in `specs/requests-to-hypergraph.md`
+- [ ] T013 [US2] Check hypergraph request H4 (where + fromDevice) in these tests; record results in `specs/requests-to-hypergraph.md`
 
 **Checkpoint**: v1's "see on the phone what the PC holds" works.
 
@@ -88,22 +87,26 @@ its implementation. Every test runs on Node and Bare (constitution III).
 
 ## Phase 5: User Story 3 — Fetch a file from the other device (P1)
 
-**Blocked on swarmwire S1 and S2** (`specs/requests-to-swarmwire.md`). No adapter here meanwhile.
+**Blocked on hypergraph H1 (member streams) and swarmwire S2 + S5** (`resolve`, no-announce mode,
+`.part` downloads), all being built. Nothing here meanwhile.
 
 **Goal**: fetch a file the PC holds, verified, resumable; nothing downloaded if held locally.
 **Independent Test**: `test/fetch.test.js`, two devices.
 
 - [ ] T014 [US3] Write `test/fetch.test.js` (failing): story 3 scenarios 1–5 — bytes equal, phone
   listed as holder on both; held locally → `{ bytes: 0 }` and the existing path; existing target →
-  `EXISTS`; PC offline → `NOT_AVAILABLE` within the bound; PC closed mid-fetch then reopened → fetch
-  again resumes and completes (shallow swarmwire window); a file changed on the PC after hashing →
-  not served (NOT_AVAILABLE), never wrong bytes. A 100 MB case (SC-003) in a separate `slow` test
-- [ ] T015 [US3] `lib/transfer.js`: one swarmwire node (S1: no swarm; S2: `resolve` = own `held` lookup
-  of T008 with a size/mtime check); for each files space `space.addProtocol('swarmwire/0', { messages:
-  swarmwire's wire encodings, onopen: addPeer(space.key + device, peer.send), onclose: removePeer })`
+  `EXISTS`; PC offline → `NOT_AVAILABLE` at once; PC closed mid-fetch → `NOT_AVAILABLE`, nothing at
+  the target path (only the `.part`), reopened → fetch again resumes and completes (shallow swarmwire
+  window); a file changed on the PC after hashing → not served (`NOT_AVAILABLE` within
+  `fetchTimeout`), never wrong bytes; no DHT topic joined for any file (the adapter's `join` is never
+  called with an announce); the phone paired after the space was made gets the PC's member stream
+  (hypergraph H5). A 100 MB case (SC-003) in a separate `slow` test
+- [ ] T015 [US3] `lib/transfer.js`: one `Swarmwire({ swarm: adapter, resolve })`; the adapter:
+  `join()` → `{ destroy () {} }`, `connection` re-emits each files space's member streams (H1) once
+  per stream; `resolve` = own `held` lookup of T008 with a size/mtime check (S2)
 - [ ] T016 [US3] `lib/drive.js`: `fetch(id, path)` per research R8 (`localPath` → refuse existing path
-  → online holders → `download({ root, size }, path, { announce: false })` with `fetchTimeout` without
-  progress → `stop()` → `recordHeld`); T014 green on Node and Bare
+  → online holders → `download({ root, size }, path, { announce: false })`; `stalled` or no `progress`
+  for `fetchTimeout` → `stop()` → `NOT_AVAILABLE`; done → `recordHeld`); T014 green on Node and Bare
 
 **Checkpoint**: v1's promise complete: see and fetch.
 
@@ -117,7 +120,7 @@ its implementation. Every test runs on Node and Bare (constitution III).
 - [ ] T017 [US4] Write `test/changes.test.js` (failing): story 4 scenarios 1–5 and the edge cases
   "both offline then reconnect", "two renames offline → same winner on both", "folder removed while the
   other adds into it → moved to the top at that device's rescan"; every local file byte- and
-  mtime-identical after `remove`/`rename`/`move` (SC-006); checks hypergraph H2 (moves leave the old
+  mtime-identical after `remove`/`rename`/`move` (SC-006); checks hypergraph H3 (moves leave the old
   folder's listing)
 - [ ] T018 [US4] `lib/drive.js`: `rename(id, name)`, `move(id, folder)` (`edit`), `remove(id)` (subtree
   deepest first, `del`)
@@ -146,7 +149,7 @@ its implementation. Every test runs on Node and Bare (constitution III).
 ## Dependencies
 
 - Setup (T001–T003) → Foundational (T004–T005) → stories.
-- US1 → US2 (holders need entries) → US3 (needs swarmwire S1, S2) → US4 (rescan edits what US1–US3
+- US1 → US2 (holders need entries) → US3 (needs hypergraph H1, swarmwire S2, S5) → US4 (rescan edits what US1–US3
   write) → US5 (CLI over all). US4's T018 (rename/move/remove) only needs US1 and can start after it.
 - Within a story: test task first, seen failing; then implementation.
 

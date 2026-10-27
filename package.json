@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "hypergraph": "file:../hypergraph",
-    "swarmwire": "file:../swarmwire"
+    "swarmwire-lib": "file:../swarmwire"
   },
   "engines": {
     "bare": ">=1.27",

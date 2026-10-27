@@ -33,8 +33,9 @@ bytes through swarmwire. A library first (plus a thin CLI to try it). The rewrit
 
 ## Dependencies
 
-Sibling repos as local paths (`"hypergraph": "file:../hypergraph"`, `"swarmwire":
-"file:../swarmwire"`): `npm install` makes junctions. Never `ln -s` on Windows (it copies);
+Sibling repos as local paths (`"hypergraph": "file:../hypergraph"`, `"swarmwire-lib":
+"file:../swarmwire"`, swarmwire's branch `main`; its app contract is `docs/contract.md`):
+`npm install` makes junctions. Never `ln -s` on Windows (it copies);
 see ECOSYSTEM.md. hypergraph is CommonJS, swarmwire is ESM; SwarmFS is ESM.
 
 ## Commits

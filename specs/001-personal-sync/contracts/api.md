@@ -13,7 +13,7 @@ const sfs = await SwarmFS.open('./data', {
   deviceName,      // 'phone'
   bootstrap,       // DHT nodes (tests)
   fetchTimeout     // ms without progress before a fetch gives up (default 30000)
-})                 // connected; spaces' protocols attached; rescan() run once
+})                 // connected; member streams handed to swarmwire; rescan() run once
 sfs.hg             // sync: the Hypergraph (recoveryPhrase, protectRecoveryPhrase, removeDevice…)
 sfs.device         // sync: this device's key
 
@@ -23,7 +23,7 @@ await sfs.devices()                                          // [{ publicKey, na
 const drive = await sfs.createSpace('My files')   // a files space (private)
 sfs.spaces()                                      // sync: [{ key, name }]
 sfs.space(key)                                    // sync: the Drive; NOT_FOUND
-sfs.on('spaces', () => {})                        // the list changed (needs hypergraph request H1)
+sfs.on('spaces', () => {})                        // the list changed (needs hypergraph request H2)
 
 drive.key; drive.name; drive.top                  // sync; top: the id of the top folder (= key)
 await drive.add(localPath, { parent })            // a file or a folder, in place → the entry
@@ -37,7 +37,9 @@ await drive.move(id, folder)
 await drive.remove(id)                            // and its subtree; local files untouched
 await drive.fetch(id, localPath)                  // → { path, bytes }: bytes 0 if held here (path is
                                                   //   the existing one); EXISTS if localPath exists;
-                                                  //   NOT_AVAILABLE if no online holder / no progress
+                                                  //   NOT_AVAILABLE if no online holder, `stalled`, or
+                                                  //   no progress for fetchTimeout (resumable later);
+                                                  //   bytes land under a .part name until complete
 drive.on('change', () => {})                      // entries changed (space 'change' event)
 
 await sfs.rescan()                                // follow the disk: see data-model.md
