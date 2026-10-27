@@ -87,9 +87,8 @@ its implementation. Every test runs on Node and Bare (constitution III).
 
 ## Phase 5: User Story 3 — Fetch a file from the other device (P1)
 
-**Blocked on swarmwire S7** (2026-10-28): H1, S2, S5 landed and are used; two devices' swarmwire
-channels never open over member streams (`specs/requests-to-swarmwire.md`). T015–T016 built; with S7's
-fix applied locally `test/fetch.test.js` and the 100 MB test pass on Node and Bare.
+Uses hypergraph H1, swarmwire S2, S5 and S7 (swarmwire c1e06d0, 2026-10-28): `test/fetch.test.js` and
+the 100 MB test pass on Node and Bare.
 
 **Goal**: fetch a file the PC holds, verified, resumable; nothing downloaded if held locally.
 **Independent Test**: `test/fetch.test.js`, two devices.
@@ -102,10 +101,10 @@ fix applied locally `test/fetch.test.js` and the 100 MB test pass on Node and Ba
   `fetchTimeout`), never wrong bytes; no DHT topic joined for any file (the adapter's `join` is never
   called with an announce); the phone paired after the space was made gets the PC's member stream
   (hypergraph H5). A 100 MB case (SC-003) in a separate `slow` test (`test/slow/`, `npm run test:slow`)
-- [ ] T015 [US3] `lib/transfer.js`: one `Swarmwire({ swarm: adapter, resolve })`; the adapter:
+- [X] T015 [US3] `lib/transfer.js`: one `Swarmwire({ swarm: adapter, resolve })`; the adapter:
   `join()` → `{ destroy () {} }`, `connection` re-emits each files space's member streams (H1) once
   per stream; `resolve` = own `held` lookup of T008 with a size/mtime check (S2)
-- [ ] T016 [US3] `lib/drive.js`: `fetch(id, path)` per research R8 (`localPath` → refuse existing path
+- [X] T016 [US3] `lib/drive.js`: `fetch(id, path)` per research R8 (`localPath` → refuse existing path
   → online holders → `download({ root, size }, path, { announce: false })`; `stalled` or no `progress`
   for `fetchTimeout` → `stop()` → `NOT_AVAILABLE`; done → `recordHeld`); T014 green on Node and Bare
 

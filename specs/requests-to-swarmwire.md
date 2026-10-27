@@ -34,7 +34,7 @@ None makes swarmwire import hypergraph.
 
 ## New (2026-10-28) — blocks story 3
 
-- **S7 — Accept a channel the remote opens first.** With an app-supplied network whose streams
+- **S7: done** (swarmwire c1e06d0: the side whose open was rejected accepts the other's later open). **Accept a channel the remote opens first.** With an app-supplied network whose streams
   already carry a Protomux (hypergraph's member streams), swarmwire's `openChannel` only creates its
   channel; a remote open arriving before it is rejected by Protomux, and this side's own open is
   rejected if the remote's channel is already gone. Member streams reach each side at different

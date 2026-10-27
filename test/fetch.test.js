@@ -3,11 +3,7 @@
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
-import { codeOf, eventually, bytes, filesOnPC } from './helpers.js'
-
-// shortcut: these need swarmwire S7 (two devices' channels never open over member streams):
-// TODO until it lands; green with it on Node and Bare (2026-10-28). Remove then.
-const S7 = { todo: true }
+import { codeOf, device, eventually, bytes, filesOnPC } from './helpers.js'
 
 // Counts the adapter's join() calls: none may announce a file.
 function countJoins (sfs) {
@@ -24,7 +20,7 @@ function downloading (sfs, root) {
   return d && [d]
 }
 
-test('fetch from the PC: same bytes, both list the phone as a holder; held here → no download', S7, async (t) => {
+test('fetch from the PC: same bytes, both list the phone as a holder; held here → no download', async (t) => {
   const { pc, phone, drive, pd, disk, byName, out } = await filesOnPC(t, { 'a.bin': bytes(100000), 'b.txt': 'bee' }, { fetchTimeout: 5000 })
   t.ok(byName['a.bin'], 'the phone sees the entries with the PC online (paired after the space was made)')
   const joins = [countJoins(pc), countJoins(phone)]
@@ -59,7 +55,7 @@ test('the PC offline: NOT_AVAILABLE at once', async (t) => {
   t.absent(fs.existsSync(path.join(out, 'a.txt')))
 })
 
-test('the PC closed mid-fetch: NOT_AVAILABLE, only the .part; reopened, the fetch resumes', S7, async (t) => {
+test('the PC closed mid-fetch: NOT_AVAILABLE, only the .part; reopened, the fetch resumes', async (t) => {
   const size = 16 * 1024 * 1024
   const { pc, phone, pd, disk, byName, out } = await filesOnPC(t, { 'big.bin': bytes(size, 7) }, { fetchTimeout: 5000 })
   const id = byName['big.bin'].id
@@ -82,7 +78,7 @@ test('the PC closed mid-fetch: NOT_AVAILABLE, only the .part; reopened, the fetc
   t.alike(fs.readFileSync(target), fs.readFileSync(path.join(disk, 'big.bin')), 'same bytes')
 })
 
-test('a file changed on the PC after hashing is never served', S7, async (t) => {
+test('a file changed on the PC after hashing is never served', async (t) => {
   const { pc, pd, disk, byName, out } = await filesOnPC(t, { 'a.bin': bytes(50000, 3), 'b.bin': bytes(50000, 4) }, { fetchTimeout: 3000 })
   // a.bin: rewritten (new mtime); b.bin: rewritten keeping size and mtime
   fs.writeFileSync(path.join(disk, 'a.bin'), bytes(50000, 5))
