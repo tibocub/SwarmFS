@@ -19,7 +19,20 @@
   },
   "dependencies": {
     "hypergraph": "file:../hypergraph",
-    "swarmwire-lib": "file:../swarmwire"
+    "swarmwire-lib": "file:../swarmwire",
+    "b4a": "^1.9.0",
+    "bare-fs": "^4.8.4",
+    "bare-os": "^3.9.3",
+    "bare-path": "^3.1.2",
+    "bare-process": "^4.5.1"
+  },
+  "devDependencies": {
+    "bare": "^1.34.1",
+    "brittle": "^4.5.0",
+    "hyperdht": "6.32.0"
+  },
+  "overrides": {
+    "hyperdht": "$hyperdht"
   },
   "engines": {
     "bare": ">=1.27",
