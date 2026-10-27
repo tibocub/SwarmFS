@@ -15,6 +15,7 @@ these and doesn't edit hypergraph; the lead conversation decides.
   files space's member streams to swarmwire and show the space; without an event it can only poll or
   wait for a restart. Something like `hg.on('spaces', (spaces) => {})`. Until then v1 reads the list
   at open and after `createSpace`.
+  **Done in hypergraph; used** (`sfs.on('spaces')`, checked in `test/devices.test.js`).
 
 ## To confirm (SwarmFS's first tests will check; a reply saves a surprise)
 
@@ -25,6 +26,7 @@ these and doesn't edit hypergraph; the lead conversation decides.
 - **H4 — `where({ root })` and `fromDevice(dev)` combine.** "Do I hold X" is
   `hg.personal.query('held').where({ root }).fromDevice(hg.device.publicKey)`. The docs say filters
   combine (AND); no test combines these two.
+  **Checked 2026-10-27** (`test/devices.test.js`): combine as expected, on Node and Bare.
 - **H5 — Member streams of a private space** include the person's newly paired device once it holds
   the key.
 
