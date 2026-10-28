@@ -21,34 +21,34 @@ place, or byte-identical in a `.swarmfs-trash/<time>/` folder (a helper, T003).
 
 ## Phase 1: Setup
 
-- [ ] T001 Check `fs.watch(dir, { recursive: true })` and `fs.promises.statfs` on Node and bare-fs
+- [X] T001 Check `fs.watch(dir, { recursive: true })` and `fs.promises.statfs` on Node and bare-fs
   (`watch` with `recursive`, `statfs`) through the `imports` map on this Windows PC: a scratch test in
   `test/smoke.test.js` (one event for a file written in a sub-folder; `statfs` gives `bavail`, `bsize`,
   `blocks`); green on Node and Bare. If bare-fs differs (event names, `statfs` fields), note it in
   research.md R7/R10 before going on
-- [ ] T002 [P] Empty `lib/sync.js`, `lib/watch.js`, `lib/ignore.js`, `lib/trash.js` (plan.md structure)
-- [ ] T003 [P] `test/helpers.js`: `linkedPair(t)` (paired `{ pc, laptop }`, both `sync()`ed, a folder
+- [X] T002 [P] Empty `lib/sync.js`, `lib/watch.js`, `lib/ignore.js`, `lib/trash.js` (plan.md structure)
+- [X] T003 [P] `test/helpers.js`: `linkedPair(t)` (paired `{ pc, laptop }`, both `sync()`ed, a folder
   added on the PC and linked on the laptop), `until(sfs, predicate, ms)` (waits on `sync` events),
   `snapshot(dir)` / `assertNothingLost(t, before, dirs)` (SC-006: every file hashed before is at its
   place or byte-identical in a trash; no file outside linked folders changed)
 
 ## Phase 2: Foundational
 
-- [ ] T004 `test/types.test.js` (failing first) then `lib/types.js`: append `base: 'string'` to `file`
+- [X] T004 `test/types.test.js` (failing first) then `lib/types.js`: append `base: 'string'` to `file`
   (last field; "hex roots separated by one space, newest first, at most 16"); rule `swarmfs/base-v1`:
   "`base` absent, or 1–16 roots of 64 hex characters separated by single spaces"; a v1 record (no
   `base`) still accepted; an instance folder made by v1's types opens with the new ones (no
   `INCOMPATIBLE_TYPES`)
-- [ ] T005 [P] `test/ignore.test.js` (failing first) then `lib/ignore.js`: `ignored(rules, relPath,
+- [X] T005 [P] `test/ignore.test.js` (failing first) then `lib/ignore.js`: `ignored(rules, relPath,
   isDir)`; the fixed list (`*.part`, `.swarmfs-trash`, `Thumbs.db`, `desktop.ini`, `.DS_Store`, `~$*`,
   `*.tmp`, `*.swp`) and `.swarmfsignore` lines (research R8: `#`, blank, `*`, `**`, trailing `/`, no-`/`
   patterns match a name at any depth, `/` patterns from the root); `\` paths on Windows matched as `/`
-- [ ] T006 [P] `lib/trash.js` with a unit test `test/trash.test.js` (failing first): `toTrash(linked,
+- [X] T006 [P] `lib/trash.js` with a unit test `test/trash.test.js` (failing first): `toTrash(linked,
   absPath)` (rename to `<linked>/.swarmfs-trash/<YYYY-MM-DD HH-MM-SS>/<relative path>`, parents made;
   never across disks), `listTrash(linked)` (`{ path, size, trashed }`, `.incoming` skipped),
   `emptyTrash(linked)` → `{ files, bytes }`, `floor(linked, minFree)` and `free(linked)` from `statfs`
   (floor = max(5 GB, 5 % of `blocks × bsize`) unless `minFree`)
-- [ ] T007 `lib/holdings.js`: folder `held` (`root: ''`, `size: 0`, `mtime: 0`) kept by rescan (today it
+- [X] T007 `lib/holdings.js`: folder `held` (`root: ''`, `size: 0`, `mtime: 0`) kept by rescan (today it
   deletes any `held` whose path isn't a file); `localPath` and holders skip `root: ''`; `edit` of
   content passes `base` (data-model.md). Failing first in `test/changes.test.js`: after `rescan()` a
   folder `held` (`root: ''`) survives, and a file edited on disk gets `base` = its old root; spec 001's
@@ -63,7 +63,7 @@ place, or byte-identical in a `.swarmfs-trash/<time>/` folder (a helper, T003).
 **Goal**: one device: `sync()` follows a linked folder and single added files.
 **Independent Test**: `test/watch.test.js`, one device, no rescan called.
 
-- [ ] T008 [US1] Write `test/watch.test.js` (failing): story 1 scenarios 1–7 — create (entry within 5 s
+- [X] T008 [US1] Write `test/watch.test.js` (failing): story 1 scenarios 1–7 — create (entry within 5 s
   of the last write), a file written for 10 s hashed once (one `added` event, SC-005), save (new content,
   `base` = old root), rename and move (same entry id, `renamed`/`moved`), delete (entry gone,
   `removed`), the ignore list and a `.swarmfsignore` with `build/` and `*.log` (0 entries, SC-010; the
@@ -74,15 +74,15 @@ place, or byte-identical in a `.swarmfs-trash/<time>/` folder (a helper, T003).
   entries with the right contents (not a rename: research R7's `ino`); changes made while closed found
   at `sync()` start (FR-011: a rename isn't re-hashed); `add` of a path
   inside a linked folder → `EXISTS`
-- [ ] T009 [US1] `lib/watch.js`: a recursive watcher per linked folder root and a non-recursive one per
+- [X] T009 [US1] `lib/watch.js`: a recursive watcher per linked folder root and a non-recursive one per
   single added file's folder; dirty relative paths (a folder: walked); every 500 ms the paths whose size
   and mtime held for 2 s → one batch to a callback; ignored paths dropped (T005); `error` → close, ask
   for a full rescan (FR-012)
-- [ ] T010 [US1] `lib/holdings.js`: rescan becomes the local pass of data-model.md over a set of paths
+- [X] T010 [US1] `lib/holdings.js`: rescan becomes the local pass of data-model.md over a set of paths
   (all, or a batch): moves first (size + mtime + same name or same folder; else hash equal to a gone
   root), folder moves (same files), new (put + `held`), changed (R4: `C = H` → `edit(content, base)`),
   gone (`del` subtree, `held` deleted); single added files keep v1's rule; returns the actions for events
-- [ ] T011 [US1] `lib/swarmfs.js` + `lib/sync.js`: `sync()` (first pass = full local pass per linked
+- [X] T011 [US1] `lib/swarmfs.js` + `lib/sync.js`: `sync()` (first pass = full local pass per linked
   folder, then watchers from T009 feeding the local pass, serialized per linked folder), `'sync'`
   events, stop on `close()`; `lib/drive.js`: `add` refuses a path inside or containing a linked folder
   (`EXISTS`); T008 green on Node and Bare

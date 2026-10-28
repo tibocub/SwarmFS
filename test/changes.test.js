@@ -45,21 +45,43 @@ test('rescan: an edited file gets its new content everywhere, the old one is no 
   t.ok(oldHeld, 'the old content is no longer held')
 })
 
-test('rescan: a deleted file stays listed, held by nobody; a new file appears', async (t) => {
+test('rescan: an edit records the content it replaced (base); folders are held too', async (t) => {
+  const { pc, disk, drive, docs } = await setup(t)
+  const a = (await drive.list(docs.id)).items.find((i) => i.name === 'a.txt')
+  await sleep(20)
+  fs.writeFileSync(path.join(disk, 'docs', 'a.txt'), 'changed!')
+  await pc.rescan()
+  const { record } = await drive.space.get(a.id)
+  t.is(record.base, a.hash, 'base: the replaced content')
+  const folders = (await pc.hg.personal.query('held').where({ root: '' }).latest(10)).items
+  t.alike(folders.map((h) => path.relative(disk, h.path)), [path.join('docs', 'sub')], 'the folder under docs/ is held')
+})
+
+test('rescan: in a linked folder a deleted file is removed for everyone (spec 002); a new file appears', async (t) => {
   const { pc, disk, drive, pd, docs } = await setup(t)
   fs.rmSync(path.join(disk, 'docs', 'a.txt'))
   writeTree(disk, { 'docs/new.txt': 'new', 'docs/deep/er/x.txt': 'x' })
   await pc.rescan()
 
   const { items } = await drive.list(docs.id)
-  t.alike(items.map((i) => i.name), ['deep', 'sub', 'a.txt', 'new.txt'])
-  t.alike(items.find((i) => i.name === 'a.txt').holders, [], 'a.txt held by nobody')
+  t.alike(items.map((i) => i.name), ['deep', 'sub', 'new.txt'])
   const deep = items.find((i) => i.name === 'deep')
   t.is(await names(drive, (await drive.list(deep.id)).items[0].id), 'file:x.txt', 'new nested folders too')
-  t.ok(await eventually(async () => (await names(pd, docs.id)) === 'folder:deep folder:sub file:a.txt file:new.txt'), 'on the phone')
+  t.ok(await eventually(async () => (await names(pd, docs.id)) === 'folder:deep folder:sub file:new.txt'), 'on the phone')
 
   await pc.rescan()
-  t.is((await drive.list(docs.id)).items.length, 4, 'a second rescan adds nothing')
+  t.is((await drive.list(docs.id)).items.length, 3, 'a second rescan adds nothing')
+})
+
+test('rescan: a file added on its own and deleted stays listed, held by nobody (v1)', async (t) => {
+  const pc = await device(t, 'pc')
+  const disk = writeTree(tmpDir(t, 'disk'), { 'one.txt': 'one' })
+  const drive = await pc.createSpace('My files')
+  await drive.add(path.join(disk, 'one.txt'))
+  fs.rmSync(path.join(disk, 'one.txt'))
+  await pc.rescan()
+  const { items } = await drive.list()
+  t.alike(items.map((i) => [i.name, i.holders.length]), [['one.txt', 0]])
 })
 
 test('rename, move and remove from the phone: the PC sees them, its files untouched', async (t) => {

@@ -110,6 +110,58 @@ export function snapshot (dir) {
   return out
 }
 
+// Every `sync` event of `sfs`, in order; `events.wait(pred, ms)` → the first matching one (or null).
+export function syncEvents (sfs) {
+  const events = []
+  sfs.on('sync', (e) => events.push(e))
+  events.wait = (pred, ms = 15000) => eventually(() => events.find(pred), ms)
+  return events
+}
+
+// A PC with folder `docs/` (from `files`) added in a space, and a laptop paired after, the
+// folder linked on it; both syncing (minFree 0: tests never meet the disk's floor).
+export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, opts = {}) {
+  const pc = await device(t, 'pc', { minFree: 0, ...opts })
+  const disk = writeTree(tmpDir(t, 'pc-disk'), files)
+  const drive = await pc.createSpace('My files')
+  const docs = await drive.add(path.join(disk, 'docs'))
+  const { code, added } = await pc.addDevice()
+  const laptop = await device(t, 'laptop', { joinCode: code, minFree: 0, ...opts })
+  await added
+  const ld = await eventually(() => laptop.spaces().find((s) => s.key === drive.key) && laptop.space(drive.key), 15000)
+  const pcEvents = syncEvents(pc)
+  const laptopEvents = syncEvents(laptop)
+  await pc.sync()
+  await laptop.sync()
+  const there = path.join(tmpDir(t, 'laptop-disk'), 'docs')
+  await eventually(async () => (await ld.list(docs.id, { timeout: 500 })).complete, 15000)
+  await ld.link(docs.id, there)
+  return { pc, laptop, drive, ld, docs, pcDocs: path.join(disk, 'docs'), laptopDocs: there, pcEvents, laptopEvents }
+}
+
+// BLAKE3-free fingerprint of every file under `dirs` (path -> hex bytes), for SC-006.
+export function contents (dir) {
+  const out = new Map()
+  if (!fs.existsSync(dir)) return out
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, e.name)
+      if (e.isDirectory()) walk(full)
+      else out.set(full, fs.readFileSync(full).toString('hex'))
+    }
+  }
+  walk(dir)
+  return out
+}
+
+// SC-006: every file seen in `before` (contents()) is still somewhere under `dir`, byte for
+// byte: at a place, or in its trash. Nothing destroyed.
+export function assertNothingLost (t, before, dir) {
+  const now = new Set(contents(dir).values())
+  const lost = [...before].filter(([, hex]) => !now.has(hex)).map(([p]) => path.relative(dir, p))
+  t.alike(lost, [], 'nothing lost: every earlier version is at a place or in the trash')
+}
+
 // Bytes that don't repeat by group (a filled buffer would hash the same everywhere).
 export function bytes (n, seed = 1) {
   const b = b4a.alloc(n)
