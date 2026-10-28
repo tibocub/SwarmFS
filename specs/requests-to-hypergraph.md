@@ -151,3 +151,4 @@ these and doesn't edit hypergraph; the lead conversation decides.
 - **H9 — ECOSYSTEM.md's SwarmFS rows are stale**: the map still says "PAUSED"; "Where each project
   documents itself" points at `AGENTS.md`/`INVARIANTS.md` and a `dev` branch (the old repo). Now:
   `CLAUDE.md` → constitution → `specs/`; branch `main`. swarmwire's package is now `swarmwire-lib`.
+  **Done 2026-10-29** (hypergraph ECOSYSTEM.md, by the lead).
