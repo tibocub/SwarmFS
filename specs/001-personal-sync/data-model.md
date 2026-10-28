@@ -51,7 +51,9 @@ added: {
 - **add(path)** → per folder `put('folder')`, per file hash then `put('file')` + `personal.put('held')`;
   for a folder also `personal.put('added')`.
 - **rescan** (own `held` and `added`): new → as add; size/mtime differ → rehash, `edit(entry,
-  { content })`, `del` old held, `put` new held; missing → `del(held)`; entry's parent gone →
-  `edit(entry, { parent: space.key })`.
+  { content })` if the root differs from `held.root`, `del` old held, `put` new held; missing →
+  `del(held)`; entry's parent gone → `edit(entry, { parent: space.key })`. Entries are read by the
+  space (one `folder` query, one `file` query), never by the file: with another device offline every
+  such read waits its bound. What depends on others' records (a folder gone) acts only on `complete`.
 - **fetch** done → `personal.put('held')`.
 - **remove(entry)** → `del` (subtree first); `held` and local files untouched.

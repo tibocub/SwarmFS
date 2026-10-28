@@ -222,6 +222,8 @@ folder, pair a device, list, fetch, rescan.
 - **SC-007**: The whole suite passes on Node and on Bare.
 - **SC-008**: SwarmFS's library code has no networking, replication, cryptography or transfer code of
   its own (only hypergraph and swarmwire calls).
+- **SC-009**: A device holding 1,000 files, paired with another device that is offline, opens in under
+  5 seconds (lead review 2026-10-28: 300 files took 124 s).
 
 ## Later stories (outline, not built in v1)
 

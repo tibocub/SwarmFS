@@ -58,7 +58,7 @@ cryptography or transfer code. Reasons: [research.md](research.md); types:
 | Transport (`lib/transfer.js`) | each files space's proven-member streams (H1, being built) | the adapter given as `swarm`: `join()` → `{ destroy () {} }`, `on('connection', (stream, info))` re-emitting each stream once (contract §2, §3.6) |
 | Serving (`lib/transfer.js`) | own `held` lookup (above) | `resolve(root) → path \| null`, opened and hashed only when asked, "unavailable" if the root differs; no-announce mode (S2, being built) |
 | Fetch (`lib/drive.js`) | own `held` lookup; `held` of others + `space.peers()` | `download({ root, size }, path, { announce: false })` to a `.part` name (S5, being built), await; events `progress`, `stalled` (contract §5); `stop()` |
-| Rescan (`lib/holdings.js`) | own `held`/`added` pages, `space.get`, `space.edit`, `put`/`del` | `ContentSource.open(path)` for changed files |
+| Rescan (`lib/holdings.js`) | own `held`/`added` pages, one `folder` and one `file` query per space, `space.edit`, `put`/`del` | `ContentSource.open(path)` for changed files |
 | CLI (`bin/swarmfs.js`) | through the library only | — |
 
 ## Project Structure

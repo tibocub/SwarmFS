@@ -159,3 +159,11 @@ the 100 MB test pass on Node and Bare.
 - T002 and T003; T022 and T023.
 - T018 alongside US3 if a second session works on `drive.js`'s other half (same file: one writer at a
   time — prefer sequential).
+
+---
+
+## Phase 9: Lead review 2026-10-28 (reopen cost, the CLI as a shell, a password)
+
+- [X] T025 SC-009: test (failing first: > 120 s) paired PC + phone, 1,000 files, both closed, the PC
+  reopened alone in < 5 s; `rescan` reads entries by the space, not per file (data-model.md).
+  2026-10-28, this Windows PC: ~0.5 s on Node and Bare.

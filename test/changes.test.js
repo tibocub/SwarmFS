@@ -129,6 +129,22 @@ test('offline: both add, then reconnect; two renames end the same on both', asyn
   t.ok(await eventually(async () => (await both(phone)) === (await both(pc)), 20000), `same on both: ${onPc}`)
 })
 
+test('reopen with 1,000 held files and the phone offline: under 5 s', { timeout: 120000 }, async (t) => {
+  const files = {}
+  for (let i = 0; i < 1000; i++) files[`docs/${i}.bin`] = String(i)
+  let { pc, phone, drive, docs } = await setup(t, files)
+  const pcDir = pc.dir
+  await phone.close()
+  await pc.close()
+
+  const started = Date.now()
+  pc = await device(t, 'pc', { dir: pcDir })
+  const took = Date.now() - started
+  t.comment(`reopened in ${took} ms`)
+  t.ok(took < 5000, 'open < 5 s')
+  t.is((await pc.space(drive.key).list(docs.id, { limit: 1000, timeout: 200 })).items.length, 1000, 'nothing lost')
+})
+
 test('a folder removed while the other device adds into it: the file moves to the top at its rescan', async (t) => {
   t.timeout(90000)
   let { pc, phone, disk, drive, docs } = await setup(t, { 'docs/a.txt': 'aaaa' })
