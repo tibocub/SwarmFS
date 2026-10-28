@@ -99,6 +99,21 @@ these and doesn't edit hypergraph; the lead conversation decides.
   goes to the editing device's trash (kept, not shown). Wanted: `get()` saying `deleted: { stamp,
   device }` (or the same in a changes feed, H14).
 
+## Found while building spec 002 (2026-10-28)
+
+- **H16 — `change` doesn't fire for another device's edit.** On the phone, `space.on('change')`
+  fires for the PC's `put` (`{ types: ['file'] }`) and `del`, but not for its `edit` (a rename, a
+  move, new content), though `get()` shows the edit a moment later. `logs` fires for all three.
+  docs/next/api.md says `change` is "records of these types changed": an edit is one. Linked folders
+  follow renames, moves and edits from the other device through it. SwarmFS listens to `logs` too
+  meanwhile (marked `shortcut:` in `lib/swarmfs.js`): one re-read per log growth, more than needed.
+  Repro: `npx brittle-node specs/repro-h16-edit-change.mjs`:
+  ```
+  after put 4 {"types":["hg/grant"]} {"types":["hg/grant"]} {"types":["file"]} logs
+  after edit true 1 logs
+  after del true 2 {"types":["file"]} logs
+  ```
+
 ## For later stories (not blocking v1)
 
 - **H6 — Read-only members.** Community archives (later story 2) want readers who don't upload. A role

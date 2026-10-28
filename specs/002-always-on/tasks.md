@@ -123,7 +123,7 @@ place, or byte-identical in a `.swarmfs-trash/<time>/` folder (a helper, T003).
 files to the trash; `trash()` and `emptyTrash()`.
 **Independent Test**: `test/mirror.test.js`, two devices.
 
-- [ ] T015 [US3] Write `test/mirror.test.js` (failing): story 3 scenarios 1–5 — rename and move on the PC
+- [X] T015 [US3] Write `test/mirror.test.js` (failing): story 3 scenarios 1–5 — rename and move on the PC
   → laptop renames/moves within 10 s, 0 bytes transferred (SC-003; also a folder of 100 files); edit →
   new version in place, old one byte-identical in the laptop's trash; file and folder deleted → in the
   trash with everything in it; `trash()` lists folder, path, size, time; `emptyTrash()` →
@@ -132,10 +132,10 @@ files to the trash; `trash()` and `emptyTrash()`.
   (FR-025); the laptop reopened with the PC offline → nothing trashed, no entry removed (FR-023); a
   file the laptop fetched with `get` outside any linked folder, edited on the PC → the laptop's copy
   untouched (FR-008); `assertNothingLost` (SC-006) after each
-- [ ] T016 [US3] `lib/sync.js`: remote pass steps 1–3 (moves/renames of local files and folders, target
+- [X] T016 [US3] `lib/sync.js`: remote pass steps 1–3 (moves/renames of local files and folders, target
   taken → trashed first; removals only from a complete read (FR-023): local unchanged → trash, changed →
   put again (FR-019); content `C ≠ H`, `H ∈ base(C)` → fetch then trash the old and place)
-- [ ] T017 [US3] `lib/swarmfs.js`: `trash()` and `emptyTrash()` over every linked folder (paused ones
+- [X] T017 [US3] `lib/swarmfs.js`: `trash()` and `emptyTrash()` over every linked folder (paused ones
   skipped) using T006; `held` deleted before any file is trashed (FR-025); T015 green on Node and Bare
 
 **Checkpoint**: both directions work; nothing is destroyed.

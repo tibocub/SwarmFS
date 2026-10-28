@@ -67,6 +67,21 @@ None makes swarmwire import hypergraph.
   Repro: none needed beyond reading `leave()` in `lib/transfer.js` (works today; the request is about
   owning it in the right place).
 
+## New (2026-10-28, spec 002 "always on")
+
+- **S9 — Close a served file once idle.** `OnDemand` keeps up to `maxOpen` (64) served files open
+  until evicted, with no time limit. On Windows a folder holding an open file can't be renamed,
+  moved or deleted (`EPERM`): after the laptop fetched a 100-file folder from the PC, the person
+  couldn't rename that folder on the PC — for as long as SwarmFS runs. With linked folders this is
+  the everyday case (the person reorganizes the folder the other device just synced). Files
+  themselves stay renamable (Node opens with share-delete), folders don't. Wanted: close a source
+  after a short idle time (a few seconds without a read), or an option for it. SwarmFS can't fix it
+  without reaching into swarmwire's cache (`maxOpen: 0` closes a source while it is read).
+  Repro: SwarmFS `test/mirror.test.js` before its workaround-free setup: PC serves `album/`
+  (100 files) to the laptop, then `fs.renameSync('album', 'holiday')` on the PC → `EPERM`.
+  Until then: the shell's folder renames on Windows fail while files in them are open; SwarmFS
+  tests rename folders whose files were never served.
+
 ## Earlier
 
 - **S6 — A stable "hash this file"**. SwarmFS hashes each added file once (the hash is the entry).

@@ -120,7 +120,8 @@ export function syncEvents (sfs) {
 
 // A PC with folder `docs/` (from `files`) added in a space, and a laptop paired after, the
 // folder linked on it; both syncing (minFree 0: tests never meet the disk's floor).
-export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, opts = {}) {
+// `opts.laptopFiles`: written in the laptop's folder before it is linked (already copied by hand).
+export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, { laptopFiles, ...opts } = {}) {
   const pc = await device(t, 'pc', { minFree: 0, ...opts })
   const disk = writeTree(tmpDir(t, 'pc-disk'), files)
   const drive = await pc.createSpace('My files')
@@ -135,6 +136,7 @@ export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, opts = {}
   await laptop.sync()
   const there = path.join(tmpDir(t, 'laptop-disk'), 'docs')
   await eventually(async () => (await ld.list(docs.id, { timeout: 500 })).complete, 15000)
+  if (laptopFiles) writeTree(there, laptopFiles)
   await ld.link(docs.id, there)
   return { pc, laptop, drive, ld, docs, pcDocs: path.join(disk, 'docs'), laptopDocs: there, pcEvents, laptopEvents }
 }
