@@ -48,5 +48,6 @@ await sfs.rescan()                                // follow the disk: see data-m
 await sfs.close()
 ```
 
-CLI (story 5): `swarmfs [--dir d] init | pair | join <code> | create <name> | add <space> <path> |
-ls <space> [folder] | get <space> <id> <path> | rescan | devices`.
+CLI (story 5): `swarmfs [--dir d] [--name n] [--bootstrap host:port] init | pair | join <code> |
+create <name> | add <space> <path> | ls <space> [folder] | get <space> <id> <path> | rescan | devices |
+serve`. `<space>`: name or key. `pair` ends once the device joined; `serve` stays online until Ctrl+C.

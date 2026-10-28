@@ -132,9 +132,9 @@ the 100 MB test pass on Node and Bare.
 
 ## Phase 7: User Story 5 — Try it on two machines (P3)
 
-- [ ] T020 [US5] Write `test/cli.test.js` (failing): two CLI processes (`process.execPath`, so it also
+- [X] T020 [US5] Write `test/cli.test.js` (failing): two CLI processes (`process.execPath`, so it also
   runs on Bare) on the local DHT: `init`, `create`, `add`, `pair` / `join`, `ls`, `get`
-- [ ] T021 [US5] `bin/swarmfs.js`: the commands of contracts/api.md over the library only; print with
+- [X] T021 [US5] `bin/swarmfs.js`: the commands of contracts/api.md over the library only; print with
   `console.log` (swarmwire's Bare lesson); `bin` in `package.json`; T020 green
 
 ---

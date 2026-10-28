@@ -18,9 +18,25 @@ const { items: inside } = await drive.list(photos.id)
 await drive.fetch(inside[0].id, '/sdcard/a.jpg')     // from the PC, verified; then held by the phone too
 ```
 
-CLI, two machines:
+CLI, two machines (`npx swarmfs …` from this folder, or `node bin/swarmfs.js`; `bare bin/swarmfs.js`
+works too). Public DHT; data in `~/.swarmfs` (`--dir` for another), device named after the host
+(`--name` on its first command).
 
 ```bash
-swarmfs init && swarmfs create "My files" && swarmfs add "My files" ~/photos && swarmfs pair
-swarmfs join <code> && swarmfs ls "My files" && swarmfs get "My files" <id> ./a.jpg
+# PC
+swarmfs create "My files"
+swarmfs add "My files" ~/photos
+swarmfs pair                      # prints a code; ends once the phone joined
+swarmfs serve                     # stays online for the phone; Ctrl+C to stop
+
+# phone (second machine), while the PC serves
+swarmfs join <code>
+swarmfs ls "My files"             # id, kind, name, size, holders: "<pc> (online)"
+swarmfs ls "My files" <folder id>
+swarmfs get "My files" <file id> ./a.jpg
 ```
+
+The smallest set: one-shot commands open, act, close; only `pair` (until the join) and `serve` stay
+online. `ls`/`get` wait up to 15 s for one of the person's other devices to connect, so holders show
+online. After `join`, the first `ls` waits those 15 s for the space's name (hypergraph H12); the
+space key works at once. `rescan` and `devices` as in contracts/api.md.
