@@ -144,7 +144,7 @@ the 100 MB test pass on Node and Bare.
 - [X] T022 [P] SC-001: a 1,000-file add test (no content written; listable right after); note time
   (2026-10-28: 1,000 files of 1 KB added and listed in ~2.5 s, Node and Bare, this Windows PC)
 - [X] T023 [P] README: what works, the quickstart, Node/Bare commands; `CLAUDE.md` current
-- [ ] T024 Re-check SC-008 by reading `lib/`: only hypergraph and swarmwire calls for network, crypto,
+- [X] T024 Re-check SC-008 by reading `lib/`: only hypergraph and swarmwire calls for network, crypto,
   replication and transfer; update `specs/requests-to-*.md` with anything found while building
 
 ## Dependencies

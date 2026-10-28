@@ -52,6 +52,21 @@ None makes swarmwire import hypergraph.
   test pass on Node and Bare. Belongs in swarmwire's `_onPeer`/`openChannel` (and `unpair` when the
   peer is gone), not in each app.
 
+## New (2026-10-28, SC-008 re-check)
+
+- **S8 — Stop talking to a stream the app handed over.** With an app-supplied network (§3.9),
+  swarmwire learns of a stream from `connection`, but nothing tells it the app no longer wants that
+  peer served (a device removed from the space) while the stream stays open (hypergraph's, shared
+  with other spaces). SwarmFS today does it itself in `lib/transfer.js`: `Protomux.from(stream)`,
+  find the channel whose `protocol === 'swarmwire/0'`, `close()` it. That is SwarmFS knowing
+  swarmwire's wire protocol name and channel handling (against SC-008, and breaks if swarmwire
+  renames or versions its protocol). Wanted: the adapter's own way to retract it, e.g. a
+  `disconnection` event on the supplied network (`net.emit('disconnection', stream)`), or
+  `wire.release(stream)`: close swarmwire's channel on it, end that peer's transfers, leave the
+  stream open. Then SwarmFS drops its `protomux` dependency.
+  Repro: none needed beyond reading `leave()` in `lib/transfer.js` (works today; the request is about
+  owning it in the right place).
+
 ## Earlier
 
 - **S6 — A stable "hash this file"**. SwarmFS hashes each added file once (the hash is the entry).

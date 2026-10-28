@@ -58,6 +58,21 @@ these and doesn't edit hypergraph; the lead conversation decides.
     connects. hypergraph's own `network.js` and member-streams test use `mux.pair` for this. The fix
     belongs in swarmwire (S7); the example should say so, or show the `pair`.
 
+## Found while building (2026-10-28, CLI)
+
+- **H12 — `'spaces'` fires before a joined space has its name, and not again when it arrives.** On a
+  newly paired device, `hg.spaces()` lists the space with `name: ''` when `'spaces'` fires; the name
+  shows up ~0.2 s later with no event. An app finding a space by name (the CLI: `swarmfs ls "My
+  files"` right after `join`) can't know when to look again: the CLI waits its full 15 s bound,
+  then finds it. Wanted: `'spaces'` again when a listed space's name (or any field `spaces()` returns)
+  changes — or list a space only once its name is known.
+  Repro: `node specs/repro-h12-space-name.mjs` (local DHT, PC + paired phone):
+  ```
+  93 ms 'spaces': [{"key":"adtd…","name":"","parent":null}]
+  3013 ms no event, but now: [{"key":"adtd…","name":"My files","parent":null}]
+  ```
+  Cost today: the CLI test takes 15 s longer (its timeout notes H12); no workaround in SwarmFS.
+
 ## For later stories (not blocking v1)
 
 - **H6 — Read-only members.** Community archives (later story 2) want readers who don't upload. A role
