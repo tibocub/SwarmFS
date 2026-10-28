@@ -212,7 +212,8 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
 
 ## Phase 10: Polish
 
-- [ ] T026 [P] `test/slow/sync.test.js`: SC-001 (10,000 files linked, held, unchanged: `sync()` first pass
+- [X] T026 [P] `test/slow/sync.test.js`: (2026-10-28, this PC, Node / Bare: SC-001 first pass 3.8 / 3.7 s,
+  open 2.7 / 2.8 s; SC-004 36 / 36 s; a new file in the 10,000-file folder recorded 3.2 / 3.1 s) SC-001 (10,000 files linked, held, unchanged: `sync()` first pass
   done < 10 s) and SC-004 (1,000 new 1 KB files copied in → all on the other device < 60 s); note the
   times in this file and research.md R6 (H14's cost)
 - [X] T027 [P] README (linked folders, trash, the shell's lines, quickstart), `CLAUDE.md` state,
