@@ -167,3 +167,9 @@ the 100 MB test pass on Node and Bare.
 - [X] T025 SC-009: test (failing first: > 120 s) paired PC + phone, 1,000 files, both closed, the PC
   reopened alone in < 5 s; `rescan` reads entries by the space, not per file (data-model.md).
   2026-10-28, this Windows PC: ~0.5 s on Node and Bare.
+- [X] T026 [US5] Rewrite `test/cli.test.js` (failing first): a PC shell and a phone shell as child
+  processes on a local DHT, driven through stdin: create, add, pair, (phone `join`, one-shot), `ls` on
+  the phone shows `pc (online)`, get, `add` on the PC while it serves; a one-shot command while the
+  shell holds the folder fails with `IN_USE`; `quit` and end of input end a shell.
+- [X] T027 [US5] `bin/swarmfs.js`: `swarmfs` / `swarmfs shell` (research R10); `serve` removed;
+  no 15 s waits in the shell. The test: ~4 s on Node, ~8 s on Bare (was 23–31 s with H12's wait).

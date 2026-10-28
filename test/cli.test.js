@@ -1,4 +1,5 @@
-// Story 5: the CLI, run as a person runs it on two machines: separate processes, one DHT.
+// Story 5: the CLI, run as a person runs it on two machines: a long-running shell on each,
+// driven through stdin; separate processes, one DHT.
 
 import test from 'brittle'
 import fs from 'fs'
@@ -6,47 +7,64 @@ import path from 'path'
 import process from 'process'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
-import { bootstrap, tmpDir, writeTree, bytes } from './helpers.js'
+import { bootstrap, tmpDir, writeTree, bytes, eventually } from './helpers.js'
 
 const CLI = fileURLToPath(new URL('../bin/swarmfs.js', import.meta.url))
 
-// timeout: the first ls waits 15 s for the space's name until hypergraph H12
-test('PC: init, create, add, pair, serve; phone: join, ls, get', { timeout: 90000 }, async (t) => {
+test('PC shell: create, add, pair, add while serving; phone: join, then a shell: ls, get', { timeout: 90000 }, async (t) => {
   const b = (await bootstrap(t))[0]
   const flags = (name) => ['--dir', tmpDir(t, name), '--name', name, '--bootstrap', `${b.host}:${b.port}`]
-  const pc = flags('pc')
-  const phone = flags('phone')
-  const disk = writeTree(tmpDir(t, 'disk'), { 'photos/a.jpg': bytes(50000), 'photos/trip/c.jpg': 'cc' })
+  const pcFlags = flags('pc')
+  const phoneFlags = flags('phone')
+  const disk = writeTree(tmpDir(t, 'disk'), { 'photos/a.jpg': bytes(50000), 'photos/trip/c.jpg': 'cc', 'late.txt': 'late' })
   const out = path.join(tmpDir(t, 'out'), 'a.jpg')
 
-  t.ok((await done(t, ['init', ...pc])).startsWith('device '), 'init')
-  t.ok((await done(t, ['create', 'My files', ...pc])).includes('My files'), 'create')
-  t.ok((await done(t, ['add', 'My files', path.join(disk, 'photos'), ...pc])).includes('\tfolder\tphotos'), 'add')
+  const pc = shell(t, pcFlags)
+  t.ok((await pc.ready()).startsWith('device '), 'the PC shell is online')
+  t.ok((await pc.do('create "My files"')).includes('My files'), 'create')
+  t.ok((await pc.do(`add "My files" "${path.join(disk, 'photos')}"`)).includes('\tfolder\tphotos'), 'add')
 
-  const pair = run(t, ['pair', ...pc])
-  const code = (await pair.line()).trim()
+  const busy = run(t, ['ls', 'My files', ...pcFlags])
+  t.is(await busy.exit(), 1, 'a one-shot command on a folder a shell holds fails')
+  t.ok(busy.stderr().includes('in use by a swarmfs shell'), `with a clear message: ${busy.stderr().trim()}`)
+
+  const code = (await pc.do('pair')).split(/\r?\n/)[0].trim()
   t.ok(code.length > 10, 'pair prints a code')
-  t.ok((await done(t, ['join', code, ...phone])).startsWith('device '), 'join')
-  t.is(await pair.exit(), 0, 'pair ends once the phone joined')
+  t.ok((await done(t, ['join', code, ...phoneFlags])).startsWith('device '), 'join')
+  t.ok(await pc.until(/added phone/), 'the PC shell says the phone joined, and stays online')
 
-  const serve = run(t, ['serve', ...pc])
-  t.ok((await serve.line()).startsWith('serving'), 'serve stays online')
-
-  const top = rows(await done(t, ['ls', 'My files', ...phone]))
-  t.is(top.length, 1)
+  const phone = shell(t, phoneFlags)
+  await phone.ready()
+  // just joined: the space and its name arrive in a moment (hypergraph H12); asking again is enough
+  const top = await eventually(async () => {
+    const r = rows(await phone.do('ls "My files"'))
+    return r.length === 1 && r
+  }, 20000)
+  t.ok(top, 'the phone lists the space')
   t.is(top[0][2], 'photos')
-  const inside = rows(await done(t, ['ls', 'My files', top[0][0], ...phone]))
-  const a = inside.find((r) => r[2] === 'a.jpg')
+  const inside = await eventually(async () => {
+    const r = rows(await phone.do(`ls "My files" ${top[0][0]}`))
+    return r.length === 2 && r.find((x) => x[2] === 'a.jpg')[4] === 'pc (online)' && r
+  }, 20000)
+  t.ok(inside, 'held by the PC, online')
   t.alike(inside.map((r) => r[2]), ['trip', 'a.jpg'], 'folders first')
+  const a = inside[1]
   t.is(a[3], '50000')
-  t.is(a[4], 'pc (online)', 'held by the PC, online')
 
-  t.ok((await done(t, ['get', 'My files', a[0], out, ...phone])).includes('50000'), 'get')
+  t.ok((await phone.do(`get "My files" ${a[0]} "${out}"`)).includes('50000'), 'get')
   t.alike(fs.readFileSync(out), fs.readFileSync(path.join(disk, 'photos/a.jpg')), 'same bytes')
+
+  t.ok((await pc.do(`add "My files" "${path.join(disk, 'late.txt')}"`)).includes('late.txt'), 'add while serving')
+  t.ok(await eventually(async () => rows(await phone.do('ls "My files"')).some((r) => r[2] === 'late.txt'), 20000), 'the phone sees it')
+
+  pc.stdin.write('quit\n')
+  t.is(await pc.exit(), 0, 'quit ends the shell')
+  phone.end()
+  t.is(await phone.exit(), 0, 'so does the end of its input')
 })
 
-// Tab-separated entry lines of `ls` (Bare on Windows ends lines with \r\n).
-const rows = (stdout) => stdout.trim().split(/\r?\n/).map((l) => l.split('\t'))
+// Tab-separated entry lines (Bare on Windows ends lines with \r\n).
+const rows = (stdout) => stdout.split(/\r?\n/).filter((l) => l.includes('\t')).map((l) => l.split('\t'))
 
 // Runs a one-shot command; its stdout once it exited cleanly.
 async function done (t, args) {
@@ -56,9 +74,27 @@ async function done (t, args) {
   return child.stdout()
 }
 
-function run (t, args) {
+// A shell: `do(line)` sends a command and resolves to what it printed, up to the next prompt.
+function shell (t, args) {
+  const child = run(t, args, 'pipe')
+  let seen = 0
+  const prompt = async () => {
+    const at = await child.until(/^>\r?\n/m, seen)
+    const printed = child.stdout().slice(seen, at.index)
+    seen = at.index + at[0].length
+    return printed
+  }
+  return {
+    ...child,
+    ready: prompt,
+    do: (line) => { child.stdin.write(line + '\n'); return prompt() },
+    end: () => child.stdin.end()
+  }
+}
+
+function run (t, args, stdin = 'ignore') {
   // process.execPath is whichever runtime runs the tests, so Node and Bare both get covered.
-  const child = spawn(process.execPath, [CLI, ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [CLI, ...args], { stdio: [stdin, 'pipe', 'pipe'] })
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', (chunk) => { stdout += chunk })
@@ -66,14 +102,16 @@ function run (t, args) {
   const exited = new Promise((resolve) => child.once('exit', resolve))
   t.teardown(() => { if (child.exitCode === null) child.kill('SIGKILL'); return exited }, { order: 50 })
   return {
+    stdin: child.stdin,
     stdout: () => stdout,
     stderr: () => stderr,
     exit: () => exited,
-    // The first line, once printed.
-    line: () => new Promise((resolve, reject) => {
+    // The first match of `re` in stdout from `from` on, once printed (the match, index in all of stdout).
+    until: (re, from = 0) => new Promise((resolve, reject) => {
       const check = () => {
-        if (stdout.includes('\n')) return resolve(stdout.slice(0, stdout.indexOf('\n')))
-        if (child.exitCode !== null) return reject(new Error(`exited before a line: ${stderr}`))
+        const m = re.exec(stdout.slice(from))
+        if (m) return resolve(Object.assign(m, { index: m.index + from }))
+        if (child.exitCode !== null) return reject(new Error(`exited before ${re}: ${stderr}`))
         setTimeout(check, 50)
       }
       check()

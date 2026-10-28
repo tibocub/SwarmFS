@@ -119,6 +119,11 @@ Source: swarmwire `main` (package `swarmwire-lib` 0.5.0, ESM), its app contract 
 
 - **Conflict with Q2** (library, client and daemon): v1 is the library and a thin CLI (story 5); a
   client and a daemon are later story 5. Matches Q2's own first step.
+- **The CLI is one long-running shell** (Tibo, lead review 2026-10-28): `swarmfs` opens the instance,
+  stays online (serves) and reads commands from stdin. The instance folder is locked while open, so a
+  separate `serve` blocked every other command; IPC to a daemon is not worth it for a trial tool.
+  `init` and `join` stay one-shot; the other one-shot commands stay for scripts and fail with
+  `IN_USE` while a shell holds the folder.
 
 ## Other answers carried over unchanged
 

@@ -23,20 +23,23 @@ works too). Public DHT; data in `~/.swarmfs` (`--dir` for another), device named
 (`--name` on its first command).
 
 ```bash
-# PC
-swarmfs create "My files"
-swarmfs add "My files" ~/photos
-swarmfs pair                      # prints a code; ends once the phone joined
-swarmfs serve                     # stays online for the phone; Ctrl+C to stop
+# PC: a shell, online (serving) until quit
+swarmfs
+> create "My files"
+> add "My files" ~/photos
+> pair                            # prints a code; the shell says "added <name>" once it joined
 
-# phone (second machine), while the PC serves
-swarmfs join <code>
-swarmfs ls "My files"             # id, kind, name, size, holders: "<pc> (online)"
-swarmfs ls "My files" <folder id>
-swarmfs get "My files" <file id> ./a.jpg
+# phone (second machine)
+swarmfs join <code>               # one-shot
+swarmfs                           # a shell there too
+> ls "My files"                   # id, kind, name, size, holders: "<pc> (online)"
+> ls "My files" <folder id>
+> get "My files" <file id> ./a.jpg
+> quit
 ```
 
-The smallest set: one-shot commands open, act, close; only `pair` (until the join) and `serve` stay
-online. `ls`/`get` wait up to 15 s for one of the person's other devices to connect, so holders show
-online. After `join`, the first `ls` waits those 15 s for the space's name (hypergraph H12); the
-space key works at once. `rescan` and `devices` as in contracts/api.md.
+The shell is online all along: holders show online or offline as they are now. Right after `join`,
+the space's name arrives a moment after it opens (hypergraph H12): `ls` answers `NOT_FOUND` until
+then; ask again (the space key works at once). The shell's commands also run one-shot for scripts
+(`swarmfs ls "My files"`: open, wait up to 15 s for another device, act, close), but not while a
+shell holds the folder (`IN_USE`). `rescan` and `devices` as in contracts/api.md.

@@ -34,20 +34,21 @@ Library: [quickstart.md](specs/001-personal-sync/quickstart.md), API: [contracts
 CLI on two machines (`npm install`, then `npx swarmfs …`, `node bin/swarmfs.js …` or `bare bin/swarmfs.js …`):
 
 ```bash
-# PC
-swarmfs create "My files"
-swarmfs add "My files" ~/photos
-swarmfs pair                      # prints a code; ends once the phone joined
-swarmfs serve                     # stays online; Ctrl+C to stop
+# PC: a shell, online (serving) until quit
+swarmfs
+> create "My files"
+> add "My files" ~/photos
+> pair                            # prints a code
 
-# second machine, while the PC serves
+# second machine
 swarmfs join <code>
-swarmfs ls "My files"
-swarmfs ls "My files" <folder id>
-swarmfs get "My files" <file id> ./a.jpg
+swarmfs
+> ls "My files"
+> ls "My files" <folder id>
+> get "My files" <file id> ./a.jpg
 ```
 
-`swarmfs` alone lists every command. Data in `~/.swarmfs` (`--dir` for another folder).
+`help` in the shell lists every command. Data in `~/.swarmfs` (`--dir` for another folder).
 
 ## Tests
 

@@ -123,11 +123,12 @@ phone's tree; rename, move and remove entries from the phone, check the PC's tre
 ### User Story 5 - Try it on two machines (Priority: P3)
 
 A thin command line lets the person do stories 1–4 on two real machines: create a space, add a
-folder, pair a device, list, fetch, rescan.
+folder, pair a device, list, fetch, rescan. A trial tool (Tibo, 2026-10-28): one long-running shell
+per machine (online all along, commands from stdin); no daemon, no IPC.
 
 **Why this priority**: lets Tibo use v1 for real; adds no behavior of its own.
 
-**Independent Test**: the CLI run as two processes against a local DHT: pair, add, list, fetch.
+**Independent Test**: a shell on each of two processes against a local DHT: pair, add, list, fetch.
 
 **Acceptance Scenarios**:
 

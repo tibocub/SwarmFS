@@ -72,6 +72,15 @@ these and doesn't edit hypergraph; the lead conversation decides.
   3013 ms no event, but now: [{"key":"adtd…","name":"My files","parent":null}]
   ```
   Cost today: the CLI test takes 15 s longer (its timeout notes H12); no workaround in SwarmFS.
+  Since the CLI is a shell (2026-10-28): no time lost there (`ls` answers `NOT_FOUND`, asked again a
+  moment later works); a one-shot `ls` right after `join` still waits its 15 s. Still wanted for apps.
+
+## Found while building (2026-10-28, lead review)
+
+- **H13 — A code for "this instance folder is open in another process".** `Hypergraph.open` on a
+  folder another process holds throws a plain `Error('File descriptor could not be locked')` (from
+  storage), no `code`. The CLI tells the person a shell holds the folder; it matches the message
+  (a shortcut, marked in `bin/swarmfs.js`). Wanted: `HypergraphError` with a code, e.g. `IN_USE`.
 
 ## For later stories (not blocking v1)
 

@@ -48,6 +48,9 @@ await sfs.rescan()                                // follow the disk: see data-m
 await sfs.close()
 ```
 
-CLI (story 5): `swarmfs [--dir d] [--name n] [--bootstrap host:port] init | pair | join <code> |
-create <name> | add <space> <path> | ls <space> [folder] | get <space> <id> <path> | rescan | devices |
-serve`. `<space>`: name or key. `pair` ends once the device joined; `serve` stays online until Ctrl+C.
+CLI (story 5): `swarmfs [--dir d] [--name n] [--bootstrap host:port] [shell]`: online until `quit`,
+end of input or Ctrl+C; reads, one per line: `create <name> | add <space> <path> | ls <space> [folder] |
+get <space> <id> <path> | rescan | devices | pair | help | quit`, each followed by a `>` line. One-shot:
+`init`, `join <code>`, and the shell's commands (scripts; `pair` then ends once the device joined;
+`ls`/`get` wait up to 15 s for another device to connect); while a shell holds the folder they fail
+with `IN_USE`. `<space>`: name or key, quoted if it has spaces.
