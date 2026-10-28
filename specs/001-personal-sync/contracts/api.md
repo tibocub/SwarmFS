@@ -35,7 +35,7 @@ await drive.list(folder = drive.top, { limit: 100, after, timeout })
 //   complete }                                   // folders first, then files, by name
 await drive.get(id)                               // one entry, same shape; NOT_FOUND
 await drive.rename(id, name)
-await drive.move(id, folder)                      // MOVE_INTO_SELF: a folder into itself or its subtree
+await drive.move(id, folder)                      // MOVE_INTO_SELF: a folder into itself or its subtree; NOT_FOUND: not a folder
 await drive.remove(id)                            // and its subtree; local files untouched
 await drive.fetch(id, localPath)                  // → { path, bytes }: bytes 0 if held here (path is
                                                   //   the existing one); EXISTS if localPath exists;

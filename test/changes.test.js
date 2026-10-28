@@ -88,14 +88,15 @@ test('rename, move and remove from the phone: the PC sees them, its files untouc
 
 test('a folder cannot move into itself or its own subtree', async (t) => {
   const pc = await device(t, 'pc')
-  const disk = writeTree(tmpDir(t, 'disk'), { 'docs/sub/deep/c.txt': 'c' })
+  const disk = writeTree(tmpDir(t, 'disk'), { 'docs/sub/deep/c.txt': 'c', 'docs/x.txt': 'x' })
   const drive = await pc.createSpace('My files')
   const docs = await drive.add(path.join(disk, 'docs'))
-  const sub = (await drive.list(docs.id)).items[0]
+  const [sub, x] = (await drive.list(docs.id)).items // folders first
   const deep = (await drive.list(sub.id)).items[0]
 
   t.is(await codeOf(drive.move(docs.id, docs.id)), 'MOVE_INTO_SELF', 'into itself')
   t.is(await codeOf(drive.move(docs.id, deep.id)), 'MOVE_INTO_SELF', 'into its subtree')
+  t.is(await codeOf(drive.move(deep.id, x.id)), 'NOT_FOUND', 'onto a file: not a folder')
   await drive.move(deep.id, drive.top)
   t.is(await names(drive), 'folder:deep folder:docs', 'a move out still works')
 })

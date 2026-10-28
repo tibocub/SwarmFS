@@ -29,8 +29,8 @@ None makes swarmwire import hypergraph.
   fetch cut short; a file rewritten keeping size and mtime is not served.
 - **S3's gap: done** (`stalled` when every peer said unavailable): a changed file answers
   `NOT_AVAILABLE` in ~0.5 s.
-- **S6: half done.** `hashFile(path)` gives the root only; SwarmFS also needs the size of the same
-  bytes, so it keeps `ContentSource.open` (unstable) for now. Wanted: `hashFile` → `{ root, size }`.
+- **S6: dropped** (2026-10-28). SwarmFS stats before and after `hashFile(path)` and hashes again if the
+  file changed; size and mtime come from that stat, so no swarmwire change and no `ContentSource`.
 
 ## New (2026-10-28) — blocks story 3
 

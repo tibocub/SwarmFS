@@ -3,7 +3,9 @@
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
-import { device, tmpDir, writeTree, snapshot, codeOf } from './helpers.js'
+import { hashFile } from 'swarmwire-lib'
+import { hash } from '../lib/holdings.js'
+import { device, tmpDir, writeTree, snapshot, codeOf, bytes } from './helpers.js'
 
 const names = (items) => items.map((i) => `${i.kind}:${i.name}`)
 
@@ -61,4 +63,15 @@ test('unknown space and entry are NOT_FOUND', async (t) => {
   const gone = await drive.add(writeTree(tmpDir(t, 'disk'), { 'f.txt': 'f' }) + '/f.txt')
   await drive.space.del(gone.id)
   t.is(await codeOf(drive.get(gone.id)), 'NOT_FOUND')
+})
+
+test('a file written while it is hashed: root, size and mtime all come from its final bytes', async (t) => {
+  const file = path.join(tmpDir(t, 'disk'), 'growing.bin')
+  fs.writeFileSync(file, bytes(8 * 1024 * 1024))
+  const hashing = hash(file)
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  fs.appendFileSync(file, 'more')
+  const got = await hashing
+  const st = fs.statSync(file)
+  t.alike(got, { root: await hashFile(file), size: st.size, mtime: Math.floor(st.mtimeMs) })
 })
