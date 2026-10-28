@@ -36,7 +36,7 @@ test('rescan: an edited file gets its new content everywhere, the old one is no 
 
   const now = await eventually(async () => {
     const e = await pd.get(a.id)
-    return e.hash !== a.hash && e
+    return e.hash !== a.hash && e.holders.length === 1 && e // the PC's held record replicates apart from the entry
   })
   t.ok(now, 'the phone sees the new content')
   t.is(now.size, 8)
