@@ -167,7 +167,7 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
 
 ## Phase 7: User Story 4 — Link a space folder on another device (P2)
 
-- [ ] T020 [US4] Write `test/link.test.js` (failing): story 4 scenarios 1–6 — `drive.link(folder, path)`
+- [X] T020 [US4] Write `test/link.test.js` (failing): story 4 scenarios 1–6 — `drive.link(folder, path)`
   into an empty path (fills); into a path with the same `b.jpg` (held, 0 bytes, not renamed), a different
   `a.jpg` (becomes `a (laptop's copy).jpg`, an entry on both devices; the space's `a.jpg` fetched), an
   extra local file (added); `drive.link(drive.top, path)`; `sfs.unlink(path)` (no more fetch, rename or
@@ -175,7 +175,7 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
   one name in a folder (put by both devices while apart) → the second placed as a conflict-copy name;
   on this (case-insensitive) disk, entries `A.jpg` and `a.jpg` → one of them placed as a conflict-copy
   name, both files there (research R9)
-- [ ] T021 [US4] `lib/drive.js` `link()` (writes `added`; checks per contracts/api.md) and
+- [X] T021 [US4] `lib/drive.js` `link()` (writes `added`; checks per contracts/api.md) and
   `lib/swarmfs.js` `unlink()`, `links()`; case-insensitivity detected once per linked folder (`stat` of
   the root with its case changed) and used when placing; `lib/sync.js`: remote pass step 5's "different content at the
   path" → conflict copy (data-model.md) then fetch; T020 green on Node and Bare
