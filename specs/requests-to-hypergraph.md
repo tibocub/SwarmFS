@@ -82,6 +82,23 @@ these and doesn't edit hypergraph; the lead conversation decides.
   storage), no `code`. The CLI tells the person a shell holds the folder; it matches the message
   (a shortcut, marked in `bin/swarmfs.js`). Wanted: `HypergraphError` with a code, e.g. `IN_USE`.
 
+## Found while planning spec 002 "always on" (2026-10-28)
+
+- **H14 — What changed, not only which types.** A device keeping a linked folder in step must learn
+  which entries were put, edited or deleted since it last looked. `space.on('change', ({ types }))`
+  names the types; queries list by put time (an edit or a delete doesn't show as "new"). So on every
+  `change` SwarmFS re-reads every `folder` and `file` record of the space and diffs: a linked folder of
+  10,000 files is 200 pages per change, even for one renamed file. Wanted, any of: the changed record
+  ids in the `change` event (with "deleted"); or a changes feed, e.g.
+  `space.changes({ since: cursor }) → { items: [{ id, type, deleted }], cursor }`. Not blocking:
+  SwarmFS re-reads (debounced 500 ms), marked `shortcut:`, measured in its 10,000-file test.
+- **H15 — Deleted, or just not here (and when).** `space.get(id)` returns `{ record: null }` both for a
+  deleted record and one not held yet. SwarmFS acts on a removal only from a complete read (so an
+  offline device's records aren't taken as deleted). It also needs the delete's stamp to settle "edited
+  on one device, deleted on the other": keep the edit if it is newer than the delete. Today such an edit
+  goes to the editing device's trash (kept, not shown). Wanted: `get()` saying `deleted: { stamp,
+  device }` (or the same in a changes feed, H14).
+
 ## For later stories (not blocking v1)
 
 - **H6 — Read-only members.** Community archives (later story 2) want readers who don't upload. A role

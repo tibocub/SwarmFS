@@ -83,9 +83,10 @@ With a floor set above the free space: nothing is fetched and the shell says why
    (a 1 MB file, local network).
 2. **Given** a file whose only holder is offline, **When** the holder comes online, **Then** the file is
    fetched without any command.
-3. **Given** a file whose content the laptop already holds elsewhere, **When** it is due, **Then** it is
-   not downloaded again (spec 001's rule); it is fetched from the other devices still, because SwarmFS
-   never copies files on its own disk (bytes stay where they are).
+3. **Given** a file whose content the laptop already holds at another path, **When** it is due,
+   **Then** it is not downloaded again (spec 001's rule): the local file is copied into place (the
+   person asked for the file in this folder; a copy in their own folder is not a store), 0 bytes
+   transferred.
 4. **Given** free space minus a file's size would fall below the floor, **When** that file is due,
    **Then** it is not fetched, nothing is left half-written, and the shell says how much is free and
    the floor; when space is freed, fetching resumes.
@@ -178,8 +179,10 @@ on each, reconnect; both devices end with both files, same names, same contents.
    gets a number: `report (laptop's copy 2).docx`.
 4. **Given** a file renamed on one device and its content edited on the other, **When** they meet,
    **Then** no content is lost; the name follows the latest change.
-5. **Given** a file deleted on one device and edited on the other while apart, **When** they meet,
-   **Then** the edited file is kept (added again as an entry), not trashed.
+5. **Given** a file deleted on one device while the other edits it and the edit isn't recorded in the
+   space yet, **When** the delete arrives, **Then** the edited file is kept (added again as an entry),
+   not trashed. (An edit already recorded before the delete arrives: kept in that device's trash —
+   FR-019.)
 
 ---
 
@@ -317,8 +320,9 @@ other, edit a file on one, see the line and the file on the other; `trash`, `tra
   version), both versions MUST be kept: the latest-winning one under the name, the other as a new entry
   `name (device's copy).ext` (device: the one whose version lost; a number added if taken), visible on
   all devices. Non-concurrent edits MUST NOT make copies.
-- **FR-019**: A file deleted on one device and edited on another concurrently MUST be kept (added
-  again as an entry).
+- **FR-019**: A file deleted on one device and edited on another concurrently MUST be kept: added
+  again as an entry if the edit had not reached the space yet; otherwise at least in the editing
+  device's trash (re-added once hypergraph tells when the delete happened: request H15).
 - **FR-020**: Concurrent renames or moves MUST settle on the latest one, the same on all devices; the
   local file follows it, no content lost.
 
@@ -406,8 +410,9 @@ Named so 002 doesn't block them; each gets its own spec.
   tests also run on Bare; folder watching on Bare relies on the system's recursive watching (Windows,
   macOS).
 - One person per space, as in v1; a local delete removes the entry for all the person's devices.
-- "Concurrent" means: an edit made from a version other than the one now in the space; detected by
-  the replaced content each edit records (no clock comparisons).
+- "Concurrent" means: the winning version doesn't descend from this device's version; detected by the
+  contents each edit replaced, which every edit records as a short history (no clock comparisons). A
+  device that missed many edits in a row may make one needless conflict copy; never a lost version.
 - Names follow hypergraph's latest-wins (concurrent renames: one wins; no copy for names).
 - Free space is that of the disk holding the linked folder, read before each fetch; the floor can be
   overridden by the app (tests; the later settings story).
