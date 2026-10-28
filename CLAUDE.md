@@ -14,6 +14,8 @@ State (2026-10-28): spec 001 (v1, personal sync) built, stories 1–5; `lib/` th
 reopen with 1,000 held files and the other device offline ~0.5 s (SC-009); the CLI is one
 long-running shell (`swarmfs`), `serve` gone; `init`/`join` seal the recovery phrase with a
 password (`SWARMFS_PASSWORD` for scripts and tests).
+Spec 002 "always on" (linked folders, trash, conflict copies; constitution 1.1.0) written in
+`specs/002-always-on/`, awaiting the lead's review before implementing.
 
 ## Governing documents
 
