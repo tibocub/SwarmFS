@@ -56,6 +56,8 @@ Spec 001's research (R1–R10) still holds unless replaced here.
   16 roots × 65 bytes ≈ 1 KB per edit at most.
 - **Mistakes are safe either way**: a chain cut short (17+ edits missed) makes an extra conflict copy;
   nothing is ever lost (the trash catches the other direction).
+- **The limit lives in the rule, not the field** (lead review 2026-10-28): rule `swarmfs/base-v1`
+  accepts 1-16 roots; a later rule id can accept more. The field (`base: 'string'`) is permanent.
 - **Rejected**: one root (above); hypergraph exposing concurrent versions (request H7, still open: if
   hypergraph adds it, `base` stays harmless); version vectors (per-device counters: bigger, same result
   for one person).
@@ -95,11 +97,21 @@ Spec 001's research (R1–R10) still holds unless replaced here.
   dirty (a folder: walked). Every 500 ms, dirty paths whose size and mtime haven't changed for 2 s
   (**Tibo**) are taken as one batch.
 - **A batch**: new paths hashed; gone `held` paths; renames found before removals:
-  - a file: gone and new with the same size and mtime, and the same name (a move) or the same folder
-    (a rename) → the entry is renamed/moved, not hashed again; other new files are hashed, and a hash
-    equal to a gone file's root is a rename/move too.
-  - a folder: a gone folder and a new folder in one batch whose files (relative names, sizes, mtimes)
-    are the same → the folder entry is renamed/moved; its files keep their entries.
+  - a file: gone and new with the same **file identity** (`ino` from `stat`, which a rename keeps),
+    size and mtime → the entry is renamed/moved, not hashed again. Size + mtime alone can mislabel two
+    files (copy tools keep mtime: delete `a.jpg`, copy in a different `b.jpg` of the same size), so
+    without a usable `ino` (unknown or 0) new files are hashed, and a hash equal to a gone file's root
+    is the rename/move (lead review 2026-10-28).
+  - `ino` is not recorded: `held` has no field for it. `sync()` keeps each held path's `ino` in memory
+    from the `stat`s it makes anyway (first pass, each batch). Gone files of the first pass (changes
+    made while closed) have no known `ino` → hashed (correct, slower for big renamed files).
+  - Checked 2026-10-28 on this Windows PC (NTFS): Node `fs.promises.stat` and bare-fs `stat` both give a
+    non-zero `ino` (e.g. `281474979734290`, below 2^53), the same after a rename, a different one for a
+    new file at the old name. On FAT/exFAT drives `ino` may not be stable: hashing covers it when 0;
+    a non-zero but unstable `ino` can only cause a missed match (a hash then), never a wrong one,
+    because size and mtime must match too.
+  - a folder: a gone folder and a new folder in one batch whose files (relative names, `ino`s, sizes,
+    mtimes) are the same → the folder entry is renamed/moved; its files keep their entries.
   - what's left: new → entries; gone → entries removed (`del`, subtree first), `held` deleted.
 - **Pause first**: before a batch or a reconcile, the linked folder's root is `stat`ed; missing or
   unreadable → paused (nothing done), checked again every 10 s (**Tibo**: a vanished linked folder is
@@ -109,7 +121,9 @@ Spec 001's research (R1–R10) still holds unless replaced here.
   made while closed are found the same way (size + mtime), so nothing is re-uploaded.
 - **Bare on Linux**: libuv's recursive flag works on Windows and macOS only; on Linux, Bare would see
   the root folder's events only. Desktops run the shell on Node (Node watches recursively on Linux).
-  Not a SwarmFS request (bare-fs, not hypergraph/swarmwire); noted for the lead.
+  A later story (spec, later story 7: a Pear desktop app on Bare), not 002.
+- **Checked 2026-10-28** (Windows, Node and Bare): a file written in a new sub-folder gives `rename`
+  and `change` events for `sub` and `sub\x.txt` (paths relative to the root, `\` separators).
 - **Rejected**: periodic full rescans (slow on 10,000 files, misses the 10 s target); chokidar (a
   dependency, not Holepunch-stack, not on Bare).
 
@@ -140,11 +154,30 @@ Spec 001's research (R1–R10) still holds unless replaced here.
 - **Content already held here at another path** (spec 001: never downloaded again): copied from that
   path into `.incoming/<root>` (`fs.copyFile`), checked unchanged (size + mtime as `localPath` does)
   after, then placed like a fetch. 0 bytes transferred. A copy in the person's own folder, asked for by
-  linking it, is not a store (constitution I). This worker's decision.
+  linking it, is not a store (constitution I). **Tibo, 2026-10-28: yes; no hard links.**
+- **Case-insensitive disks** (lead review 2026-10-28): `A.jpg` and `a.jpg` are one path on Windows and
+  macOS (default). Once per linked folder, SwarmFS `stat`s its root with the case changed: found → the
+  disk is case-insensitive, and names are compared case-insensitively when placing: a second entry
+  whose name differs only by case is placed under a conflict-copy name, like two entries of the same
+  name. (Checked on this PC: the root path upper-cased is found.)
 - **Names not valid on this disk** (Windows: `<>:"|?*`, trailing dot or space, `CON`, `NUL`…): not
   fetched, an event says so; the entry stays.
 - **Rejected**: downloading straight to the target (swarmwire's rename would replace a file the
   person just made there); a trash outside the linked folder (a move across disks copies bytes).
+
+## R13. The mass-delete guard
+
+- **Decision** (**Tibo**, lead review 2026-10-28): before applying a local batch's removals, count the
+  linked folder's held files and the batch's gone ones. More than half and more than 100 → none of the
+  batch's removals is applied; the folder is paused with reason `mass-delete` (apart from `missing`);
+  `sync` event `{ action: 'paused', reason: 'mass-delete', count }`. While so paused, nothing is done
+  in that folder (no remote pass either); every 10 s and on watch events the count is taken again:
+  below the threshold (files restored) → resumed, the batch processed normally (what is still gone is
+  removed: a small delete). `sfs.confirm(path)` applies the pending removals and resumes. The shell:
+  `confirm <folder>`.
+- **Why "and more than 100"**: a small folder emptied on purpose (80 of 100 files) shouldn't need a
+  confirmation; a large one losing most files at once is the failure Tibo wants stopped.
+- Counted on files only (folders follow their files).
 
 ## R10. Free-space floor
 
@@ -152,6 +185,8 @@ Spec 001's research (R1–R10) still holds unless replaced here.
   `statfs`): free = `bavail × bsize`, disk = `blocks × bsize`; floor = max(5 GB, 5 % of disk). A fetch
   starts only if free − size ≥ floor; while fetching, checked on `progress` (at most once a second) and
   stopped (resumable) below it. One `low-space` event per linked folder until space is back.
+- **This PC** (2026-10-28): 57 GB free on a 1 TB disk → floor 50 GB: the shell fetches only while more
+  than 50 GB stay free. Tests pass `minFree: 0`.
 - **Tests**: `SwarmFS.open(dir, { minFree })` overrides the floor in bytes (a test can't fill a disk;
   the later "settings" story uses the same option). This worker's decision.
 

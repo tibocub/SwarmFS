@@ -43,7 +43,8 @@ file: {
 
 ## Runtime state (memory only, per `sync()`)
 
-- Per linked folder: `paused` (root missing or unreadable), its watcher, its dirty paths with their
+- Per linked folder: `paused` (`missing` or `mass-delete`, with the pending removals), `ino` per held
+  path, case-insensitive or not, its watcher, its dirty paths with their
   last (size, mtime, seen at), `low` (the free-space floor was hit), its compiled ignore rules.
 - Per instance: the due fetches (entry ids per linked folder) and the downloads running.
 
@@ -52,19 +53,25 @@ file: {
 One linked folder `L` (space `S`, folder `F`, path `P`); `E` the entries under `F` (paths from their
 names, `F` = `P`); `Hd` this device's `held` under `P`. Runs as one serialized step per `L`.
 
-**Paused**: `stat(P)` fails or `P` isn't a readable folder → nothing below runs; `paused` event; checked
-again every 10 s; back → `resumed`, a full local pass, then a remote pass.
+**Paused** (reason `missing`): `stat(P)` fails or `P` isn't a readable folder → nothing below runs;
+`paused` event; checked again every 10 s; back → `resumed`, a full local pass, then a remote pass.
+
+**Paused** (reason `mass-delete`, research R13): a local batch whose gone files are more than half of
+the folder's held files and more than 100 → none of its removals applied, nothing else done in the
+folder; `sfs.confirm(P)` → the removals applied, resumed; the files back (count again every 10 s and on
+watch events) → resumed.
 
 **Local pass** (a batch of settled dirty paths; at `sync()` start and after resume: every path):
 1. Ignored paths dropped (fixed list, `P/.swarmfsignore`).
-2. Moves (research R7): gone `held` + new path matched by size + mtime (+ same name or same folder),
-   or by hash → `S.edit(entry, { name, parent })`, `held` re-put at the new path. Folder moves by their
+2. Moves (research R7): gone `held` + new path with the same `ino` (kept in memory, non-zero), size and
+   mtime, or else the same hash → `S.edit(entry, { name, parent })`, `held` re-put at the new path. Folder moves by their
    files' names/sizes/mtimes → the folder entry edited; its files' `held` re-put.
 3. New file → hash → `S.put('file', { name, parent, content })` + `held`. New folder → `put('folder')` +
    folder `held`.
 4. Changed file (size or mtime ≠ `held`) → hash; root = `held.root` → only `held` refreshed; else R4's
    rule: entry content `C = H` → `edit(content, base)`; `C ≠ H` → conflict copy (below).
-5. Gone file/folder (in `Hd`, missing, `P` present) → `S.del` (subtree, deepest first), `held` deleted.
+5. Mass-delete check (R13) before any removal.
+6. Gone file/folder (in `Hd`, missing, `P` present) → `S.del` (subtree, deepest first), `held` deleted.
    Single added files keep v1's rule: entry kept, `held` deleted.
 
 **Remote pass** (on `change`, `peers`, timers; needs a complete read of `S`'s folders and files to act
@@ -80,6 +87,10 @@ on removals):
    different → conflict copy of the local file, then fetch. No local file → due: copied if this device
    holds the content at another path (`localPath`), else fetched when a holder is online — if the name
    is valid here, it isn't ignored and the floor allows.
+
+**Case-insensitive disk** (R9, detected once per linked folder): names compared case-insensitively
+when placing; an entry whose path is taken by another entry differing only by case → placed under a
+conflict-copy name (not a new entry: the copy name is local only).
 
 **Conflict copy** of local file `X` (content `R`) for entry `id` (`name.ext`): rename `X` to the first
 free `name (<this device>'s copy[ N]).ext` in its folder; `put('file', { name: copyName, parent, content:

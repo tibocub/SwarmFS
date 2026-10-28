@@ -195,8 +195,14 @@ shell says it is paused. When it is back, SwarmFS resumes and catches up with wh
 **Why this priority**: without it, unplugging a drive would remove every entry for every device — the
 worst failure a sync tool can have.
 
+The same pause guards against a mass delete (Tibo, lead review 2026-10-28): if one change on disk
+would remove more than half of a linked folder's files and more than 100 files, SwarmFS doesn't apply
+it. It pauses that folder, says why, and waits: `confirm <folder>` applies the removals, or the person
+restores the files and it resumes.
+
 **Independent Test**: two devices: rename the linked folder's root away (as an unplug does), check no
-entry removed on either device; rename it back, check sync resumes.
+entry removed on either device; rename it back, check sync resumes. Empty a 1,000-file linked folder:
+0 entries removed until confirmed.
 
 **Acceptance Scenarios**:
 
@@ -208,6 +214,12 @@ entry removed on either device; rename it back, check sync resumes.
    both ways (local changes made elsewhere meanwhile, files missing here), and the shell says so.
 4. **Given** SwarmFS starting while a linked folder is unplugged, **When** it starts, **Then** that
    folder starts paused.
+5. **Given** a linked folder of 1,000 files, **When** the person (or a program) deletes 600 of them,
+   **Then** 0 entries are removed, the folder is paused for a mass delete and the shell says so;
+   **When** the person confirms, **Then** the 600 entries are removed; **When** instead they restore
+   the files, **Then** it resumes with nothing removed.
+6. **Given** 80 of 100 files deleted (not more than 100), or 150 of 1,000 (not more than half),
+   **When** SwarmFS sees it, **Then** the removals are applied as usual.
 
 ---
 
@@ -233,6 +245,13 @@ other, edit a file on one, see the line and the file on the other; `trash`, `tra
    opens, acts, closes, as in v1).
 
 ### Edge Cases
+
+- **Many files deleted at once** (a wrong command, a program emptying the folder, a drive half
+  failing): more than half of a linked folder's files and more than 100 in one change → paused until
+  confirmed (story 6).
+- **Names differing only by case** (`A.jpg` and `a.jpg`, both valid on Linux): on a case-insensitive
+  disk (Windows, macOS by default) they are one path; the second placed gets a conflict-copy name,
+  like two entries of the same name.
 
 - **A local change while SwarmFS is not running** (shell closed, PC off): picked up when the shell
   starts — saved, created, deleted, renamed and moved files alike (a renamed file isn't re-uploaded).
@@ -335,6 +354,10 @@ other, edit a file on one, see the line and the file on the other; `trash`, `tra
 - **FR-022**: A linked folder whose root is missing or unreadable MUST be paused: no entry removed or
   changed because of it, nothing written into it; it MUST resume within 15 s of being back, catching
   up both ways, and start paused if it is missing when syncing starts.
+- **FR-029**: A local change that would remove more than half of a linked folder's files and more than
+  100 files MUST NOT be applied: the folder MUST be paused for a mass delete (said apart from "missing"),
+  until the person confirms (the removals are applied) or the files are back (it resumes, nothing
+  removed).
 - **FR-023**: Remote removals MUST be applied only from a complete view of the space (never because
   an entry is merely not seen yet while another device is offline).
 
@@ -383,6 +406,8 @@ other, edit a file on one, see the line and the file on the other; `trash`, `tra
   only `trash empty`, confirmed, deletes bytes.
 - **SC-007**: A linked folder unplugged (root gone) removes 0 entries on every device and moves 0 files to
   any trash; sync resumes within 15 seconds of it being back.
+- **SC-012**: Emptying a 1,000-file linked folder (the folder itself still there) removes 0 entries on
+  every device until the person confirms; after confirming, all 1,000 are removed within 15 seconds.
 - **SC-008**: With the floor above the free space, 0 files are fetched and the shell says why; with space
   back, fetching resumes within 15 seconds.
 - **SC-009**: Concurrent edits of one file on two devices end, within 20 seconds of reconnecting, with
@@ -404,12 +429,15 @@ Named so 002 doesn't block them; each gets its own spec.
 6. **Shared workspaces**: spaces with other people (spec 001's later story 1), with swarmwire's
    `resolve` scoped by peer and space (lead review 2026-10-28); conflict copies already work across
    members.
+7. **Recursive watching on Bare on Linux**: a Pear desktop app runs on Bare, where libuv's recursive
+   watch works on Windows and macOS only. A known gap, solved then: one watcher per folder, or an
+   upstream bare-fs change. Not in 002 (the shell runs on Node; the suite runs on Bare on Windows).
 
 ## Assumptions
 
 - Desktops only (Windows, macOS, Linux); the person runs the shell (Node) on each. The library and its
   tests also run on Bare; folder watching on Bare relies on the system's recursive watching (Windows,
-  macOS).
+  macOS; Linux: later story 7).
 - One person per space, as in v1; a local delete removes the entry for all the person's devices.
 - "Concurrent" means: the winning version doesn't descend from this device's version; detected by the
   contents each edit replaced, which every edit records as a short history (no clock comparisons). A

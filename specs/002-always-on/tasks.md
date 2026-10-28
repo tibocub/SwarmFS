@@ -70,7 +70,9 @@ place, or byte-identical in a `.swarmfs-trash/<time>/` folder (a helper, T003).
   `.swarmfsignore` itself an entry), a single added file edited (entry updated) and deleted (entry
   kept); a folder renamed (folder entry renamed, file entries unchanged, nothing hashed: no `updated`);
   a `.swarmfsignore` line added later applies to new files only (entries already there stay);
-  changes made while closed found at `sync()` start (FR-011: a rename isn't re-hashed); `add` of a path
+  one file deleted and a different one of the same size and mtime created in one batch → two
+  entries with the right contents (not a rename: research R7's `ino`); changes made while closed found
+  at `sync()` start (FR-011: a rename isn't re-hashed); `add` of a path
   inside a linked folder → `EXISTS`
 - [ ] T009 [US1] `lib/watch.js`: a recursive watcher per linked folder root and a non-recursive one per
   single added file's folder; dirty relative paths (a folder: walked); every 500 ms the paths whose size
@@ -155,6 +157,14 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
 
 ---
 
+- [ ] T029 [US6] Extend `test/pause.test.js` (failing): story 6 scenarios 5–6 — 600 of 1,000 files of a
+  linked folder deleted (root still there) → 0 entries removed on both devices, `paused` with reason
+  `mass-delete` and `count: 600` (SC-012); `sfs.confirm(path)` → the 600 removed on both within 15 s;
+  again, but the files restored → `resumed`, nothing removed; 80 of 100 and 150 of 1,000 deleted →
+  removed as usual
+- [ ] T030 [US6] `lib/sync.js`: the mass-delete check (research R13) before a local batch's removals;
+  `confirm(path)` in `lib/swarmfs.js`; `links()` gives the reason; T029 green on Node and Bare
+
 ## Phase 7: User Story 4 — Link a space folder on another device (P2)
 
 - [ ] T020 [US4] Write `test/link.test.js` (failing): story 4 scenarios 1–6 — `drive.link(folder, path)`
@@ -162,9 +172,12 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
   `a.jpg` (becomes `a (laptop's copy).jpg`, an entry on both devices; the space's `a.jpg` fetched), an
   extra local file (added); `drive.link(drive.top, path)`; `sfs.unlink(path)` (no more fetch, rename or
   follow; no file or entry removed; `.incoming` gone); overlap and already-linked → `EXISTS`; `links()`, also after a reopen (FR-005); two entries of
-  one name in a folder (put by both devices while apart) → the second placed as a conflict-copy name
+  one name in a folder (put by both devices while apart) → the second placed as a conflict-copy name;
+  on this (case-insensitive) disk, entries `A.jpg` and `a.jpg` → one of them placed as a conflict-copy
+  name, both files there (research R9)
 - [ ] T021 [US4] `lib/drive.js` `link()` (writes `added`; checks per contracts/api.md) and
-  `lib/swarmfs.js` `unlink()`, `links()`; `lib/sync.js`: remote pass step 5's "different content at the
+  `lib/swarmfs.js` `unlink()`, `links()`; case-insensitivity detected once per linked folder (`stat` of
+  the root with its case changed) and used when placing; `lib/sync.js`: remote pass step 5's "different content at the
   path" → conflict copy (data-model.md) then fetch; T020 green on Node and Bare
 
 ---
@@ -191,7 +204,8 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
   `unlink`; `trash` lists; `trash empty` asks, `no` keeps, `yes` empties; a one-shot `ls` doesn't sync
   (no `.incoming`, no fetch)
 - [ ] T025 [US7] `bin/swarmfs.js`: the shell calls `sync()` and prints one line per `sync` event
-  (contracts/api.md); commands `link`, `unlink`, `links`, `trash`, `trash empty` (confirmation on stdin);
+  (contracts/api.md); commands `link`, `unlink`, `links`, `confirm`, `trash`, `trash empty` (confirmation
+  on stdin);
   usage text; T024 green on Node and Bare
 
 ---
@@ -208,6 +222,8 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
   checked by reading (hard to provoke in a test); update `specs/requests-to-*.md` with anything found while building
 
 ## Dependencies
+
+- T029–T030 (lead review 2026-10-28) belong to story 6; numbered last to keep earlier ids stable.
 
 - Setup (T001–T003) → Foundational (T004–T007) → stories.
 - US1 → US2 (the remote pass uses US1's `sync()` loop) → US3 (same file, `lib/sync.js`) → US6 (proves

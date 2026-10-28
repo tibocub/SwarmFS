@@ -19,6 +19,9 @@ await drive.link(folder, localPath) // link a space folder (an id, or drive.top)
                                     //   already linked here; NOT_FOUND: no such folder
 await sfs.unlink(localPath)         // stop following it; no file, no entry removed; NOT_FOUND
 sfs.links()                         // sync: [{ path, space, folder, paused }] on this device
+                                    //   paused: null | 'missing' | 'mass-delete'
+await sfs.confirm(localPath)        // a folder paused for a mass delete: apply the removals, resume;
+                                    //   NOT_FOUND if not linked or not so paused
 
 await sfs.sync()                    // start: watch linked folders and single added files, fetch
                                     //   what's missing, apply changes made elsewhere, until close();
@@ -30,7 +33,8 @@ sfs.on('sync', (e) => {})           // one per action:
 //   space, path,            // path: local, absolute
 //   to,                     // renamed/moved: the new path; conflict: the copy's path
 //   free, floor,            // low-space: bytes
-//   reason }                // skipped: 'name' (not valid on this disk); error: the message
+//   reason,                 // paused: 'missing' | 'mass-delete'; skipped: 'name'; error: the message
+//   count }                 // paused for a mass delete: files the change would remove
 
 await sfs.trash()                   // [{ folder, path, size, trashed }]: every linked folder's trash
                                     //   (folder: the linked folder's path; path: where the file was,
@@ -56,6 +60,8 @@ updated   <path>
 trashed   <path>
 conflict  <path> -> <copy path>
 paused    <linked folder> (not found: unplugged?)
+paused    <linked folder>: 600 files deleted at once; "confirm <folder>" removes them everywhere,
+          or restore them
 resumed   <linked folder>
 low-space <linked folder>: 3.2 GB free, floor 5.0 GB; fetching stopped
 skipped   <path> (name not valid on this disk)
@@ -66,7 +72,8 @@ New commands (shell and one-shot):
 ```text
 link <space> <folder> <path>   link a space folder (id from ls, or the space's name/key for its top)
 unlink <path>                  stop syncing it; files and entries stay
-links                          linked folders here: path, space, paused or not
+links                          linked folders here: path, space, paused or not (and why)
+confirm <path>                 apply a mass delete the folder was paused for
 trash                          what is in the trash: folder, path, size, when
 trash empty                    asks "delete N files (X MB) for good? (yes/no)"; only "yes" empties
 ```
