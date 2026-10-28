@@ -21,6 +21,13 @@ const USAGE = `usage: swarmfs [command] [--dir <folder>] [--name <device name>] 
   ls <space> [folder]        entries: id, kind, name, size, holders
   get <space> <id> <path>    fetch a file to <path>
   rescan                     follow the disk
+  link <space> <folder> <path>  sync a space folder (id from ls; the space's name for its
+                             top) with a local folder, both ways (the shell keeps it in sync)
+  unlink <path>              stop syncing it; files and entries stay
+  links                      linked folders here
+  confirm <path>             apply a mass delete a linked folder was paused for
+  trash                      what syncing replaced or removed (kept until emptied)
+  trash empty                delete it for good (asks first)
   devices                    this person's devices
   pair                       print a code for a new device (one-shot: ends once it joined);
                              asks for the password (once per shell)
@@ -28,7 +35,8 @@ const USAGE = `usage: swarmfs [command] [--dir <folder>] [--name <device name>] 
 <space>: a name or a key, quoted if it has spaces. --dir: default ~/.swarmfs. --name: this
 device's name when made (default: the host name). --bootstrap: a private DHT (tests).
 The password keeps the recovery phrase sealed in the folder; typed hidden, or taken from
-SWARMFS_PASSWORD (scripts, tests).`
+SWARMFS_PASSWORD (scripts, tests). Syncing leaves max(5 GB, 5 % of the disk) free;
+SWARMFS_MIN_FREE (bytes) sets another floor.`
 
 const WAIT = 15000 // how long a one-shot command waits for the person's other devices to connect
 
@@ -77,6 +85,41 @@ const commands = {
 
   rescan: (sfs) => sfs.rescan(),
 
+  link: async (sfs, space, folder, local) => {
+    const d = await drive(sfs, space)
+    await d.link(folder === space || folder === d.key ? d.top : folder, local)
+    console.log(`linked ${path.resolve(local)}`)
+  },
+
+  unlink: async (sfs, local) => {
+    await sfs.unlink(local)
+    console.log(`unlinked ${path.resolve(local)}`)
+  },
+
+  links: async (sfs) => {
+    const names = new Map(sfs.spaces().map((s) => [s.key, s.name]))
+    for (const l of await sfs.links()) console.log(`${l.path}\t${names.get(l.space) || l.space}${l.paused ? `\tpaused (${l.paused})` : ''}`)
+  },
+
+  confirm: async (sfs, local) => {
+    await sfs.confirm(local)
+    console.log(`removed what was deleted in ${path.resolve(local)}`)
+  },
+
+  trash: async (sfs, what) => {
+    const items = await sfs.trash()
+    if (what !== 'empty') {
+      for (const i of items) console.log(`${i.folder}\t${i.path}\t${i.size}\t${new Date(i.trashed).toISOString()}`)
+      if (!items.length) console.log('the trash is empty')
+      return
+    }
+    const bytes = items.reduce((n, i) => n + i.size, 0)
+    console.log(`delete ${items.length} files (${mb(bytes)}) for good? (yes/no)`)
+    if ((await nextLine())?.trim() !== 'yes') return console.log('kept')
+    const done = await sfs.emptyTrash()
+    console.log(`deleted ${done.files} files (${mb(done.bytes)})`)
+  },
+
   devices: async (sfs) => {
     for (const d of await sfs.devices()) {
       console.log(`${d.publicKey}\t${d.name}\t${d.online ? 'online' : 'offline'}${d.current ? '\t(this device)' : ''}`)
@@ -108,6 +151,7 @@ if (!inShell && !commands[command]) {
       password: pass ?? undefined,
       deviceName: name,
       joinCode: command === 'join' ? rest[0] : undefined,
+      minFree: process.env.SWARMFS_MIN_FREE ? Number(process.env.SWARMFS_MIN_FREE) : undefined,
       bootstrap: node ? [{ host, port: Number(port) }] : undefined
     })
     if (inShell) await shell(sfs)
@@ -124,6 +168,8 @@ if (!inShell && !commands[command]) {
 // Commands from stdin, one at a time, each followed by a `>` line (the prompt).
 async function shell (sfs) {
   console.log(`device ${sfs.device} (${name}), online; "help" lists the commands`)
+  sfs.on('sync', (e) => console.log(syncLine(e)))
+  await sfs.sync() // linked folders kept in sync while the shell runs (spec 002)
   process.once('SIGINT', () => push('quit'))
   for (;;) {
     console.log('>')
@@ -238,6 +284,21 @@ function until (emitter, event, check) {
     test()
   })
 }
+
+// One thing sync did (contracts/api.md), as a line: never tab-separated, unlike entries.
+function syncLine (e) {
+  const word = e.action.padEnd(9)
+  if (e.action === 'paused' && e.reason === 'missing') return `${word} ${e.path} (not found: unplugged?)`
+  if (e.action === 'paused') return `${word} ${e.path}: ${e.count} files deleted at once; "confirm ${e.path}" removes them everywhere, or restore them`
+  if (e.action === 'low-space') return `${word} ${e.path}: ${gb(e.free)} free, floor ${gb(e.floor)}; fetching stopped`
+  if (e.action === 'skipped') return `${word} ${e.path} (name not valid on this disk)`
+  if (e.action === 'error') return `${word} ${e.path || ''}: ${e.reason}`
+  return e.to ? `${word} ${e.path} -> ${e.to}` : `${word} ${e.path}`
+}
+
+// declarations, not consts: the shell runs (top-level await) before the end of this file is reached
+function gb (n) { return `${(n / 1e9).toFixed(1)} GB` }
+function mb (n) { return `${(n / 1e6).toFixed(1)} MB` }
 
 // One entry, tab-separated: id, kind, name, size, holders.
 function line (e) {

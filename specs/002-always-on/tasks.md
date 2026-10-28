@@ -199,11 +199,11 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
 
 ## Phase 9: User Story 7 — The shell does it all (P3)
 
-- [ ] T024 [US7] Extend `test/cli.test.js` (failing): two shells; `add` a folder on the PC, `link` it on
+- [X] T024 [US7] Extend `test/cli.test.js` (failing): two shells; `add` a folder on the PC, `link` it on
   the laptop shell; a file written on the PC → a `fetched` line on the laptop and the file there; `links`;
   `unlink`; `trash` lists; `trash empty` asks, `no` keeps, `yes` empties; a one-shot `ls` doesn't sync
   (no `.incoming`, no fetch)
-- [ ] T025 [US7] `bin/swarmfs.js`: the shell calls `sync()` and prints one line per `sync` event
+- [X] T025 [US7] `bin/swarmfs.js`: the shell calls `sync()` and prints one line per `sync` event
   (contracts/api.md); commands `link`, `unlink`, `links`, `confirm`, `trash`, `trash empty` (confirmation
   on stdin);
   usage text; T024 green on Node and Bare

@@ -93,6 +93,60 @@ test('PC shell: create, add, pair, add while serving; phone: join, then a shell:
   t.is(words.split(' ').length, 24, 'the phone keeps the phrase behind the password it joined with')
 })
 
+test('spec 002: two shells keep a linked folder in sync; link, links, trash, trash empty, unlink', { timeout: 150000 }, async (t) => {
+  const b = (await bootstrap(t))[0]
+  const flags = (name) => ['--dir', tmpDir(t, name), '--name', name, '--bootstrap', `${b.host}:${b.port}`]
+  const pcFlags = flags('pc')
+  const laptopFlags = flags('laptop')
+  const disk = writeTree(tmpDir(t, 'disk'), { 'photos/a.jpg': 'aaaa', 'photos/b.jpg': 'bbbb' })
+  const there = path.join(tmpDir(t, 'laptop-disk'), 'photos')
+  const env = { ...withPassword, SWARMFS_MIN_FREE: '0' } // the test disk may be nearly full
+
+  t.ok((await done(t, ['init', ...pcFlags], env)).startsWith('device '))
+  const floor = { SWARMFS_MIN_FREE: '0' }
+  const pc = shell(t, pcFlags, floor)
+  await pc.ready()
+  await pc.do('create "My files"')
+  const code = (await pc.do('pair\n' + PASSWORD)).split(/\r?\n/)[1].trim()
+  await done(t, ['join', code, ...laptopFlags], env)
+  await pc.until(/added laptop/)
+  const photos = rows(await pc.do(`add "My files" "${path.join(disk, 'photos')}"`))[0]
+
+  const laptop = shell(t, laptopFlags, floor)
+  await laptop.ready()
+  t.ok(await eventually(async () => rows(await laptop.do(`ls "My files" ${photos[0]}`)).length === 2, 20000), 'the laptop sees photos/')
+  t.ok((await laptop.do(`link "My files" ${photos[0]} "${there}"`)).includes('linked'), 'link')
+  t.ok(await laptop.until(/^fetched\s+.*b\.jpg/m), 'a line per fetched file')
+  t.ok(await eventually(() => fs.existsSync(path.join(there, 'b.jpg')), 10000), 'on disk')
+  t.ok((await laptop.do('links')).includes(there), 'links')
+
+  fs.writeFileSync(path.join(disk, 'photos', 'new.jpg'), 'new on the PC')
+  t.ok(await laptop.until(/^fetched\s+.*new\.jpg/m), 'a file written on the PC: fetched on the laptop, said')
+  t.is(fs.readFileSync(path.join(there, 'new.jpg'), 'utf8'), 'new on the PC')
+
+  fs.rmSync(path.join(disk, 'photos', 'a.jpg'))
+  t.ok(await laptop.until(/^trashed\s+.*a\.jpg/m), 'a file deleted on the PC: trashed on the laptop, said')
+  t.ok(rows(await laptop.do('trash')).some((r) => r[1] === 'a.jpg'), 'trash lists it')
+  const kept = await laptop.do('trash empty\nno')
+  t.ok(kept.includes('delete 1 files'), 'trash empty asks, saying how much')
+  t.ok(kept.includes('kept'), '"no" keeps it')
+  t.ok(rows(await laptop.do('trash')).some((r) => r[1] === 'a.jpg'), 'still there')
+  t.ok((await laptop.do('trash empty\nyes')).includes('deleted 1 files'), '"yes" empties it')
+  t.ok((await laptop.do('trash')).includes('the trash is empty'))
+
+  t.ok((await laptop.do(`unlink "${there}"`)).includes('unlinked'), 'unlink')
+  laptop.stdin.write('quit\n')
+  t.is(await laptop.exit(), 0)
+
+  // a one-shot command doesn't sync
+  fs.writeFileSync(path.join(disk, 'photos', 'later.jpg'), 'later')
+  await new Promise((resolve) => setTimeout(resolve, 3000))
+  await done(t, ['ls', 'My files', ...laptopFlags], env)
+  t.absent(fs.existsSync(path.join(there, 'later.jpg')), 'one-shot ls fetched nothing')
+  pc.stdin.write('quit\n')
+  t.is(await pc.exit(), 0)
+})
+
 // Every file under `dir`.
 function files (dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? files(path.join(dir, e.name)) : [path.join(dir, e.name)])
@@ -110,8 +164,8 @@ async function done (t, args, env) {
 }
 
 // A shell: `do(line)` sends a command and resolves to what it printed, up to the next prompt.
-function shell (t, args) {
-  const child = run(t, args, 'pipe')
+function shell (t, args, env) {
+  const child = run(t, args, 'pipe', env)
   let seen = 0
   const prompt = async () => {
     const at = await child.until(/^>\r?\n/m, seen)

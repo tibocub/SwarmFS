@@ -18,7 +18,7 @@ await drive.link(folder, localPath) // link a space folder (an id, or drive.top)
                                     //   EXISTS: overlaps a linked folder here, or that folder is
                                     //   already linked here; NOT_FOUND: no such folder
 await sfs.unlink(localPath)         // stop following it; no file, no entry removed; NOT_FOUND
-sfs.links()                         // sync: [{ path, space, folder, paused }] on this device
+await sfs.links()                   // [{ path, space, folder, paused }] on this device
                                     //   paused: null | 'missing' | 'mass-delete'
 await sfs.confirm(localPath)        // a folder paused for a mass delete: apply the removals, resume;
                                     //   NOT_FOUND if not linked or not so paused
@@ -78,5 +78,6 @@ trash                          what is in the trash: folder, path, size, when
 trash empty                    asks "delete N files (X MB) for good? (yes/no)"; only "yes" empties
 ```
 
+`SWARMFS_MIN_FREE` (bytes) sets the floor for the shell (tests; the settings story later).
 One-shot commands never call `sync()` (as v1: open, act, close). `trash empty` one-shot asks too
 (stdin: a script pipes `yes`).
