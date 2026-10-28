@@ -8,6 +8,10 @@ SwarmFS: folders and files as records in hypergraph spaces (`require('hypergraph
 bytes through swarmwire. A library first (plus a thin CLI to try it). The rewrite started
 2026-10-22; `E:\Code\P2P\SwarmFS-old` is the previous code, reference only, never edited.
 
+State (2026-10-28): spec 001 (v1, personal sync) built, stories 1–5; `lib/` the library,
+`bin/swarmfs.js` the CLI (no logic of its own), `test/` scenario tests on Node and Bare
+(`npm run test:all`). Open requests: `specs/requests-to-*.md`.
+
 ## Governing documents
 
 - `.specify/memory/constitution.md` — binding. Bytes stay where they are; test-first through
@@ -36,7 +40,8 @@ bytes through swarmwire. A library first (plus a thin CLI to try it). The rewrit
 Sibling repos as local paths (`"hypergraph": "file:../hypergraph"`, `"swarmwire-lib":
 "file:../swarmwire"`, swarmwire's branch `main`; its app contract is `docs/contract.md`):
 `npm install` makes junctions. Never `ln -s` on Windows (it copies);
-see ECOSYSTEM.md. hypergraph is CommonJS, swarmwire is ESM; SwarmFS is ESM.
+see ECOSYSTEM.md. In a worktree under `.claude/worktrees/`, junction `node_modules` to the main
+checkout's (`mklink /J node_modules <main>\node_modules`) instead of installing. hypergraph is CommonJS, swarmwire is ESM; SwarmFS is ESM.
 
 ## Commits
 
