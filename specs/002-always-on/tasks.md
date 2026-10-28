@@ -215,9 +215,9 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
 - [ ] T026 [P] `test/slow/sync.test.js`: SC-001 (10,000 files linked, held, unchanged: `sync()` first pass
   done < 10 s) and SC-004 (1,000 new 1 KB files copied in → all on the other device < 60 s); note the
   times in this file and research.md R6 (H14's cost)
-- [ ] T027 [P] README (linked folders, trash, the shell's lines, quickstart), `CLAUDE.md` state,
+- [X] T027 [P] README (linked folders, trash, the shell's lines, quickstart), `CLAUDE.md` state,
   spec 001 contract pointer to 002's additions
-- [ ] T028 Re-check SC-011 by reading `lib/`: no networking, replication, crypto or transfer code;
+- [X] T028 Re-check SC-011 by reading `lib/`: no networking, replication, crypto or transfer code;
   `shortcut:` comments for H14/H15; FR-012 (dropped events → rescan) and FR-017's stop mid-fetch
   checked by reading (hard to provoke in a test); update `specs/requests-to-*.md` with anything found while building
 

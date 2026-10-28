@@ -93,8 +93,9 @@ lib/
 ├── types.js        # + file.base, rule swarmfs/base-v1
 ├── swarmfs.js      # + sync(), unlink(), links(), trash(), emptyTrash(), minFree, 'sync' events
 ├── drive.js        # + link(); add() refuses overlaps
-├── holdings.js     # rescan → the local pass with linked-folder rules (moves, deletes, base); folder held
-├── sync.js         # NEW: per linked folder: pause, remote pass, conflicts, due fetches, placing
+├── holdings.js     # primitives; rescanSingles (files added on their own, v1 rules + base)
+├── sync.js         # NEW: per linked folder (Link): pause, local pass (moves, deletes, base,
+│                   #   mass-delete guard), remote pass, conflicts, due fetches, placing
 ├── watch.js        # NEW: recursive watchers, dirty paths, 2 s settle, batches
 ├── ignore.js       # NEW: fixed list + .swarmfsignore matcher
 ├── trash.js        # NEW: move to trash, list, empty; free space and floor
@@ -113,9 +114,10 @@ test/
 └── slow/sync.test.js   # SC-001 (10,000 files), SC-004 (1,000 files)
 ```
 
-**Structure Decision**: the 001 layout plus four files with one job each (swarmwire's rule: past ~300
-lines a file is two things). `holdings.js`' rescan grows into the local pass rather than a second copy
-of the same walk.
+**Structure Decision**: the 001 layout plus four files with one job each. The local pass lives in
+`sync.js` next to the remote pass (they share the linked folder's view); `rescan()` runs it without
+watching. `sync.js` is ~640 lines: past swarmwire's ~300-line rule — splitting local / remote /
+fetching is the next refactor if it grows (noted at build, 2026-10-28).
 
 ## Sequencing and blockers
 

@@ -83,6 +83,11 @@ Spec 001's research (R1–R10) still holds unless replaced here.
   re-reads the space's `folder` and `file` records (one paged query each, as rescan does since T025)
   and reconciles with this device's `held` records under its path. Removals are acted on only from a
   complete read (FR-023; spec 001 did the same for orphans).
+- **Measured** (2026-10-28, this PC): with 10,000 entries, a full remote pass and the first pass of
+  `sync()` take ~3.8 s; a new file is recorded 3.2 s after it was written. Batches of local paths
+  don't run a remote pass (only the space's own changes do), else 1,000 placed files ran 81 full
+  passes (SC-004 took 109 s, now ~50 s).
+- **H16** (found building): `change` doesn't fire for another device's edit; `logs` is listened too.
 - **Cost**: 10,000 entries are 200 pages per change. `change` says which types changed, not which
   records; nothing gives "what changed since". Request **H14** (a changes feed or ids in `change`).
   Marked as a shortcut in code until then.
