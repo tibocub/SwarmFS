@@ -75,3 +75,32 @@ test('a file written while it is hashed: root, size and mtime all come from its 
   const st = fs.statSync(file)
   t.alike(got, { root: await hashFile(file), size: st.size, mtime: Math.floor(st.mtimeMs) })
 })
+
+test('SC-001: 1,000 files added: no content written anywhere, listable right after', { timeout: 60000 }, async (t) => {
+  const sfs = await device(t)
+  const files = {}
+  for (let i = 0; i < 1000; i++) files[`many/${i}.bin`] = bytes(1024, i + 1)
+  const disk = writeTree(tmpDir(t, 'disk'), files)
+  const before = snapshot(disk)
+  const drive = await sfs.createSpace('many')
+
+  const started = Date.now()
+  const many = await drive.add(path.join(disk, 'many'))
+  const { items, complete } = await drive.list(many.id, { limit: 1000 })
+  t.comment(`1,000 files added and listed in ${Date.now() - started} ms`)
+  t.ok(complete)
+  t.is(items.length, 1000)
+  t.alike(snapshot(disk), before, 'files unchanged, nothing next to them')
+
+  // no file's bytes anywhere in the instance folder: only records (closed: Windows locks open files)
+  await sfs.close()
+  const instance = []
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(path.join(d, e.name))
+      else instance.push(fs.readFileSync(path.join(d, e.name)))
+    }
+  }
+  walk(sfs.dir)
+  for (const i of [0, 500, 999]) t.ok(instance.every((b) => b.indexOf(files[`many/${i}.bin`]) === -1), `${i}.bin not in the instance folder`)
+})
