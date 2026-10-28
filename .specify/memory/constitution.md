@@ -1,15 +1,15 @@
 <!--
 Sync Impact Report
-Version change: (hypergraph's 1.1.0, copied) → 1.0.0 (SwarmFS's own, first version)
-Rationale: new project; principles adapted from hypergraph's constitution for a consumer of
-  hypergraph's new core (spec 011) and swarmwire.
-Principles: I. The bytes stay where they are; II. Test-first, through the public API;
-  III. Node and Bare from the first test; IV. Compose, don't reimplement (feedback loop);
-  V. Smallest complete design
-Added sections: Documentation & the Repo as Memory, Governance
-Removed sections: hypergraph-specific ones (Adoption in an Existing Codebase, API_PROBLEMS.md)
+Version change: 1.0.0 → 1.1.0 (MINOR: Principle I expanded)
+Rationale: spec 002 "always on" (Tibo, 2026-10-28; hypergraph ROADMAP.md): inside a linked folder
+  SwarmFS mirrors the space on disk (rename, move, update), and what it replaces or removes goes
+  to that folder's .swarmfs-trash, never destroyed; outside linked folders the strict rule stays.
+Principles: I. The Bytes Stay Where They Are (expanded: linked folders, trash); II–V unchanged
+Added sections: none
+Removed sections: none
 Templates: plan-template.md reads this file at runtime (Constitution Check); no edit needed.
 Deferred TODOs: none
+Previous: 1.0.0 (2026-10-22), first version, adapted from hypergraph's constitution.
 -->
 
 # SwarmFS Constitution
@@ -21,11 +21,16 @@ Deferred TODOs: none
 A file's bytes live in the user's filesystem and nowhere else. SwarmFS serves files in place
 (through swarmwire) and MUST NOT copy file content into a store, a core, a cache or a database.
 Records in hypergraph hold references (hash, size, name), never content. One hash may have
-many local paths; a hash held locally is never downloaded again. SwarmFS MUST NOT delete,
-move or overwrite a file on a user's disk because of something a peer wrote; removing an entry
-from a space and deleting a local file are different actions.
+many local paths; a hash held locally is never downloaded again. Outside linked folders,
+SwarmFS MUST NOT delete, move or overwrite a file on a user's disk because of something a peer
+wrote; removing an entry from a space and deleting a local file are different actions.
+Inside a **linked folder** (a local folder the person linked to a space folder, two-way), SwarmFS
+MAY rename, move and update local files to mirror the space, and add the files it fetches.
+Anything it replaces or removes there MUST first be moved to `.swarmfs-trash` inside that linked
+folder: SwarmFS never destroys a file. The trash is emptied only by the person's explicit command.
 Rationale: duplicate copies (hyperblobs + the real file) are why this project exists; and a
-filesystem tool that loses local files loses all trust.
+filesystem tool that loses local files loses all trust. A synced folder must follow the space,
+so the trash makes every change it makes undoable by hand.
 
 ### II. Test-First, Through the Public API (NON-NEGOTIABLE)
 
@@ -77,4 +82,4 @@ expanded; PATCH: wording). Every `/speckit-plan` passes the Constitution Check a
 file before research and again after design; violations are fixed or justified in the plan's
 Complexity Tracking table. Work merges only after a review in the lead conversation.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-22
+**Version**: 1.1.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-28
