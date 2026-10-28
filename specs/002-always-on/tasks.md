@@ -147,22 +147,22 @@ files to the trash; `trash()` and `emptyTrash()`.
 Built right after story 3 because it guards their removals; the guard itself (`stat` the root before any
 pass) goes into T011/T013 — this phase proves it and adds resume.
 
-- [ ] T018 [US6] Write `test/pause.test.js` (failing): story 6 scenarios 1–4 — the laptop's linked root
+- [X] T018 [US6] Write `test/pause.test.js` (failing): story 6 scenarios 1–4 — the laptop's linked root
   renamed away → `paused`, 0 entries removed on both devices, 0 files trashed (SC-007); the PC adds
   files meanwhile → nothing written at the laptop's path (no folder recreated); renamed back → `resumed`
   within 15 s, catching up both ways; `sync()` started with the root missing → starts paused
-- [ ] T019 [US6] `lib/sync.js`: paused state per linked folder (root `stat` before each pass; a watcher
+- [X] T019 [US6] `lib/sync.js`: paused state per linked folder (root `stat` before each pass; a watcher
   error with the root gone → paused), the 10 s check, resume = full local pass then remote pass; events;
   T018 green on Node and Bare
 
 ---
 
-- [ ] T029 [US6] Extend `test/pause.test.js` (failing): story 6 scenarios 5–6 — 600 of 1,000 files of a
+- [X] T029 [US6] Extend `test/pause.test.js` (failing): story 6 scenarios 5–6 — 600 of 1,000 files of a
   linked folder deleted (root still there) → 0 entries removed on both devices, `paused` with reason
   `mass-delete` and `count: 600` (SC-012); `sfs.confirm(path)` → the 600 removed on both within 15 s;
   again, but the files restored → `resumed`, nothing removed; 80 of 100 and 150 of 1,000 deleted →
   removed as usual
-- [ ] T030 [US6] `lib/sync.js`: the mass-delete check (research R13) before a local batch's removals;
+- [X] T030 [US6] `lib/sync.js`: the mass-delete check (research R13) before a local batch's removals;
   `confirm(path)` in `lib/swarmfs.js`; `links()` gives the reason; T029 green on Node and Bare
 
 ## Phase 7: User Story 4 — Link a space folder on another device (P2)

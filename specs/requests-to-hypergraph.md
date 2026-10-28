@@ -114,6 +114,23 @@ these and doesn't edit hypergraph; the lead conversation decides.
   after del true 2 {"types":["file"]} logs
   ```
 
+- **H17 — A device paired after a private space got big never gets access.** The PC adds a folder
+  of 1,000 files to a private space (`createSpace({ private: true })`, with or without `policy:
+  'everything'`), then pairs the laptop. The laptop lists the space in 0.4 s, but after 90 s its
+  `status()` is `{ access: 'waiting', held: 'all', peers: 1 }`: no record readable, `get()` of the
+  folder `null`, its listing `{ items: [], complete: false }`. With 100 or 300 files the same flow
+  sees everything in 0.25–0.4 s. Looks like the "big spaces" newest-first read (over 2,000 records,
+  concepts.md) never reaching what gives the newcomer the key. This is the everyday flow (add your
+  photos, then pair your laptop): with it, linked folders never fill on the new device.
+  **Blocks real use of spec 002 beyond ~300 files added before pairing.** SwarmFS's tests pair first,
+  then add (as v1's SC-009 test did). Repro: `npx brittle-node specs/repro-h17-big-private-space.mjs`:
+  ```
+  space after 400
+  docs after 90469 false
+  status {"policy":"everything","access":"waiting","held":"all","heldFrom":null,...,"peers":1,...}
+  list {"items":[],"complete":false}
+  ```
+
 ## For later stories (not blocking v1)
 
 - **H6 — Read-only members.** Community archives (later story 2) want readers who don't upload. A role

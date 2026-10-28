@@ -122,20 +122,23 @@ export function syncEvents (sfs) {
 // folder linked on it; both syncing (minFree 0: tests never meet the disk's floor).
 // `opts.laptopFiles`: written in the laptop's folder before it is linked (already copied by hand).
 export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, { laptopFiles, ...opts } = {}) {
+  // paired before the files are added: a device paired after a private space got big never gets
+  // access (hypergraph H17)
   const pc = await device(t, 'pc', { minFree: 0, ...opts })
   const disk = writeTree(tmpDir(t, 'pc-disk'), files)
   const drive = await pc.createSpace('My files')
-  const docs = await drive.add(path.join(disk, 'docs'))
   const { code, added } = await pc.addDevice()
   const laptop = await device(t, 'laptop', { joinCode: code, minFree: 0, ...opts })
   await added
   const ld = await eventually(() => laptop.spaces().find((s) => s.key === drive.key) && laptop.space(drive.key), 15000)
+  const docs = await drive.add(path.join(disk, 'docs'))
   const pcEvents = syncEvents(pc)
   const laptopEvents = syncEvents(laptop)
   await pc.sync()
   await laptop.sync()
   const there = path.join(tmpDir(t, 'laptop-disk'), 'docs')
-  await eventually(async () => (await ld.list(docs.id, { timeout: 500 })).complete, 15000)
+  const seen = await eventually(async () => (await ld.get(docs.id).catch(() => null)) && (await ld.list(docs.id, { timeout: 500 })).complete, 90000)
+  if (!seen) throw new Error('the laptop never saw docs/')
   if (laptopFiles) writeTree(there, laptopFiles)
   await ld.link(docs.id, there)
   return { pc, laptop, drive, ld, docs, pcDocs: path.join(disk, 'docs'), laptopDocs: there, pcEvents, laptopEvents }
