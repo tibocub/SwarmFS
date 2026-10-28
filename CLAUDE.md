@@ -10,7 +10,10 @@ bytes through swarmwire. A library first (plus a thin CLI to try it). The rewrit
 
 State (2026-10-28): spec 001 (v1, personal sync) built, stories 1–5; `lib/` the library,
 `bin/swarmfs.js` the CLI (no logic of its own), `test/` scenario tests on Node and Bare
-(`npm run test:all`). Open requests: `specs/requests-to-*.md`.
+(`npm run test:all`). Open requests: `specs/requests-to-*.md`. After the lead review of 2026-10-28:
+reopen with 1,000 held files and the other device offline ~0.5 s (SC-009); the CLI is one
+long-running shell (`swarmfs`), `serve` gone; `init`/`join` seal the recovery phrase with a
+password (`SWARMFS_PASSWORD` for scripts and tests).
 
 ## Governing documents
 

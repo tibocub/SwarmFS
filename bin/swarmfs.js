@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // The CLI, a trial tool over the library. `swarmfs` alone (or `swarmfs shell`) opens the
 // instance, stays online and reads commands from stdin, one per line. `init` and `join` are
-// one-shot; the other commands also run one-shot (open, act, close), for scripts.
+// one-shot and ask for the password that keeps the recovery phrase; the other commands also
+// run one-shot (open, act, close), for scripts.
 // Print with console.log: on Bare, process.stdout.write never reaches a piped stdout
 // (swarmwire's lesson).
 
+import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import process from 'process'
@@ -12,18 +14,21 @@ import { SwarmFS } from '../index.js'
 
 const USAGE = `usage: swarmfs [command] [--dir <folder>] [--name <device name>] [--bootstrap <host:port>]
   (none), shell              stay online and read the commands below from stdin, one per line
-  init                       make this device (also done by any first command)
-  join <code>                make this folder a new device of that person
+  init                       make this device; asks for a password
+  join <code>                make this folder a new device of that person; asks for a password
   create <name>              a files space
   add <space> <path>         a file or folder, in place
   ls <space> [folder]        entries: id, kind, name, size, holders
   get <space> <id> <path>    fetch a file to <path>
   rescan                     follow the disk
   devices                    this person's devices
-  pair                       print a code for a new device (one-shot: ends once it joined)
+  pair                       print a code for a new device (one-shot: ends once it joined);
+                             asks for the password (once per shell)
   quit                       end the shell (also: end of input, Ctrl+C)
 <space>: a name or a key, quoted if it has spaces. --dir: default ~/.swarmfs. --name: this
-device's name when made (default: the host name). --bootstrap: a private DHT (tests).`
+device's name when made (default: the host name). --bootstrap: a private DHT (tests).
+The password keeps the recovery phrase sealed in the folder; typed hidden, or taken from
+SWARMFS_PASSWORD (scripts, tests).`
 
 const WAIT = 15000 // how long a one-shot command waits for the person's other devices to connect
 
@@ -37,6 +42,8 @@ const name = option('--name') || os.hostname()
 const node = option('--bootstrap')
 const [command = 'shell', ...rest] = args
 const inShell = command === 'shell'
+let pass = null // the password, once asked
+let input = null // stdin's lines (nextLine), once read
 
 const commands = {
   init: async (sfs) => console.log(`device ${sfs.device}`),
@@ -77,7 +84,8 @@ const commands = {
   },
 
   pair: async (sfs) => {
-    const { code, added } = await sfs.addDevice()
+    pass ??= await password('the one this device was made with')
+    const { code, added } = await sfs.addDevice({ password: pass }).catch((err) => { pass = null; throw err })
     console.log(code)
     console.log('waiting for the new device to join (10 min)...')
     const joined = added.then((device) => console.log(device ? `added ${device.name}` : 'pairing code expired'))
@@ -92,7 +100,12 @@ if (!inShell && !commands[command]) {
   const [host, port] = node ? node.split(':') : []
   let sfs = null
   try {
+    const fresh = !(await fs.promises.readdir(dir).catch(() => [])).length
+    const makes = command === 'init' || command === 'join'
+    if (fresh && !makes) throw Object.assign(new Error(`no device in ${dir} yet: swarmfs init, or swarmfs join <code>`), { code: 'NO_DEVICE' })
+    if (fresh) pass = await password('to keep the recovery phrase', { twice: true })
     sfs = await SwarmFS.open(dir, {
+      password: pass ?? undefined,
       deviceName: name,
       joinCode: command === 'join' ? rest[0] : undefined,
       bootstrap: node ? [{ host, port: Number(port) }] : undefined
@@ -104,31 +117,20 @@ if (!inShell && !commands[command]) {
     process.exitCode = 1
   } finally {
     if (sfs) await sfs.close()
+    if (input) process.stdin.destroy() // else Bare waits on it
   }
 }
 
 // Commands from stdin, one at a time, each followed by a `>` line (the prompt).
 async function shell (sfs) {
   console.log(`device ${sfs.device} (${name}), online; "help" lists the commands`)
-  const lines = []
-  let wake = null
-  let ended = false
-  let buffered = ''
-  const push = (l) => { lines.push(l); if (wake) wake() }
-  process.stdin.on('data', (chunk) => {
-    buffered += chunk
-    const parts = buffered.split('\n')
-    buffered = parts.pop()
-    for (const l of parts) push(l.trim())
-  })
-  process.stdin.on('end', () => { ended = true; push(buffered.trim()) })
-  process.once('SIGINT', () => { ended = true; push('quit') })
-
+  process.once('SIGINT', () => push('quit'))
   for (;;) {
     console.log('>')
-    while (!lines.length) await new Promise((resolve) => { wake = resolve })
-    const [cmd, ...words] = (lines.shift().match(/"[^"]*"|\S+/g) || []).map((w) => w.replace(/^"(.*)"$/, '$1'))
-    if (cmd === 'quit' || (ended && !lines.length && !cmd)) break
+    const typed = await nextLine()
+    if (typed === null) break // end of input
+    const [cmd, ...words] = (typed.match(/"[^"]*"|\S+/g) || []).map((w) => w.replace(/^"(.*)"$/, '$1'))
+    if (cmd === 'quit') break
     if (!cmd) continue
     if (!commands[cmd] || cmd === 'init' || cmd === 'join') {
       console.log(cmd === 'help' ? USAGE : `${cmd}: not a shell command ("help" lists them; init and join are one-shot)`)
@@ -140,7 +142,61 @@ async function shell (sfs) {
       fail(err)
     }
   }
-  process.stdin.destroy() // else Bare waits on it
+}
+
+// From SWARMFS_PASSWORD, else asked on stdin; typed in a terminal, it isn't shown (raw mode).
+// `twice`: a new one, typed again to catch a typo (a terminal only).
+async function password (why, { twice = false } = {}) {
+  if (process.env.SWARMFS_PASSWORD) return process.env.SWARMFS_PASSWORD
+  const tty = !!process.stdin.isTTY
+  const ask = async (prompt) => {
+    console.log(prompt)
+    if (tty) process.stdin.setRawMode(true)
+    try {
+      return await nextLine()
+    } finally {
+      if (tty) process.stdin.setRawMode(false)
+    }
+  }
+  const typed = await ask(`password (${why}):`)
+  if (!typed) throw Object.assign(new Error('a password is needed (or SWARMFS_PASSWORD)'), { code: 'NO_PASSWORD' })
+  if (twice && tty && (await ask('again:')) !== typed) throw Object.assign(new Error('the two passwords differ'), { code: 'NO_PASSWORD' })
+  return typed
+}
+
+// stdin, line by line, read only once asked for. Raw mode (a password) sends each key:
+// Enter is \r, Backspace \x7f, Ctrl+C \x03 (then: nothing typed).
+function nextLine () {
+  if (!input) {
+    input = { lines: [], typed: '', cr: false, ended: false, wake: () => {} }
+    process.stdin.on('data', (chunk) => {
+      for (const c of String(chunk)) {
+        if (c === '\n' && input.cr) { input.cr = false; continue } // the \n of \r\n
+        input.cr = c === '\r'
+        if (c === '\r' || c === '\n') push(input.typed)
+        else if (c === '\x7f' || c === '\b') input.typed = input.typed.slice(0, -1)
+        else if (c === '\x03') push('')
+        else input.typed += c
+      }
+    })
+    process.stdin.on('end', () => {
+      if (input.typed) push(input.typed)
+      input.ended = true
+      input.wake()
+    })
+  }
+  return new Promise(function next (resolve) {
+    input.wake = () => {} // once per wait: a second line must not go to this one
+    if (input.lines.length) return resolve(input.lines.shift())
+    if (input.ended) return resolve(null)
+    input.wake = () => next(resolve)
+  })
+}
+
+function push (line) {
+  input.lines.push(line)
+  input.typed = ''
+  input.wake()
 }
 
 function fail (err) {

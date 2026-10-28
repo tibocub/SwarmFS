@@ -8,7 +8,9 @@ through; SwarmFS adds `SwarmFSError` with `code`: `NOT_AVAILABLE`, `EXISTS`, `NO
 import { SwarmFS } from 'swarmfs'
 
 const sfs = await SwarmFS.open('./data', {
-  password,        // seals the recovery phrase (hypergraph)
+  password,        // seals the recovery phrase (hypergraph): used when the folder is made (new or
+                   //   joinCode), never in plain text there; not needed at later opens (an older
+                   //   folder's plain phrase is sealed by it); addDevice needs it again
   joinCode,        // open as a new device of an existing account
   deviceName,      // 'phone'
   bootstrap,       // DHT nodes (tests)
@@ -53,4 +55,7 @@ end of input or Ctrl+C; reads, one per line: `create <name> | add <space> <path>
 get <space> <id> <path> | rescan | devices | pair | help | quit`, each followed by a `>` line. One-shot:
 `init`, `join <code>`, and the shell's commands (scripts; `pair` then ends once the device joined;
 `ls`/`get` wait up to 15 s for another device to connect); while a shell holds the folder they fail
-with `IN_USE`. `<space>`: name or key, quoted if it has spaces.
+with `IN_USE`. `<space>`: name or key, quoted if it has spaces. Password (ROADMAP 2026-10-09: the
+recovery phrase is sealed by default): `init` and `join` ask for one (on a new folder; a terminal hides
+it and asks twice), `pair` asks once per shell; `SWARMFS_PASSWORD` gives it instead (scripts, tests).
+On a folder with no device yet, other commands fail with `NO_DEVICE` (init or join first).

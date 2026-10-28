@@ -34,21 +34,22 @@ Library: [quickstart.md](specs/001-personal-sync/quickstart.md), API: [contracts
 CLI on two machines (`npm install`, then `npx swarmfs …`, `node bin/swarmfs.js …` or `bare bin/swarmfs.js …`):
 
 ```bash
-# PC: a shell, online (serving) until quit
-swarmfs
+# PC
+swarmfs init                      # asks for a password (keeps the recovery phrase sealed)
+swarmfs                           # a shell, online (serving) until quit
 > create "My files"
 > add "My files" ~/photos
 > pair                            # prints a code
 
 # second machine
-swarmfs join <code>
+swarmfs join <code>               # asks for a password too
 swarmfs
 > ls "My files"
 > ls "My files" <folder id>
 > get "My files" <file id> ./a.jpg
 ```
 
-`help` in the shell lists every command. Data in `~/.swarmfs` (`--dir` for another folder).
+`help` in the shell lists every command; `SWARMFS_PASSWORD` gives the password without asking (scripts). Data in `~/.swarmfs` (`--dir` for another folder).
 
 ## Tests
 

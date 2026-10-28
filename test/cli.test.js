@@ -7,9 +7,34 @@ import path from 'path'
 import process from 'process'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
-import { bootstrap, tmpDir, writeTree, bytes, eventually } from './helpers.js'
+import { bootstrap, tmpDir, writeTree, bytes, eventually, device, codeOf } from './helpers.js'
 
 const CLI = fileURLToPath(new URL('../bin/swarmfs.js', import.meta.url))
+const PASSWORD = 'pc secret'
+const withPassword = { SWARMFS_PASSWORD: PASSWORD }
+
+test('init asks for a password: the recovery phrase is not readable from the folder without it', async (t) => {
+  const b = (await bootstrap(t))[0]
+  const dir = tmpDir(t, 'pc')
+  const flags = ['--dir', dir, '--name', 'pc', '--bootstrap', `${b.host}:${b.port}`]
+
+  const early = run(t, ['devices', ...flags])
+  t.is(await early.exit(), 1, 'a command on a new folder fails')
+  t.ok(early.stderr().includes('swarmfs init'), `and says to init first: ${early.stderr().trim()}`)
+
+  const asked = run(t, ['init', ...flags], 'pipe')
+  asked.stdin.end('\n')
+  t.is(await asked.exit(), 1, 'an empty password is refused')
+  t.ok(asked.stdout().includes('password'), 'it was asked for')
+
+  t.ok((await done(t, ['init', ...flags], withPassword)).startsWith('device '), 'init (SWARMFS_PASSWORD)')
+  const sfs = await device(t, 'pc', { dir })
+  t.is(await codeOf(sfs.hg.recoveryPhrase()), 'NOT_ALLOWED', 'not without the password')
+  const words = await sfs.hg.recoveryPhrase(PASSWORD)
+  t.is(words.split(' ').length, 24, 'with it')
+  await sfs.close()
+  t.ok(files(dir).every((f) => !fs.readFileSync(f).includes(words)), 'no file of the folder holds it in plain text')
+})
 
 test('PC shell: create, add, pair, add while serving; phone: join, then a shell: ls, get', { timeout: 90000 }, async (t) => {
   const b = (await bootstrap(t))[0]
@@ -19,6 +44,7 @@ test('PC shell: create, add, pair, add while serving; phone: join, then a shell:
   const disk = writeTree(tmpDir(t, 'disk'), { 'photos/a.jpg': bytes(50000), 'photos/trip/c.jpg': 'cc', 'late.txt': 'late' })
   const out = path.join(tmpDir(t, 'out'), 'a.jpg')
 
+  t.ok((await done(t, ['init', ...pcFlags], withPassword)).startsWith('device '), 'init')
   const pc = shell(t, pcFlags)
   t.ok((await pc.ready()).startsWith('device '), 'the PC shell is online')
   t.ok((await pc.do('create "My files"')).includes('My files'), 'create')
@@ -28,9 +54,11 @@ test('PC shell: create, add, pair, add while serving; phone: join, then a shell:
   t.is(await busy.exit(), 1, 'a one-shot command on a folder a shell holds fails')
   t.ok(busy.stderr().includes('in use by a swarmfs shell'), `with a clear message: ${busy.stderr().trim()}`)
 
-  const code = (await pc.do('pair')).split(/\r?\n/)[0].trim()
+  const paired = (await pc.do('pair\n' + PASSWORD)).split(/\r?\n/) // the shell asks for the password
+  t.ok(paired[0].includes('password'), 'pair asks for the password')
+  const code = paired[1].trim()
   t.ok(code.length > 10, 'pair prints a code')
-  t.ok((await done(t, ['join', code, ...phoneFlags])).startsWith('device '), 'join')
+  t.ok((await done(t, ['join', code, ...phoneFlags], withPassword)).startsWith('device '), 'join')
   t.ok(await pc.until(/added phone/), 'the PC shell says the phone joined, and stays online')
 
   const phone = shell(t, phoneFlags)
@@ -61,14 +89,21 @@ test('PC shell: create, add, pair, add while serving; phone: join, then a shell:
   t.is(await pc.exit(), 0, 'quit ends the shell')
   phone.end()
   t.is(await phone.exit(), 0, 'so does the end of its input')
+  const words = await (await device(t, 'phone', { dir: phoneFlags[1] })).hg.recoveryPhrase(PASSWORD)
+  t.is(words.split(' ').length, 24, 'the phone keeps the phrase behind the password it joined with')
 })
+
+// Every file under `dir`.
+function files (dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? files(path.join(dir, e.name)) : [path.join(dir, e.name)])
+}
 
 // Tab-separated entry lines (Bare on Windows ends lines with \r\n).
 const rows = (stdout) => stdout.split(/\r?\n/).filter((l) => l.includes('\t')).map((l) => l.split('\t'))
 
 // Runs a one-shot command; its stdout once it exited cleanly.
-async function done (t, args) {
-  const child = run(t, args)
+async function done (t, args, env) {
+  const child = run(t, args, 'ignore', env)
   const code = await child.exit()
   t.is(code, 0, `swarmfs ${args[0]} exits 0${code ? ': ' + child.stdout() + child.stderr() : ''}`)
   return child.stdout()
@@ -92,9 +127,9 @@ function shell (t, args) {
   }
 }
 
-function run (t, args, stdin = 'ignore') {
+function run (t, args, stdin = 'ignore', env = {}) {
   // process.execPath is whichever runtime runs the tests, so Node and Bare both get covered.
-  const child = spawn(process.execPath, [CLI, ...args], { stdio: [stdin, 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [CLI, ...args], { stdio: [stdin, 'pipe', 'pipe'], env: { ...process.env, ...env } })
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', (chunk) => { stdout += chunk })

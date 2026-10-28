@@ -173,3 +173,12 @@ the 100 MB test pass on Node and Bare.
   shell holds the folder fails with `IN_USE`; `quit` and end of input end a shell.
 - [X] T027 [US5] `bin/swarmfs.js`: `swarmfs` / `swarmfs shell` (research R10); `serve` removed;
   no 15 s waits in the shell. The test: ~4 s on Node, ~8 s on Bare (was 23–31 s with H12's wait).
+- [X] T028 [US5] `test/cli.test.js` (failing first): a command on a new folder fails with
+  `NO_DEVICE`; `init` asks for a password (empty refused); with `SWARMFS_PASSWORD`, the recovery
+  phrase is not readable from the folder without it (`recoveryPhrase()` → `NOT_ALLOWED`, no file holds
+  it in plain text); the shell's `pair` asks for it on stdin; the joined phone's phrase is sealed too.
+- [X] T029 [US5] `bin/swarmfs.js`: password for `init`/`join` (new folder) and `pair` (once per
+  shell), hidden in a terminal (raw mode, Node and Bare), typed twice when made; `SWARMFS_PASSWORD`.
+  Per hypergraph's `lib/index.js` + `docs/next/api.md`: `open({ password })` seals at creation (and
+  seals an older plain phrase); later opens don't need it; `addDevice({ password })` does.
+  Not checked: the hidden prompt on a real terminal (tests drive stdin through a pipe).

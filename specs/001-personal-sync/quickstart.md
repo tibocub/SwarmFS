@@ -10,7 +10,7 @@ await files.add('/home/tibo/photos')
 const { code } = await pc.addDevice({ password: 'pc secret' })   // show it as text or QR
 
 // On the phone
-const phone = await SwarmFS.open('./phone', { joinCode: code, deviceName: 'phone' })
+const phone = await SwarmFS.open('./phone', { joinCode: code, password: 'phone secret', deviceName: 'phone' })
 const drive = phone.space(phone.spaces()[0].key)
 const { items } = await drive.list()                 // photos/, with holders: [{ name: 'pc', online }]
 const photos = items[0]
@@ -24,13 +24,14 @@ works too). Public DHT; data in `~/.swarmfs` (`--dir` for another), device named
 
 ```bash
 # PC: a shell, online (serving) until quit
+swarmfs init                      # asks for a password: it keeps the recovery phrase sealed
 swarmfs
 > create "My files"
 > add "My files" ~/photos
-> pair                            # prints a code; the shell says "added <name>" once it joined
+> pair                            # asks the password (once), prints a code; the shell says "added <name>" once it joined
 
 # phone (second machine)
-swarmfs join <code>               # one-shot
+swarmfs join <code>               # one-shot; asks for this device's password
 swarmfs                           # a shell there too
 > ls "My files"                   # id, kind, name, size, holders: "<pc> (online)"
 > ls "My files" <folder id>
@@ -42,4 +43,4 @@ The shell is online all along: holders show online or offline as they are now. R
 the space's name arrives a moment after it opens (hypergraph H12): `ls` answers `NOT_FOUND` until
 then; ask again (the space key works at once). The shell's commands also run one-shot for scripts
 (`swarmfs ls "My files"`: open, wait up to 15 s for another device, act, close), but not while a
-shell holds the folder (`IN_USE`). `rescan` and `devices` as in contracts/api.md.
+shell holds the folder (`IN_USE`). `SWARMFS_PASSWORD` gives the password without asking (scripts). `rescan` and `devices` as in contracts/api.md.
