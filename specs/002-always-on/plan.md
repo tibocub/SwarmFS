@@ -102,6 +102,7 @@ lib/
 bin/swarmfs.js      # sync() in the shell, event lines, link/unlink/links/trash/trash empty
 test/
 ├── ignore.test.js      # matcher (unit)
+├── trash.test.js       # trash moves, list, empty, floor (unit)
 ├── watch.test.js       # story 1
 ├── autofetch.test.js   # story 2
 ├── mirror.test.js      # story 3 (+ trash)
