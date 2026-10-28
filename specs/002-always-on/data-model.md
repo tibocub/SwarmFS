@@ -88,7 +88,7 @@ ref(R) })` + `held`; then the entry's content is fetched to the original name. `
 **Fetch done** (`.incoming/<root>` complete) → check the target again (step 3/5 rules) → trash the old
 file if any → rename into place → `held` (`mtime` from the placed file) → `fetched` event.
 
-**Unlink** → stop watcher and the folder's downloads, delete `.incoming`, `del(added)`; folder `held` deleted,
+**Unlink** → stop watcher and the folder's downloads, delete `.incoming` (partial downloads SwarmFS wrote, never a person's file), `del(added)`; folder `held` deleted,
 file `held` kept (the files stay served, followed as v1 followed held files: rescan only).
 
 **Trash empty** → for each linked folder (not paused): remove every dated folder under

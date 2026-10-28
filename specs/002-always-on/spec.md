@@ -239,7 +239,8 @@ other, edit a file on one, see the line and the file on the other; `trash`, `tra
 - **The person edits a file at the moment a newer version arrives**: the arriving version is a
   conflict with the unsaved-in-the-space local version (story 5's rule), never written over it.
 - **An entry moved out of the linked folder's space folder** (to a folder not linked here): the local
-  file goes to the trash; if the target folder is linked on this device too, the file moves there.
+  file goes to the trash; if that folder is linked on this device too, the file is fetched there like
+  any missing file.
 - **A folder renamed locally**: the folder entry is renamed; its files are not re-uploaded or re-fetched.
 - **A local file at the path where a fetched file must go** (an ignored file of the same name): it goes
   to the trash first.

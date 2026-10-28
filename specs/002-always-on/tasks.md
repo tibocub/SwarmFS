@@ -50,7 +50,9 @@ place, or byte-identical in a `.swarmfs-trash/<time>/` folder (a helper, T003).
   (floor = max(5 GB, 5 % of `blocks × bsize`) unless `minFree`)
 - [ ] T007 `lib/holdings.js`: folder `held` (`root: ''`, `size: 0`, `mtime: 0`) kept by rescan (today it
   deletes any `held` whose path isn't a file); `localPath` and holders skip `root: ''`; `edit` of
-  content passes `base` (data-model.md); spec 001's tests stay green
+  content passes `base` (data-model.md). Failing first in `test/changes.test.js`: after `rescan()` a
+  folder `held` (`root: ''`) survives, and a file edited on disk gets `base` = its old root; spec 001's
+  tests stay green
 
 **Checkpoint**: types, ignore, trash and floor work alone; 001's 24 tests green on Node and Bare.
 
@@ -67,6 +69,7 @@ place, or byte-identical in a `.swarmfs-trash/<time>/` folder (a helper, T003).
   `removed`), the ignore list and a `.swarmfsignore` with `build/` and `*.log` (0 entries, SC-010; the
   `.swarmfsignore` itself an entry), a single added file edited (entry updated) and deleted (entry
   kept); a folder renamed (folder entry renamed, file entries unchanged, nothing hashed: no `updated`);
+  a `.swarmfsignore` line added later applies to new files only (entries already there stay);
   changes made while closed found at `sync()` start (FR-011: a rename isn't re-hashed); `add` of a path
   inside a linked folder → `EXISTS`
 - [ ] T009 [US1] `lib/watch.js`: a recursive watcher per linked folder root and a non-recursive one per
@@ -123,7 +126,10 @@ files to the trash; `trash()` and `emptyTrash()`.
   new version in place, old one byte-identical in the laptop's trash; file and folder deleted → in the
   trash with everything in it; `trash()` lists folder, path, size, time; `emptyTrash()` →
   `{ files, bytes }` and the trash empty; a file moved back out of the trash → an entry again; an entry
-  moved to a folder not linked here → local file trashed; `assertNothingLost` (SC-006) after each
+  moved to a folder not linked here → local file trashed; a trashed file is no longer listed as held
+  (FR-025); the laptop reopened with the PC offline → nothing trashed, no entry removed (FR-023); a
+  file the laptop fetched with `get` outside any linked folder, edited on the PC → the laptop's copy
+  untouched (FR-008); `assertNothingLost` (SC-006) after each
 - [ ] T016 [US3] `lib/sync.js`: remote pass steps 1–3 (moves/renames of local files and folders, target
   taken → trashed first; removals only from a complete read (FR-023): local unchanged → trash, changed →
   put again (FR-019); content `C ≠ H`, `H ∈ base(C)` → fetch then trash the old and place)
@@ -155,7 +161,8 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
   into an empty path (fills); into a path with the same `b.jpg` (held, 0 bytes, not renamed), a different
   `a.jpg` (becomes `a (laptop's copy).jpg`, an entry on both devices; the space's `a.jpg` fetched), an
   extra local file (added); `drive.link(drive.top, path)`; `sfs.unlink(path)` (no more fetch, rename or
-  follow; no file or entry removed; `.incoming` gone); overlap and already-linked → `EXISTS`; `links()`
+  follow; no file or entry removed; `.incoming` gone); overlap and already-linked → `EXISTS`; `links()`, also after a reopen (FR-005); two entries of
+  one name in a folder (put by both devices while apart) → the second placed as a conflict-copy name
 - [ ] T021 [US4] `lib/drive.js` `link()` (writes `added`; checks per contracts/api.md) and
   `lib/swarmfs.js` `unlink()`, `links()`; `lib/sync.js`: remote pass step 5's "different content at the
   path" → conflict copy (data-model.md) then fetch; T020 green on Node and Bare
@@ -169,7 +176,8 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
   have `report.docx` and `report (<loser>'s copy).docx`, same contents on both, nothing in any trash
   (SC-009); a non-concurrent edit chain (PC edits twice while the laptop is closed) → no copy
   (`base` history, research R4); a taken copy name → `… copy 2`; rename on one + content edit on the
-  other → no content lost; delete on one while the other's edit is unrecorded → re-added
+  other → no content lost; delete on one while the other's edit is unrecorded → re-added; the same file renamed differently on
+  each → both local files end at the winning name (FR-020)
 - [ ] T023 [US5] `lib/sync.js` + `lib/holdings.js`: R4's rules (local pass: changed file with `C ≠ H` →
   conflict copy; remote pass: `H ∉ base(C)` → conflict copy of `H`); copy naming
   `name (<device name>'s copy[ N]).ext`; `conflict` event; T022 green on Node and Bare
@@ -196,7 +204,8 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
 - [ ] T027 [P] README (linked folders, trash, the shell's lines, quickstart), `CLAUDE.md` state,
   spec 001 contract pointer to 002's additions
 - [ ] T028 Re-check SC-011 by reading `lib/`: no networking, replication, crypto or transfer code;
-  `shortcut:` comments for H14/H15; update `specs/requests-to-*.md` with anything found while building
+  `shortcut:` comments for H14/H15; FR-012 (dropped events → rescan) and FR-017's stop mid-fetch
+  checked by reading (hard to provoke in a test); update `specs/requests-to-*.md` with anything found while building
 
 ## Dependencies
 
