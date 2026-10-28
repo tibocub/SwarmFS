@@ -184,14 +184,14 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
 
 ## Phase 8: User Story 5 — Two devices edit one file: both kept (P2)
 
-- [ ] T022 [US5] Write `test/conflict.test.js` (failing): story 5 scenarios 1–5 — both devices closed,
+- [X] T022 [US5] Write `test/conflict.test.js` (failing): story 5 scenarios 1–5 — both devices closed,
   the file edited differently in each linked folder, both reopened and `sync()`ed → within 20 s both
   have `report.docx` and `report (<loser>'s copy).docx`, same contents on both, nothing in any trash
   (SC-009); a non-concurrent edit chain (PC edits twice while the laptop is closed) → no copy
   (`base` history, research R4); a taken copy name → `… copy 2`; rename on one + content edit on the
   other → no content lost; delete on one while the other's edit is unrecorded → re-added; the same file renamed differently on
   each → both local files end at the winning name (FR-020)
-- [ ] T023 [US5] `lib/sync.js` + `lib/holdings.js`: R4's rules (local pass: changed file with `C ≠ H` →
+- [X] T023 [US5] `lib/sync.js` + `lib/holdings.js`: R4's rules (local pass: changed file with `C ≠ H` →
   conflict copy; remote pass: `H ∉ base(C)` → conflict copy of `H`); copy naming
   `name (<device name>'s copy[ N]).ext`; `conflict` event; T022 green on Node and Bare
 
