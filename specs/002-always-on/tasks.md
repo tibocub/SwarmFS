@@ -96,18 +96,18 @@ place, or byte-identical in a `.swarmfs-trash/<time>/` folder (a helper, T003).
 **Goal**: entries of a linked space folder with no local file are fetched (or copied) into place.
 **Independent Test**: `test/autofetch.test.js`, two devices.
 
-- [ ] T012 [US2] Write `test/autofetch.test.js` (failing): story 2 scenarios 1–5 — a 1 MB file added on
+- [X] T012 [US2] Write `test/autofetch.test.js` (failing): story 2 scenarios 1–5 — a 1 MB file added on
   the PC is on the laptop's disk, byte-identical, held by both, within 10 s (SC-002); holder offline →
   fetched once it reopens, no command; content already held at another path → copied, 0 bytes
   transferred; `minFree` above free space → 0 fetched, one `low-space` event with `free` and `floor`,
   nothing under the file's name; `minFree` lowered (reopen) → fetched within 15 s (SC-008); PC closed
   mid-fetch → nothing at the target, completes after it reopens; a name not valid on Windows (`a:b.txt`
   put by the PC's library) → `skipped`, entry kept
-- [ ] T013 [US2] `lib/sync.js`: the remote pass of data-model.md, steps 4–5 (folders made + folder
+- [X] T013 [US2] `lib/sync.js`: the remote pass of data-model.md, steps 4–5 (folders made + folder
   `held`; file entries without `held`: local file at the path → same root = `held`; none → due), re-run
   on the space's `change` (debounced 500 ms; shortcut: full re-read until hypergraph H14), on `peers`,
   and every 10 s
-- [ ] T014 [US2] `lib/sync.js`: due fetches — `localPath` → `fs.copyFile` to `.incoming/<root>`, else
+- [X] T014 [US2] `lib/sync.js`: due fetches — `localPath` → `fs.copyFile` to `.incoming/<root>`, else
   `transfer.download({ root, size }, '<linked>/.swarmfs-trash/.incoming/<root>', { announce: false })`
   with 001's `stalled`/no-progress stop; floor checked before (free − size ≥ floor) and on `progress`
   (≤ once a second, stop below); done → place (target checked again; old file to trash), `held`,
