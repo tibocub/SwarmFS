@@ -4,6 +4,7 @@ import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
 import { device, tmpDir, writeTree, eventually, codeOf, syncEvents } from './helpers.js'
+import { stat } from '../lib/holdings.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -76,6 +77,19 @@ test('a delete and a different file of the same size and mtime in one batch: two
   t.ok(b, 'a.jpg removed, b.jpg added')
   t.not(b.id, a.id, 'a new entry')
   t.not(b.hash, a.hash, 'with its own content')
+})
+
+// Rename detection trusts a file id only when exact: NTFS ids exceed 2^53, and as a Number
+// 15 of 200 fresh files shared one with another file (2026-10-29).
+test('file ids: never shared by two files (null when not exact)', async (t) => {
+  const dir = tmpDir(t, 'ids')
+  const ids = []
+  for (let i = 0; i < 200; i++) {
+    fs.writeFileSync(path.join(dir, `f${i}`), 'x')
+    ids.push((await stat(path.join(dir, `f${i}`))).ino)
+  }
+  const exact = ids.filter((id) => id !== null)
+  t.is(new Set(exact).size, exact.length, `${exact.length} exact ids, all different`)
 })
 
 test('the ignore list and .swarmfsignore: never entries; .swarmfsignore itself synced', { timeout: 60000 }, async (t) => {

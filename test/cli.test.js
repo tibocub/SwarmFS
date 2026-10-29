@@ -63,7 +63,7 @@ test('PC shell: create, add, pair, add while serving; phone: join, then a shell:
 
   const phone = shell(t, phoneFlags)
   await phone.ready()
-  // just joined: the space and its name arrive in a moment (hypergraph H12); asking again is enough
+  // just joined: the space arrives in a moment; asking again is enough
   const top = await eventually(async () => {
     const r = rows(await phone.do('ls "My files"'))
     return r.length === 1 && r

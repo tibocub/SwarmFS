@@ -342,7 +342,7 @@ other, edit a file on one, see the line and the file on the other; `trash`, `tra
   all devices. Non-concurrent edits MUST NOT make copies.
 - **FR-019**: A file deleted on one device and edited on another concurrently MUST be kept: added
   again as an entry if the edit had not reached the space yet; otherwise at least in the editing
-  device's trash (re-added once hypergraph tells when the delete happened: request H15).
+  device's trash if saved before the delete; saved after it: added again (H15 done, 2026-10-29).
 - **FR-020**: Concurrent renames or moves MUST settle on the latest one, the same on all devices; the
   local file follows it, no content lost.
 

@@ -76,6 +76,10 @@ Spec 001's research (R1–R10) still holds unless replaced here.
   tell the delete's time from a "not held" (`get()` returns `null` for both) → the file goes to the
   editing device's trash (kept, not shown). Request **H15** asks for the delete's stamp; then "edit
   newer than the delete" re-adds it.
+  **Done 2026-10-29 (hypergraph spec 012)**: `get()` gives `deleted: { by: 'author', stamp }`; a file
+  saved here (its mtime) after the delete's stamp is re-added as a new entry (Tibo: the edit wins);
+  `{ by: 'space' }` (taken down) never. A record shows `edited: true`, not its edit's stamp (H18), so
+  the file's mtime is the edit time: a clock ahead can re-add a file deleted after (nothing lost).
 
 ## R6. Following the space: re-read on `change`
 
@@ -88,6 +92,12 @@ Spec 001's research (R1–R10) still holds unless replaced here.
   don't run a remote pass (only the space's own changes do), else 1,000 placed files ran 81 full
   passes (SC-004 took 109 s, now ~50 s).
 - **H16** (found building): `change` doesn't fire for another device's edit; `logs` is listened too.
+- **Done 2026-10-29 (hypergraph spec 012, H14/H16)**: `change` names `records: [{ id, type, deleted }]`,
+  edits included; `logs` no longer listened. A linked folder reads the space whole at start and on
+  resume, then re-reads only the named ids (`get`; a record "not here" without `deleted` is kept, never
+  taken as removed); `complete` from `space.status().complete`. Measured (10,000 entries, Node), before
+  → after: one rename followed 1,211 → 843 ms (500 ms debounce included); a new file recorded 3.3 →
+  2.8 s (2 s settle included); SC-002 3.2 s. The reconcile still walks every entry (in memory).
 - **Cost**: 10,000 entries are 200 pages per change. `change` says which types changed, not which
   records; nothing gives "what changed since". Request **H14** (a changes feed or ids in `change`).
   Marked as a shortcut in code until then.
@@ -115,6 +125,12 @@ Spec 001's research (R1–R10) still holds unless replaced here.
     new file at the old name. On FAT/exFAT drives `ino` may not be stable: hashing covers it when 0;
     a non-zero but unstable `ino` can only cause a missed match (a hash then), never a wrong one,
     because size and mtime must match too.
+  - **Corrected 2026-10-29 (lead)**: NTFS ids often exceed 2^53 (`47287796087572638`), so `ino` as a
+    Number loses low bits: 15 of 200 fresh files shared one with another file; a delete + a different
+    new file of the same size and mtime was then taken as a rename (`test/watch.test.js` failed 1 in 4
+    on Bare). Now: Node reads exact ids (`stat` with `{ bigint: true }`, kept as strings); bare-fs
+    4.8 gives Numbers only and takes no options, so an id is trusted only while
+    `Number.isSafeInteger`, else none → files matched by hash, folders confirmed by hashing their files.
   - a folder: a gone folder and a new folder in one batch whose files (relative names, `ino`s, sizes,
     mtimes) are the same → the folder entry is renamed/moved; its files keep their entries.
   - what's left: new → entries; gone → entries removed (`del`, subtree first), `held` deleted.

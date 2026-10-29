@@ -222,6 +222,14 @@ pass) goes into T011/T013 — this phase proves it and adds resume.
   `shortcut:` comments for H14/H15; FR-012 (dropped events → rescan) and FR-017's stop mid-fetch
   checked by reading (hard to provoke in a test); update `specs/requests-to-*.md` with anything found while building
 
+## After review (2026-10-29)
+
+- [X] T029 Adopt hypergraph spec 012: no read bounds (`LOCAL`, `readTimeout`), no `logs` listener,
+  re-read only the ids `change` names, edit after a delete re-added (`test/conflict.test.js`, both
+  orders), one-shot `ls` waits `{ timeout }`; research R5, R6
+- [X] T030 Exact file ids for rename detection (lead: NTFS ids > 2^53): `test/watch.test.js` "file
+  ids" (failed on Bare before); research R7
+
 ## Dependencies
 
 - T029–T030 (lead review 2026-10-28) belong to story 6; numbered last to keep earlier ids stable.
