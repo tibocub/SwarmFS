@@ -34,7 +34,14 @@ test('SC-001: a linked folder of 10,000 held, unchanged files starts syncing in 
   const d0 = (await pc.space(drive.key).list(docs.id, { limit: 200 })).items.find((i) => i.name === 'd0')
   const seen = await eventually(async () => (await pc.space(drive.key).list(d0.id, { limit: 200 })).items.some((i) => i.name === 'new.txt'), 30000)
   t.ok(seen, 'a new file in it is added')
-  t.comment(`a new file recorded ${Date.now() - started} ms after it was written (2 s settle; a pass re-reads 10,000 entries: H14)`)
+  t.comment(`a new file recorded ${Date.now() - started} ms after it was written (2 s settle)`)
+
+  // per-change cost: one entry renamed in the space → the local file renamed by the remote pass
+  const f0 = (await pc.space(drive.key).list(d0.id, { limit: 200 })).items.find((i) => i.name === 'f0.txt')
+  started = Date.now()
+  await pc.space(drive.key).rename(f0.id, 'g0.txt')
+  t.ok(await events.wait((e) => e.action === 'renamed' && e.to.endsWith('g0.txt'), 30000), 'a rename in the space renames the file')
+  t.comment(`one entry renamed: the file renamed ${Date.now() - started} ms later (500 ms debounce included)`)
 })
 
 test('SC-004: 1,000 new files copied into a linked folder are on the other device in < 60 s', { timeout: 300000 }, async (t) => {

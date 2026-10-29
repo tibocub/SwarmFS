@@ -152,3 +152,14 @@ these and doesn't edit hypergraph; the lead conversation decides.
   documents itself" points at `AGENTS.md`/`INVARIANTS.md` and a `dev` branch (the old repo). Now:
   `CLAUDE.md` → constitution → `specs/`; branch `main`. swarmwire's package is now `swarmwire-lib`.
   **Done 2026-10-29** (hypergraph ECOSYSTEM.md, by the lead).
+
+## Done in hypergraph spec 012 (honest reads), adopted 2026-10-29 (branch adopt-012)
+
+- **H10, H12, H14, H15, H16 done.** SwarmFS: `LOCAL = { timeout: 200 }` and `readTimeout` gone (reads
+  answer at once); `logs` listener gone (`change` names edits); a linked folder reads the space whole at
+  start/resume, then re-reads only the ids `change` names; "edit here, delete there": the file re-added
+  if saved (mtime) after the delete's stamp, never after a take-down; one-shot `ls` waits `{ timeout }`.
+  Measured, 10,000 entries: one rename followed in 843 ms (was 1,211, 500 ms debounce included); new
+  file recorded 2.8 s (was 3.3 s, 2 s settle included); SC-002 3.2 s.
+- **H18 (new, small)** — a record shows `edited: true`, not its version's stamp, so "compare `stamp`
+  with an edit's" (docs/next/api.md) can't be done from a record. SwarmFS compares the file's mtime.

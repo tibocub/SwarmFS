@@ -70,7 +70,7 @@ const commands = {
     let page = { items: [] }
     do {
       const last = page.items.at(-1)
-      page = await d.list(folder, { after: last })
+      page = await d.list(folder, { after: last, timeout: inShell ? 0 : WAIT }) // one-shot: waits for the other devices' entries
       for (const e of page.items) console.log(line(e))
     } while (page.items.length === 100)
     if (!page.complete) console.log('(incomplete: a device holding more of this space is not online)')

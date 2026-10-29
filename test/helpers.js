@@ -75,7 +75,7 @@ export async function bootstrap (t) {
 // Opens a SwarmFS in a temp dir (or `opts.dir`) on the test's DHT; closed after the test.
 export async function device (t, label = 'dev', opts = {}) {
   const dir = opts.dir || tmpDir(t, label)
-  const sfs = await SwarmFS.open(dir, { deviceName: label, bootstrap: await bootstrap(t), readTimeout: 1000, ...opts })
+  const sfs = await SwarmFS.open(dir, { deviceName: label, bootstrap: await bootstrap(t), ...opts })
   let closed = false
   const close = sfs.close.bind(sfs)
   sfs.close = () => { if (closed) return; closed = true; return close() }

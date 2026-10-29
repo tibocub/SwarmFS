@@ -4,7 +4,7 @@
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
-import { device, linkedPair, eventually, contents } from './helpers.js'
+import { device, linkedPair, eventually, contents, syncEvents } from './helpers.js'
 
 const read = (p) => (fs.existsSync(p) ? fs.readFileSync(p).toString() : null)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -115,4 +115,50 @@ test('deleted on the PC while the laptop is still saving it: kept, added again',
   const back = await eventually(async () => (await drive.list(docs.id)).items.find((i) => i.name === 'a.txt' && i.size === 12), 20000)
   t.ok(back, 'a.txt is an entry again, with the edit')
   t.is(read(path.join(laptopDocs, 'a.txt')), 'being edited', 'the edit stays in place')
+})
+
+// FR-019 with H15: the edit was recorded before the delete arrived; it was saved after the
+// delete, so it wins: added again as a new entry, on both devices.
+test('deleted on the PC, then edited on the laptop while apart: the edit kept on both', { timeout: 120000 }, async (t) => {
+  let { pc, laptop, drive, docs, pcDocs, laptopDocs, pcEvents } = await linkedPair(t, { 'docs/a.txt': 'aaaa' })
+  t.ok(await eventually(() => read(path.join(laptopDocs, 'a.txt')), 15000))
+  const pcDir = pc.dir
+  const laptopDir = laptop.dir
+  await laptop.close()
+  fs.rmSync(path.join(pcDocs, 'a.txt'))
+  t.ok(await pcEvents.wait((e) => e.action === 'removed'), 'the PC records the delete')
+  await pc.close()
+  laptop = await device(t, 'laptop', { dir: laptopDir, minFree: 0 })
+  const laptopEvents = syncEvents(laptop)
+  await laptop.sync()
+  fs.writeFileSync(path.join(laptopDocs, 'a.txt'), 'edited after')
+  t.ok(await laptopEvents.wait((e) => e.action === 'updated'), 'the laptop records its edit (it has not seen the delete)')
+  pc = await device(t, 'pc', { dir: pcDir, minFree: 0 })
+  await pc.sync()
+  const back = await eventually(async () => (await pc.space(drive.key).list(docs.id)).items.find((i) => i.name === 'a.txt' && i.size === 12), 20000)
+  t.ok(back, 'a.txt is an entry again, with the edit')
+  t.ok(await eventually(() => read(path.join(pcDocs, 'a.txt')) === 'edited after', 20000), 'on the PC disk')
+  t.is(read(path.join(laptopDocs, 'a.txt')), 'edited after', 'and in place on the laptop')
+})
+
+test('edited on the laptop, then deleted on the PC while apart: deleted on both, the edit in the trash', { timeout: 120000 }, async (t) => {
+  let { pc, laptop, pcDocs, laptopDocs, laptopEvents } = await linkedPair(t, { 'docs/a.txt': 'aaaa' })
+  t.ok(await eventually(() => read(path.join(laptopDocs, 'a.txt')), 15000))
+  const pcDir = pc.dir
+  await pc.close()
+  fs.writeFileSync(path.join(laptopDocs, 'a.txt'), 'edited before')
+  t.ok(await laptopEvents.wait((e) => e.action === 'updated'), 'the laptop records its edit')
+  const laptopDir = laptop.dir
+  await laptop.close()
+  await sleep(50)
+  pc = await device(t, 'pc', { dir: pcDir, minFree: 0 })
+  const pcEvents = syncEvents(pc)
+  await pc.sync()
+  fs.rmSync(path.join(pcDocs, 'a.txt'))
+  t.ok(await pcEvents.wait((e) => e.action === 'removed'), 'the PC records the delete (it has not seen the edit)')
+  laptop = await device(t, 'laptop', { dir: laptopDir, minFree: 0 })
+  await laptop.sync()
+  t.ok(await eventually(() => !fs.existsSync(path.join(laptopDocs, 'a.txt')), 20000), 'gone from the laptop folder')
+  t.ok([...contents(laptopDocs).values()].includes(Buffer.from('edited before').toString('hex')), 'the edit in its trash')
+  t.ok(pc)
 })
