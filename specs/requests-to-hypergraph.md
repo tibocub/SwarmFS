@@ -114,7 +114,7 @@ these and doesn't edit hypergraph; the lead conversation decides.
   after del true 2 {"types":["file"]} logs
   ```
 
-- **H17 — A device paired after a private space got big never gets access.** The PC adds a folder
+- **H17 — A device paired after a private space got big never gets access.** **Done 2026-10-29** (hypergraph 053324d: the indexer stopped at a batch of locked records; SwarmFS repro passes, suite 63/63 Node and Bare). The PC adds a folder
   of 1,000 files to a private space (`createSpace({ private: true })`, with or without `policy:
   'everything'`), then pairs the laptop. The laptop lists the space in 0.4 s, but after 90 s its
   `status()` is `{ access: 'waiting', held: 'all', peers: 1 }`: no record readable, `get()` of the

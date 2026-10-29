@@ -69,7 +69,7 @@ None makes swarmwire import hypergraph.
 
 ## New (2026-10-28, spec 002 "always on")
 
-- **S9 — Close a served file once idle.** `OnDemand` keeps up to `maxOpen` (64) served files open
+- **S9 — Close a served file once idle.** **Done 2026-10-29** (swarmwire c1f6484: closed after 5 s unread; SwarmFS suite 63/63 Node and Bare). `OnDemand` keeps up to `maxOpen` (64) served files open
   until evicted, with no time limit. On Windows a folder holding an open file can't be renamed,
   moved or deleted (`EPERM`): after the laptop fetched a 100-file folder from the PC, the person
   couldn't rename that folder on the PC — for as long as SwarmFS runs. With linked folders this is
