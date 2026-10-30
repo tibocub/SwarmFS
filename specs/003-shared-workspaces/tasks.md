@@ -165,9 +165,9 @@ Built before story 2: story 2's tests delete.
 
 ## Phase 10: Polish
 
-- [ ] T031 [P] `specs/003-shared-workspaces/quickstart.md` played by hand on two shells; fix drift
-- [ ] T032 [P] `CLAUDE.md` state line for spec 003; `specs/requests-to-*.md`: H19, H20, S10 status
-- [ ] T033 `npm run test:all` on Node and Bare (TEMP/TMP on `E:\Code\P2P\.tmp`), leftovers deleted;
+- [ ] T031 [P] `specs/003-shared-workspaces/quickstart.md` played by hand on two shells; fix drift (not done: by hand, for Tibo; `test/cli.test.js` plays most of it)
+- [X] T032 [P] `CLAUDE.md` state line for spec 003; `specs/requests-to-*.md`: H19, H20, S10 status
+- [X] T033 `npm run test:all` on Node and Bare (TEMP/TMP on `E:\Code\P2P\.tmp`), leftovers deleted;
   SC-008: no networking, replication, crypto, permission or transfer code in `lib/` (grep for imports)
 
 ## Dependencies
