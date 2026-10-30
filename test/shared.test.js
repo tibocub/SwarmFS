@@ -70,5 +70,6 @@ test('two entries of one name from two people: the second placed under its autho
     return a.length === 3 && JSON.stringify(a) === JSON.stringify(files(setup.bobDocs)) && a
   }, 30000)
   t.ok(same, 'both plans on both disks, the same names')
+  if (!same) t.comment(JSON.stringify([files(setup.aliceDocs), files(setup.bobDocs)]))
   if (same) t.ok(same.some(([n]) => /^plan \((Alice|Bob)'s copy\)\.txt$/.test(n)), `${same.map(([n]) => n)}`)
 })
