@@ -123,7 +123,7 @@ all": Carol's files leave Bob's folder into his trash.
 **Acceptance Scenarios**:
 
 1. **Given** Carol a member with a linked folder, **When** Alice removes her, **Then** Carol's local
-   files are untouched, her linked folder stops (`stopped: removed`), and files added afterwards
+   files are untouched, her linked folder is paused ("removed from Family"), and files added afterwards
    never reach her.
 2. **Given** Carol removed, **When** Bob lists the tree, **Then** Carol's files are still there; files
    only Carol held are no longer fetchable from her.
@@ -211,6 +211,8 @@ delete to the bin, a restore, a removal.
 - **Bob edits a file while Alice moves it to the bin**: the edit lands on the entry in the bin; on
   Bob's disk the unrecorded edit is kept (spec 002 FR-016: re-added as an entry, not trashed).
 - **Restoring into a folder that was emptied for good**: restored at the space's top.
+- **A folder someone else linked goes to the bin** (Bob removes `Photos`, which Alice linked as a
+  whole): Alice's linked folder is paused ("in the bin"), her files untouched; restored, it resumes.
 - **Two people restore and delete one entry at once**: latest wins, the same for everyone.
 - **A ban with "drop all" of someone who renamed others' files**: their edits up to the ban stay
   (hypergraph's rule); only their own entries go.

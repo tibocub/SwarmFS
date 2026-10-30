@@ -163,3 +163,19 @@ these and doesn't edit hypergraph; the lead conversation decides.
   file recorded 2.8 s (was 3.3 s, 2 s settle included); SC-002 3.2 s.
 - **H18 (new, small)** — a record shows `edited: true`, not its version's stamp, so "compare `stamp`
   with an edit's" (docs/next/api.md) can't be done from a record. SwarmFS compares the file's mtime.
+
+## Found while planning spec 003 "shared workspaces" (2026-10-30)
+
+- **H19 — A space may take `invite` from its admins.** Tibo wants a space's creator to choose who
+  invites: everyone, chosen people, or the owner only. Built-in `admin` always has `invite`, and a
+  built-in role's permissions can't change, so "owner only" holds only while the space has no admin —
+  against the docs' "give a space an admin". Wanted: a per-space way to leave `invite` out of
+  `admin` (e.g. `defineRole`-like `setRolePermissions('admin', { invite: false })`, or an invite
+  policy on the space). Not blocking: 003 ships "owner and admins" (Tibo, 2026-10-30).
+- **H20 — A role with `invite` inviting to a custom role below or equal to it.** `mayInvite` lets a
+  maker invite to `member`, `guest`, its own role (if it has no power), or a lower rank. Custom roles
+  all rank as a member, so SwarmFS's `trusted` (`post`, `invite`) can't invite people as `editor`
+  (`post`), the role everyone in a files space has. Wanted: a maker may invite to any custom role with
+  no power over others (`decide`, `moderate`, `roles`) whose permissions it holds (the same check
+  `grantable` already does). Blocks 003 story 5's "chosen people" for trusted members (owners and
+  admins work).
