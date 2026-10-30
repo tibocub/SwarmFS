@@ -156,7 +156,8 @@ each try to make an invite; switch a space's setting and try again.
    **When** Alice makes Bob trusted, **Then** Bob's invites work and let people in as plain members.
 3. **Given** "owner and admins", **When** a member or a trusted member tries, **Then** refused.
 4. **Given** a space switched from "everyone" to another setting, **When** a member tries, **Then**
-   refused; codes made before stay valid until used, expired or revoked.
+   refused, and so are codes they made before (a code is judged when used, by its maker's role
+   then); the owner's and admins' codes stay valid until used, expired or revoked.
 5. **Given** any setting, **When** anyone tries to invite someone as owner or admin, **Then** only
    the owner (admins: below admin) may, as hypergraph rules.
 
@@ -238,7 +239,7 @@ delete to the bin, a restore, a removal.
   a code and then see the space's whole tree.
 - **FR-002**: The creator MUST choose who may invite when making a space — everyone, chosen people
   (owner, admins, members with the "trusted" role) or owner and admins — and the owner MUST be able
-  to change it later; codes made before a change stay valid.
+  to change it later; a code is judged when used (its maker must still be allowed to invite).
 - **FR-003**: Owners and admins MUST be able to list members (name, role, short key), give or take the
   admin and trusted roles, remove and ban members (optionally dropping all they added).
 - **FR-004**: A person MUST be able to set a name, the same on all their devices, shown to every
