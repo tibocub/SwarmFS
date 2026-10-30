@@ -193,3 +193,36 @@ export async function filesOnPC (t, files, phoneOpts = {}) {
   const byName = Object.fromEntries((online || []).map((i) => [i.name, i]))
   return { pc, phone, drive, pd, disk, byName, out: tmpDir(t, 'out') }
 }
+
+// A person of their own (a new identity, its own instance folder), named `label` (spec 003).
+export async function person (t, label = 'alice', opts = {}) {
+  const sfs = await device(t, label, { minFree: 0, ...opts })
+  await sfs.setName(label[0].toUpperCase() + label.slice(1))
+  return sfs
+}
+
+// Bob joins `drive` (one of Alice's spaces) with a fresh invite; his Drive once he sees it.
+export async function invited (t, drive, who, opts) {
+  const code = await drive.invite(opts)
+  return who.join(code)
+}
+
+// Alice's space "Family" with folder `docs/` (from `files`), Bob invited and the folder linked
+// on his PC; both syncing. Like linkedPair, between two people.
+export async function sharedPair (t, files = { 'docs/a.txt': 'aaaa' }, { invites = 'admins' } = {}) {
+  const alice = await person(t, 'alice')
+  const bob = await person(t, 'bob')
+  const drive = await alice.createSpace('Family', { invites })
+  const bd = await invited(t, drive, bob)
+  const disk = writeTree(tmpDir(t, 'alice-disk'), files)
+  const docs = await drive.add(path.join(disk, 'docs'))
+  const aliceEvents = syncEvents(alice)
+  const bobEvents = syncEvents(bob)
+  await alice.sync()
+  await bob.sync()
+  const there = path.join(tmpDir(t, 'bob-disk'), 'docs')
+  const seen = await eventually(async () => (await bd.get(docs.id).catch(() => null)) && (await bd.list(docs.id, { timeout: 500 })).complete, 90000)
+  if (!seen) throw new Error('Bob never saw docs/')
+  await bd.link(docs.id, there)
+  return { alice, bob, drive, bd, docs, aliceDocs: path.join(disk, 'docs'), bobDocs: there, aliceEvents, bobEvents }
+}

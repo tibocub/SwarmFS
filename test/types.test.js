@@ -33,3 +33,18 @@ test('file.base: absent, or 1 to 16 roots separated by single spaces (swarmfs/ba
   const edited = await space.edit(f.id, { content: ref(B), base: A })
   t.is(edited.base, A, 'edit sets it')
 })
+
+test('the bin and names: parent "bin" needs from (swarmfs/bin-v1); profile names (swarmfs/profile-v1)', async (t) => {
+  const sfs = await device(t)
+  const { space } = await sfs.createSpace('bin')
+
+  const f = await space.put('file', { name: 'f', parent: space.key, content: ref(A) })
+  t.is(f.from, null, 'a record without the 003 fields reads them null')
+  t.is(await codeOf(space.edit(f.id, { parent: 'bin' })), 'RULE_REJECTED', 'in the bin without from')
+  const binned = await space.edit(f.id, { parent: 'bin', from: space.key, binned: Date.now() })
+  t.is(binned.from, space.key)
+  t.is(await codeOf(space.put('folder', { name: 'x', parent: 'bin', from: '' })), 'RULE_REJECTED', 'empty from')
+
+  t.ok(await space.put('profile', { name: 'Alice' }))
+  for (const name of ['', 'a\nb', 'x'.repeat(65)]) t.is(await codeOf(space.put('profile', { name })), 'RULE_REJECTED', `name ${JSON.stringify(name.slice(0, 8))}`)
+})
