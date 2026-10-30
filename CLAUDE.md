@@ -18,6 +18,10 @@ Spec 002 "always on" (linked folders, trash, conflict copies, pause, mass-delete
 constitution 1.1.0) built on branch `claude/002-always-on-b8e921` (`lib/sync.js`, `watch.js`,
 `ignore.js`, `trash.js`; `sfs.sync()`, the shell syncs while it runs), awaiting review. Open:
 hypergraph H14–H17, swarmwire S9.
+Spec 003 "shared workspaces" (several people in a space: invites, names, the bin, removal, invite
+setting, shown holdings; `lib/members.js`) built on branch `claude/003-shared-workspaces-4ddccc`,
+awaiting review. Blocked: swarmwire S10 (serving scoped by peer: nothing shared with real people
+before it), hypergraph H20 (trusted members inviting); filed H19, H21.
 
 ## Governing documents
 

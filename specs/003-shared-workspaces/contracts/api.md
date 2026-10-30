@@ -13,7 +13,8 @@ const drive = await sfs.join(code)          // redeem an invite → the Drive; h
 await drive.invite({ uses = 1, expires })   // → code; NOT_ALLOWED if the setting doesn't let this person
 await drive.revokeInvite(code)
 await drive.invites()                       // setting: 'everyone' | 'chosen' | 'admins'
-await drive.setInvites(setting)             // owner (admins: hypergraph's rule)
+await drive.setInvites(setting)             // owner and admins; a code is judged when used (its
+                                            //   maker must still be allowed to invite)
 await drive.members()                       // [{ identity, name, role, you, removed, banned, online }]
 await drive.setRole(identity, role)         // 'admin' | 'trusted' | 'editor'
 await drive.removeMember(identity, { ban = false, dropAll = false })
@@ -25,11 +26,11 @@ await drive.restore(id)                     // back to `from`, or the top if gon
 await drive.emptyBin()                      // → { removed, kept }: kept = entries this person may not delete
 
 await drive.showHoldings(on)                // this person, this space; default off
-drive.list() / drive.get()                  // holders: own devices as before, plus
+drive.list() / drive.get()                  // holders: own devices as before, plus (from `has`)
                                             //   { identity, name, online } of people showing holdings
 
 await sfs.links()                           // paused adds 'removed' | 'in-bin'
-sfs.on('sync', e)                           // actions add 'binned' | 'restored' (local path)
+sfs.on('sync', e)                           // paused reasons add 'removed' | 'in-bin'
 sfs.on('members', ({ space, joined, left })) // identities, with names
 ```
 
@@ -52,6 +53,6 @@ bin empty <space>                    asks "delete N entries for good? (yes/no)"
 show-holdings <space> on|off
 ```
 
-`<member>`: a name (unique in the space) or a key prefix. Shell lines: `joined <space>: Bob`,
-`left <space>: Carol`, `paused <folder> (removed from <space>)`, `paused <folder> (in the bin)`,
-`binned <path>`, `restored <path>`.
+`<member>`: a name (unique in the space) or a key prefix. Shell lines: `joined    <space>: Bob`,
+`left      <space>: Carol`, `paused <folder> (removed from <space>)`, `paused <folder> (in the bin)`.
+A file leaving a linked folder through the bin prints spec 002's `trashed`; a restored one `fetched`.
