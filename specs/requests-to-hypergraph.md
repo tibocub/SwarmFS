@@ -179,3 +179,15 @@ these and doesn't edit hypergraph; the lead conversation decides.
   no power over others (`decide`, `moderate`, `roles`) whose permissions it holds (the same check
   `grantable` already does). Blocks 003 story 5's "chosen people" for trusted members (owners and
   admins work).
+
+## Found while building spec 003 (2026-10-30)
+
+- **H21 — `get()` says `deleted: null` for a record a ban's `drop: 'all'` removed.** After
+  `moderateAction('ban', carol, { drop: 'all' })`, Bob's `change` names Carol's file with
+  `deleted: { by: 'space' }`, but `space.get(id)` then answers `{ record: null, deleted: null }` (on
+  Alice's device too): "not here", not "taken down". docs/next/api.md: `deleted` is `{ by: 'space' }`
+  for "a moderator's take-down, a ban". An app re-reading what `change` named (as the docs advise) and
+  acting on removals only when `get()` says deleted keeps the file forever. SwarmFS now also trusts
+  the `deleted` carried by `change` (`lib/sync.js` `read()`; marked H21). Wanted: `get()` reports
+  `{ by: 'space' }` for records dropped by a ban (`from` or `drop: 'all'`) and by a write limit.
+  Repro: SwarmFS `test/removal.test.js` "a ban dropping all" with the H21 line in `read()` reverted.
