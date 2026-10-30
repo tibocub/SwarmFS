@@ -17,7 +17,7 @@ test('Bob joins with a code, sees the tree and the members; his linked folder fi
   t.alike(people && people.map((p) => [p.name, p.role]), [['Alice', 'owner'], ['Bob', 'editor']], 'members with names and roles')
   t.ok(people.find((p) => p.name === 'Alice').you, 'you')
 
-  const filled = await eventually(() => fs.existsSync(path.join(bobDocs, 'sub', 'b.txt')) && fs.readFileSync(path.join(bobDocs, 'a.txt'), 'utf8') === 'aaaa', 20000)
+  const filled = await eventually(() => fs.existsSync(path.join(bobDocs, 'sub', 'b.txt')) && fs.existsSync(path.join(bobDocs, 'a.txt')) && fs.readFileSync(path.join(bobDocs, 'a.txt'), 'utf8') === 'aaaa', 20000)
   t.ok(filled, 'Bob\'s folder filled from Alice\'s PC')
   t.ok(alice.spaces().some((s) => s.name === 'Family'))
 })

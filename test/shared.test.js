@@ -12,7 +12,8 @@ const files = (dir) => [...contents(dir)].filter(([p]) => !p.includes('.swarmfs-
 
 test('Bob adds, edits, renames and moves Alice\'s files; her disk follows; 1 MB across people', { timeout: 120000 }, async (t) => {
   const { aliceDocs, bobDocs } = await sharedPair(t, { 'docs/a.txt': 'a1', 'docs/b.txt': 'b', 'docs/sub/c.txt': 'c' })
-  t.ok(await eventually(() => read(path.join(bobDocs, 'sub', 'c.txt')) && read(path.join(bobDocs, 'b.txt')), 20000))
+  t.ok(await eventually(() => read(path.join(bobDocs, 'sub', 'c.txt')) && read(path.join(bobDocs, 'b.txt')) && read(path.join(bobDocs, 'a.txt')) === 'a1', 20000))
+  await sleep(500) // held recorded after placing
 
   fs.writeFileSync(path.join(bobDocs, 'a.txt'), 'a2 by Bob')
   fs.renameSync(path.join(bobDocs, 'b.txt'), path.join(bobDocs, 'b2.txt'))
