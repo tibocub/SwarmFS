@@ -144,13 +144,15 @@ export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, { laptopF
   return { pc, laptop, drive, ld, docs, pcDocs: path.join(disk, 'docs'), laptopDocs: there, pcEvents, laptopEvents }
 }
 
-// BLAKE3-free fingerprint of every file under `dirs` (path -> hex bytes), for SC-006.
+// BLAKE3-free fingerprint of every file under `dirs` (path -> hex bytes), for SC-006. Not the
+// trash's `.incoming`: downloads in progress, no one's version (they vanish once placed).
 export function contents (dir) {
   const out = new Map()
   if (!fs.existsSync(dir)) return out
   const walk = (d) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, e.name)
+      if (e.isDirectory() && e.name === '.incoming') continue
       if (e.isDirectory()) walk(full)
       else out.set(full, fs.readFileSync(full).toString('hex'))
     }
