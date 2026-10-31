@@ -12,7 +12,7 @@ code. Every test runs on Node and on Bare (constitution III): `npm run test:all`
 run with `TEMP=/e/Code/P2P/.tmp TMP=/e/Code/P2P/.tmp` (C: nearly full; delete leftovers there after).
 Safety (SC-004) in every test with linked folders: 002's `assertNothingLost`.
 
-**Blocked**: T009 needs swarmwire **S10**; T023's scenario 2 (trusted invites) needs hypergraph **H20**. Build
+**Blocked**: T009 needed swarmwire **S10** (landed 2026-10-31, T009 done); T023's scenario 2 (trusted invites) needs hypergraph **H20**. Build
 the rest; keep those tests marked `todo` with the request id until it lands. Never work around them.
 
 ## Format: `[ID] [P?] [Story] Description`
@@ -59,7 +59,7 @@ the rest; keep those tests marked `todo` with the request id until it lands. Nev
 - [X] T008 [US1] `lib/drive.js`: `invite({ uses = 1, expires })` → code (role `editor`),
   `revokeInvite(code)`, `members()` → `[{ identity, name, role, you, removed, banned, online }]`
   (`space.members()` + `namesOf` + `peers()`)
-- [ ] T009 [US1] (**S10**, blocked; its test is `test.todo` in `test/invite.test.js`) `test/invite.test.js` scenario 6 (failing first): Alice holds a file in her
+- [X] T009 [US1] (**S10**, landed: `resolve` and `allowed`, a download in progress too, checked the same way) `test/invite.test.js` scenario 6 (failing first): Alice holds a file in her
   personal sync space and one in "Family"; Bob, in "Family" only, asks the first's root: 0 bytes
   (SC-005); the second arrives. Then `lib/transfer.js`: `resolve(root, peer)` answers from own
   `held` with that root whose `space` has `peer.publicKey` among `memberConnections()` devices; null
@@ -175,7 +175,7 @@ Built before story 2: story 2's tests delete.
 - Setup → Foundational (T003 types first; T004, T005 after) → stories.
 - US1 → US3 → US2 (US2's tests delete through the bin) → US4, US5, US6 (independent of each other)
   → US7 → Polish.
-- T009 waits on swarmwire S10; T023's scenario 2 on hypergraph H20.
+- T009 waited on swarmwire S10 (done); T023's scenario 2 on hypergraph H20.
 
 ## Parallel opportunities
 

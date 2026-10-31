@@ -96,7 +96,7 @@ None makes swarmwire import hypergraph.
 
 ## New (2026-10-30, spec 003 "shared workspaces") — blocks sharing with other people
 
-- **S10 — `resolve(root, peer)`: who asks.** `resolve(rootHex)` doesn't say which peer asked. With
+- **S10 — `resolve(root, peer)`: who asks.** **Done 2026-10-31** (swarmwire 0c373a1, 2d6bfa4: `resolve(root, peer)` and `allowed(root, peer)`; SwarmFS answers both only for spaces the peer's device is a member of, T009). `resolve(rootHex)` doesn't say which peer asked. With
   several people, a member of one space could fetch any file this device holds — from another space
   or the person's private ones — by asking its hash (lead review 2026-10-28: "before shared
   workspaces, `resolve` must be scoped by peer and space"). Wanted: `resolve(rootHex, peer)` with at
