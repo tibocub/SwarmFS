@@ -163,3 +163,31 @@ these and doesn't edit hypergraph; the lead conversation decides.
   file recorded 2.8 s (was 3.3 s, 2 s settle included); SC-002 3.2 s.
 - **H18 (new, small)** — a record shows `edited: true`, not its version's stamp, so "compare `stamp`
   with an edit's" (docs/next/api.md) can't be done from a record. SwarmFS compares the file's mtime.
+
+## Found while planning spec 003 "shared workspaces" (2026-10-30)
+
+- **H19 — A space may take `invite` from its admins.** Tibo wants a space's creator to choose who
+  invites: everyone, chosen people, or the owner only. Built-in `admin` always has `invite`, and a
+  built-in role's permissions can't change, so "owner only" holds only while the space has no admin —
+  against the docs' "give a space an admin". Wanted: a per-space way to leave `invite` out of
+  `admin` (e.g. `defineRole`-like `setRolePermissions('admin', { invite: false })`, or an invite
+  policy on the space). Not blocking: 003 ships "owner and admins" (Tibo, 2026-10-30).
+- **H20 — A role with `invite` inviting to a custom role below or equal to it.** `mayInvite` lets a
+  maker invite to `member`, `guest`, its own role (if it has no power), or a lower rank. Custom roles
+  all rank as a member, so SwarmFS's `trusted` (`post`, `invite`) can't invite people as `editor`
+  (`post`), the role everyone in a files space has. Wanted: a maker may invite to any custom role with
+  no power over others (`decide`, `moderate`, `roles`) whose permissions it holds (the same check
+  `grantable` already does). Blocks 003 story 5's "chosen people" for trusted members (owners and
+  admins work).
+
+## Found while building spec 003 (2026-10-30)
+
+- **H21 — `get()` says `deleted: null` for a record a ban's `drop: 'all'` removed.** After
+  `moderateAction('ban', carol, { drop: 'all' })`, Bob's `change` names Carol's file with
+  `deleted: { by: 'space' }`, but `space.get(id)` then answers `{ record: null, deleted: null }` (on
+  Alice's device too): "not here", not "taken down". docs/next/api.md: `deleted` is `{ by: 'space' }`
+  for "a moderator's take-down, a ban". An app re-reading what `change` named (as the docs advise) and
+  acting on removals only when `get()` says deleted keeps the file forever. SwarmFS now also trusts
+  the `deleted` carried by `change` (`lib/sync.js` `read()`; marked H21). Wanted: `get()` reports
+  `{ by: 'space' }` for records dropped by a ban (`from` or `drop: 'all'`) and by a write limit.
+  Repro: SwarmFS `test/removal.test.js` "a ban dropping all" with the H21 line in `read()` reverted.

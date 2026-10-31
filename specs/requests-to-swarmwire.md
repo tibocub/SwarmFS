@@ -93,3 +93,14 @@ None makes swarmwire import hypergraph.
 
 - **S4 — Persistent hash cache.** After a restart, serving a file rehashes it on first request (cache
   in memory only). Fine for v1; big archives will want the outboard kept.
+
+## New (2026-10-30, spec 003 "shared workspaces") — blocks sharing with other people
+
+- **S10 — `resolve(root, peer)`: who asks.** **Done 2026-10-31** (swarmwire 0c373a1, 2d6bfa4: `resolve(root, peer)` and `allowed(root, peer)`; SwarmFS answers both only for spaces the peer's device is a member of, T009). `resolve(rootHex)` doesn't say which peer asked. With
+  several people, a member of one space could fetch any file this device holds — from another space
+  or the person's private ones — by asking its hash (lead review 2026-10-28: "before shared
+  workspaces, `resolve` must be scoped by peer and space"). Wanted: `resolve(rootHex, peer)` with at
+  least the peer id the app gave at `connection` (`{ publicKey }`); the cache must not serve a root
+  opened for one peer to another without asking `resolve` again (or key the open source by peer, or
+  a `allowed(root, peer)` check before each serve). SwarmFS then answers only from files of spaces
+  that peer's device is a member of. Without it SwarmFS can't be shared with other people.

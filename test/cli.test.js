@@ -147,6 +147,56 @@ test('spec 002: two shells keep a linked folder in sync; link, links, trash, tra
   t.is(await pc.exit(), 0)
 })
 
+test('spec 003: two people: name, create, invite, accept, a file across, bin, restore, bin empty, remove', { timeout: 150000 }, async (t) => {
+  const b = (await bootstrap(t))[0]
+  const flags = (name) => ['--dir', tmpDir(t, name), '--name', 'pc', '--bootstrap', `${b.host}:${b.port}`]
+  const aliceFlags = flags('alice')
+  const bobFlags = flags('bob')
+  const disk = writeTree(tmpDir(t, 'disk'), { 'docs/a.txt': 'from Alice' })
+  const there = path.join(tmpDir(t, 'bob-disk'), 'docs')
+  const env = { ...withPassword, SWARMFS_MIN_FREE: '0' }
+  await done(t, ['init', ...aliceFlags], env)
+  await done(t, ['init', ...bobFlags], env)
+
+  const alice = shell(t, aliceFlags, env)
+  await alice.ready()
+  t.ok((await alice.do('name Alice')).includes('name: Alice'), 'name')
+  t.ok((await alice.do('create Family --invites admins')).includes('Family'), 'create with an invite setting')
+  t.ok((await alice.do('invites Family')).includes('invites: admins'))
+  const docs = rows(await alice.do(`add Family "${path.join(disk, 'docs')}"`))[0]
+  const code = (await alice.do('invite Family')).trim()
+  t.ok(code.length > 10, 'invite prints a code')
+
+  const bob = shell(t, bobFlags, env)
+  await bob.ready()
+  await bob.do('name Bob')
+  t.ok((await bob.do(`accept ${code}`)).includes('joined'), 'accept')
+  const joined = await eventually(() => /^joined\s+Family: /m.test(alice.stdout()), 20000)
+  t.ok(joined, 'Alice\'s shell says someone joined')
+  if (!joined) t.comment(alice.stdout().slice(-600) + alice.stderr())
+  t.ok(await eventually(async () => rows(await bob.do(`ls Family ${docs[0]}`)).length === 1, 20000), 'Bob sees docs/')
+  await bob.do(`link Family ${docs[0]} "${there}"`)
+  t.ok(await eventually(() => fs.existsSync(path.join(there, 'a.txt')), 20000), 'a file across')
+  t.ok(await eventually(async () => (await alice.do('members Family')).includes('Bob\teditor'), 10000), 'members')
+
+  fs.rmSync(path.join(there, 'a.txt'))
+  const binned = await eventually(async () => rows(await alice.do('bin Family')).find((r) => r[2] === 'a.txt'), 20000)
+  t.ok(binned && binned[3] === 'Bob', 'bin lists it, deleted by Bob')
+  t.ok((await alice.do(`restore Family ${binned[0]}`)).includes('a.txt'), 'restore')
+  t.ok(await eventually(() => fs.existsSync(path.join(there, 'a.txt')), 20000), 'back on Bob\'s disk')
+  fs.rmSync(path.join(there, 'a.txt'))
+  await eventually(async () => rows(await alice.do('bin Family')).length === 1, 20000)
+  const asked = await bob.do('bin empty Family\nyes')
+  t.ok(asked.includes('for good') && asked.includes('kept 1'), 'bin empty asks; Bob may not delete Alice\'s file')
+
+  t.ok((await alice.do('remove Family Bob')).includes('removed'), 'remove')
+  t.ok(await bob.until(/^paused\s+.*\(removed from Family\)/m), 'Bob\'s shell says so')
+  alice.stdin.write('quit\n')
+  bob.stdin.write('quit\n')
+  t.is(await alice.exit(), 0)
+  t.is(await bob.exit(), 0)
+})
+
 // Every file under `dir`.
 function files (dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? files(path.join(dir, e.name)) : [path.join(dir, e.name)])
