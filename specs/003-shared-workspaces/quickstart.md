@@ -13,7 +13,7 @@ SWARMFS_PASSWORD=pw swarmfs --dir ./bob
 ```
 
 Alice: `name Alice`, `create Family --invites admins`, `add Family ./Photos`, `invite Family` → code.
-Bob: `name Bob`, `accept <code>`, `ls Family`, `link Family <Photos id> ./Photos`.
+Bob: `name Bob`, `accept <code>`, `ls Family`, `link Family Photos ./Photos`.
 
 ## Check
 

@@ -52,7 +52,7 @@ await sfs.close()
 
 CLI (story 5): `swarmfs [--dir d] [--name n] [--bootstrap host:port] [shell]`: online until `quit`,
 end of input or Ctrl+C; reads, one per line: `create <name> | add <space> <path> | ls <space> [folder] |
-get <space> <id> <path> | rescan | devices | pair | help | quit`, each followed by a `>` line. One-shot:
+get <space> <file> <path> | rescan | devices | pair | help | quit` (`folder`, `file`: a path of names from the top, or an id), each followed by a `>` line when piped (in a terminal, `> ` starts the line typed on). One-shot:
 `init`, `join <code>`, and the shell's commands (scripts; `pair` then ends once the device joined;
 `ls`/`get` wait up to 15 s for another device to connect); while a shell holds the folder they fail
 with `IN_USE`. `<space>`: name or key, quoted if it has spaces. Password (ROADMAP 2026-10-09: the

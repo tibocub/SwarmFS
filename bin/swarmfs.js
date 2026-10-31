@@ -20,10 +20,10 @@ const USAGE = `usage: swarmfs [command] [--dir <folder>] [--name <device name>] 
   create <name> [--invites everyone|chosen|admins]  a files space (who may invite; default admins)
   add <space> <path>         a file or folder, in place
   ls <space> [folder]        entries: id, kind, name, size, holders
-  get <space> <id> <path>    fetch a file to <path>
+  get <space> <file> <path>  fetch a file to <path>
   rescan                     follow the disk
-  link <space> <folder> <path>  sync a space folder (id from ls; the space's name for its
-                             top) with a local folder, both ways (the shell keeps it in sync)
+  link <space> <folder> <path>  sync a space folder (the space's name for its top) with a
+                             local folder, both ways (the shell keeps it in sync)
   unlink <path>              stop syncing it; files and entries stay
   links                      linked folders here
   confirm <path>             apply a mass delete a linked folder was paused for
@@ -45,7 +45,8 @@ const USAGE = `usage: swarmfs [command] [--dir <folder>] [--name <device name>] 
   pair                       print a code for a new device (one-shot: ends once it joined);
                              asks for the password (once per shell)
   quit                       end the shell (also: end of input, Ctrl+C)
-<space>: a name or a key, quoted if it has spaces. <member>: a name or the start of a key. --dir: default ~/.swarmfs. --name: this
+<space>: a name or a key, quoted if it has spaces. <folder>, <file>: a path of names from the
+top ("Photos/2024", quoted if it has spaces) or an id from ls. <member>: a name or the start of a key. --dir: default ~/.swarmfs. --name: this
 device's name when made (default: the host name). --bootstrap: a private DHT (tests).
 The password keeps the recovery phrase sealed in the folder; typed hidden, or taken from
 SWARMFS_PASSWORD (scripts, tests). Syncing leaves max(5 GB, 5 % of the disk) free;
@@ -65,6 +66,8 @@ const [command = 'shell', ...rest] = args
 const inShell = command === 'shell'
 let pass = null // the password, once asked
 let input = null // stdin's lines (nextLine), once read
+const terminal = !!process.stdout.isTTY // the shell's prompt: "> " on the line typed on
+let waiting = false // the shell's prompt is shown, nothing typed yet
 
 const commands = {
   init: async (sfs) => console.log(`device ${sfs.device}`),
@@ -157,6 +160,7 @@ const commands = {
   ls: async (sfs, space, folder) => {
     const d = await drive(sfs, space)
     await online(sfs, d)
+    folder = await entry(d, folder)
     let page = { items: [] }
     do {
       const last = page.items.at(-1)
@@ -169,7 +173,7 @@ const commands = {
   get: async (sfs, space, id, file) => {
     const d = await drive(sfs, space)
     await online(sfs, d)
-    const { path, bytes } = await d.fetch(id, file)
+    const { path, bytes } = await d.fetch(await entry(d, id), file)
     console.log(`${path}\t${bytes} bytes`)
   },
 
@@ -177,7 +181,7 @@ const commands = {
 
   link: async (sfs, space, folder, local) => {
     const d = await drive(sfs, space)
-    await d.link(folder === space || folder === d.key ? d.top : folder, local)
+    await d.link(await entry(d, folder), local)
     console.log(`linked ${path.resolve(local)}`)
   },
 
@@ -255,19 +259,34 @@ if (!inShell && !commands[command]) {
   }
 }
 
-// Commands from stdin, one at a time, each followed by a `>` line (the prompt).
+// In a terminal, "> " starts the line typed on; piped (scripts, tests), a `>` line follows each
+// command's output, since on Bare process.stdout.write never reaches a piped stdout.
+function prompt () {
+  if (terminal) process.stdout.write('> ')
+  else console.log('>')
+  waiting = true
+}
+
+// A line printed while the shell waits for a command: over the prompt, which is shown again after it.
+function event (text) {
+  if (!terminal || !waiting) return console.log(text)
+  process.stdout.write(`\r\x1b[K${text}\n> `)
+}
+
+// Commands from stdin, one at a time, each followed by the prompt.
 async function shell (sfs) {
-  console.log(`device ${sfs.device} (${name}), online; "help" lists the commands`)
-  sfs.on('sync', (e) => console.log(syncLine(e, sfs)))
+  const self = (await sfs.devices()).find((d) => d.current)
+  console.log(`device ${sfs.device} (${self?.name || name}), online; "help" lists the commands`)
+  sfs.on('sync', (e) => event(syncLine(e, sfs)))
   const who = (people) => people.map((p) => p.name || p.identity.slice(0, 8)).join(', ')
   sfs.on('members', (e) => {
-    if (e.joined.length) console.log(`joined    ${spaceName(sfs, e.space)}: ${who(e.joined)}`)
-    if (e.left.length) console.log(`left      ${spaceName(sfs, e.space)}: ${who(e.left)}`)
+    if (e.joined.length) event(`joined    ${spaceName(sfs, e.space)}: ${who(e.joined)}`)
+    if (e.left.length) event(`left      ${spaceName(sfs, e.space)}: ${who(e.left)}`)
   })
   await sfs.sync() // linked folders kept in sync while the shell runs (spec 002)
   process.once('SIGINT', () => push('quit'))
   for (;;) {
-    console.log('>')
+    prompt()
     const typed = await nextLine()
     if (typed === null) break // end of input
     const [cmd, ...words] = (typed.match(/"[^"]*"|\S+/g) || []).map((w) => w.replace(/^"(.*)"$/, '$1'))
@@ -335,6 +354,7 @@ function nextLine () {
 }
 
 function push (line) {
+  waiting = false
   input.lines.push(line)
   input.typed = ''
   input.wake()
@@ -357,6 +377,28 @@ async function drive (sfs, nameOrKey) {
   const s = find()
   if (!s) throw Object.assign(new Error(`no space ${nameOrKey}`), { code: 'NOT_FOUND' })
   return sfs.space(s.key)
+}
+
+// An entry's id from what was typed: an id, the space's name or key (its top), or a path of
+// names from the top ("Photos/2024/cat.jpg", / or \).
+async function entry (d, typed) {
+  if (typed === undefined) return undefined
+  if (typed === d.name || typed === d.key) return d.top
+  try {
+    if ((await d.space.get(typed)).record) return typed
+  } catch {} // not an id: a path
+  let id = d.top
+  for (const part of typed.split(/[/\\]/).filter(Boolean)) {
+    const found = []
+    let page = { items: [] }
+    do {
+      page = await d.list(id, { after: page.items.at(-1), timeout: inShell ? 0 : WAIT })
+      found.push(...page.items.filter((e) => e.name === part))
+    } while (page.items.length === 100)
+    if (found.length !== 1) throw Object.assign(new Error(found.length ? `${typed}: more than one ${part}; use its id (ls)` : `no entry ${typed}`), { code: found.length ? 'AMBIGUOUS' : 'NOT_FOUND' })
+    id = found[0].id
+  }
+  return id
 }
 
 // Holders show online only once connected: one-shot, wait for one of the person's other

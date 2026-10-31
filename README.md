@@ -66,9 +66,9 @@ swarmfs                           # a shell, online (serving) until quit
 swarmfs join <code>               # asks for a password too
 swarmfs
 > ls "My files"
-> ls "My files" <folder id>
-> get "My files" <file id> ./a.jpg
-> link "My files" <folder id> ~/photos   # kept in sync both ways while the shell runs
+> ls "My files" photos
+> get "My files" photos/a.jpg ./a.jpg     # a path of names, or an id from ls
+> link "My files" photos ~/photos         # kept in sync both ways while the shell runs
 > trash                                  # what syncing replaced or removed
 ```
 
