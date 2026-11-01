@@ -53,6 +53,21 @@ Sibling repos as local paths (`"hypergraph": "file:../hypergraph"`, `"swarmwire-
 see ECOSYSTEM.md. In a worktree under `.claude/worktrees/`, junction `node_modules` to the main
 checkout's (`mklink /J node_modules <main>\node_modules`) instead of installing. hypergraph is CommonJS, swarmwire is ESM; SwarmFS is ESM.
 
+## Performance (`npm run perf`)
+
+Measured like tested: `npm run perf` runs `perf/scenarios/` (a folder linked and synced to a second
+device, one edit propagating, a space shared by two people, a small site's first visit; each at 2
+sizes, local DHT, the tests' own helpers) on Node then Bare, about four minutes, and appends one
+line per scenario to the committed `perf/history.jsonl`. `npm run perf:compare` prints the last run
+against the previous one (`-- --sha <sha>` for another), flagging changes over 15% beyond the spread.
+The numbers include the hypergraph and swarmwire checkouts `node_modules` links to: say which in a
+comparison that crosses one of their changes.
+
+**Rule:** a change touching a hot path (sync, fetch, rescans, holdings, records' shape) adds or
+updates a perf scenario in the *same* change and runs `npm run perf` before and after; the lead
+compares before merge. Scenarios mirror real app flows, never benchmark-only shapes: an optimization
+that makes an app flow harder to write is refused. (Same rule in hypergraph and swarmwire.)
+
 ## Commits
 
 Small steps on the feature branch. Messages end with

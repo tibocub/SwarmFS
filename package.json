@@ -21,7 +21,9 @@
     "test": "brittle-node test/*.test.js",
     "test:bare": "brittle-bare test/*.test.js",
     "test:all": "npm test && npm run test:bare",
-    "test:slow": "brittle-node test/slow/*.test.js && brittle-bare test/slow/*.test.js"
+    "test:slow": "brittle-node test/slow/*.test.js && brittle-bare test/slow/*.test.js",
+    "perf": "node perf/run.mjs",
+    "perf:compare": "node perf/compare.mjs"
   },
   "dependencies": {
     "hypergraph": "file:../hypergraph",
