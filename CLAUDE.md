@@ -56,10 +56,14 @@ checkout's (`mklink /J node_modules <main>\node_modules`) instead of installing.
 ## Performance (`npm run perf`)
 
 Measured like tested: `npm run perf` runs `perf/scenarios/` (a folder linked and synced to a second
-device, one edit propagating, a space shared by two people, a small site's first visit; each at 2
-sizes, local DHT, the tests' own helpers) on Node then Bare, about four minutes, and appends one
-line per scenario to the committed `perf/history.jsonl`. `npm run perf:compare` prints the last run
-against the previous one (`-- --sha <sha>` for another), flagging changes over 15% beyond the spread.
+device, one edit propagating (the watcher's settle apart from the work), `held`/`has` records per
+file, a space shared by two people, a small site's first visit; each at 2 sizes, local DHT, the
+tests' own helpers) on Node then Bare, about four minutes, and appends one line per scenario to the
+committed `perf/history.jsonl`. `npm run perf:compare` prints the last run against the previous one (`-- --sha <sha>` for another),
+flagging only changes beyond this machine's noise (median over max(15%, 3× the spread), the minimum
+moving too, times by over 0.5 ms: two runs of one commit flag nothing), and shows the curves of
+scenarios marked flat (their cost must not grow with the size). Peers that would be on other
+machines run in their own processes (`harness.mjs` `child`).
 The numbers include the hypergraph and swarmwire checkouts `node_modules` links to: say which in a
 comparison that crosses one of their changes.
 
