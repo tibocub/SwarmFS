@@ -13,3 +13,4 @@ tmp/
 # spec-kit python byproducts
 __pycache__/
 *.pyc
+.test-times.json

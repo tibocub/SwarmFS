@@ -18,8 +18,8 @@
     "url": { "bare": "bare-url", "default": "url" }
   },
   "scripts": {
-    "test": "brittle-node test/*.test.js",
-    "test:bare": "brittle-bare test/*.test.js",
+    "test": "node scripts/test-runner.js",
+    "test:bare": "node scripts/test-runner.js --bare",
     "test:all": "npm test && npm run test:bare",
     "test:slow": "brittle-node test/slow/*.test.js && brittle-bare test/slow/*.test.js",
     "perf": "node perf/run.mjs",
