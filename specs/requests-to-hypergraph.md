@@ -136,6 +136,12 @@ these and doesn't edit hypergraph; the lead conversation decides.
 - **H6 — Read-only members.** Community archives (later story 2) want readers who don't upload. A role
   without `post` "cuts like a removal"; in a private space does such a member keep receiving the key
   and reading? If not, a `read` role (reads, never writes) is needed.
+  **Checked 2026-11-06 (spec 004): no.** A role with no permissions in a private space stays
+  `access: 'waiting'` and reads nothing (15 s); in a closed space it reads at once. Repro:
+  `npx brittle-node specs/repro-h22-site-roles.mjs` ("a reader ... in a private space"). Wanted: keys
+  granted to members who can't write (the research note's guess: keys go to devices whose log the
+  space knows, and a reader never writes one). SwarmFS refuses reader invites in private spaces
+  (`NOT_SUPPORTED`) until then; sites are closed spaces, so milestone 1 isn't blocked.
 - **H7 — Concurrent versions of a record.** Shared workspaces (later story 1) keep both versions when
   two members change one file offline (decided: Dropbox-style conflict copies). SwarmFS can do it on its
   own with an appended `base` field (the content an edit replaced) — the losing device re-adds its
@@ -191,3 +197,19 @@ these and doesn't edit hypergraph; the lead conversation decides.
   the `deleted` carried by `change` (`lib/sync.js` `read()`; marked H21). Wanted: `get()` reports
   `{ by: 'space' }` for records dropped by a ban (`from` or `drop: 'all'`) and by a write limit.
   Repro: SwarmFS `test/removal.test.js` "a ban dropping all" with the H21 line in `read()` reverted.
+
+## Found while building spec 004 "sites" (2026-11-06)
+
+- **H22 — A public joiner never gets a closed sub-space of the public space.** A site = a closed
+  space made public + a sub-space `pages` (`writeRoles: ['admin']`). Eve joins by `publicLink()`: she
+  reads the top space and `subspaces()` lists `pages`, but `hg.space(pages.key)` throws `NOT_FOUND`
+  for 15 s. An invited `editor` gets it at once. docs/next/api.md: "Members of the parent have it at
+  once, without joining"; a public joiner counts as `member`. With `pages.makePublic()` too, Eve has it
+  at once by the top's link. SwarmFS makes a public site's pages public (right anyway for a site), so
+  not blocking; wanted: either the docs say a public joiner gets only public sub-spaces, or she gets
+  closed ones too. Repro: `specs/repro-h22-site-roles.mjs` ("a public space: a joiner by the public link").
+- **H23 — A public space whose joiners only read.** Public joiners are `member` (spec 016 FR-001), who
+  may `put`: anyone visiting a public static site can write records into it (probe: Eve's `upload`
+  accepted), and the owner's app keeps uploads. Wanted (later, not milestone 1): the role public
+  joiners get, chosen at `makePublic({ role })` (e.g. a role with no permissions). Today: write
+  limits and bans.

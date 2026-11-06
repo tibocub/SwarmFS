@@ -1,15 +1,13 @@
 <!--
 Sync Impact Report
-Version change: 1.0.0 → 1.1.0 (MINOR: Principle I expanded)
-Rationale: spec 002 "always on" (Tibo, 2026-10-28; hypergraph ROADMAP.md): inside a linked folder
-  SwarmFS mirrors the space on disk (rename, move, update), and what it replaces or removes goes
-  to that folder's .swarmfs-trash, never destroyed; outside linked folders the strict rule stays.
-Principles: I. The Bytes Stay Where They Are (expanded: linked folders, trash); II–V unchanged
-Added sections: none
-Removed sections: none
-Templates: plan-template.md reads this file at runtime (Constitution Check); no edit needed.
-Deferred TODOs: none
-Previous: 1.0.0 (2026-10-22), first version, adapted from hypergraph's constitution.
+Version change: 1.1.0 → 1.2.0 (MINOR: Principle I expanded)
+Rationale: spec 004 "sites" (HyperBrowser milestone 1; ROADMAP "Before milestone 1", Tibo
+  2026-11-01/06): a site's files are what the engine reads for a web view, not the person's files.
+  They may be held in the engine's app storage (a cache with a cap) and, when small, inside their
+  record. The person's own files keep the strict rule.
+Principles: I. The Bytes Stay Where They Are (expanded: sites); II–V unchanged
+Templates: none to edit.
+Previous: 1.1.0 (2026-10-28, linked folders and trash), 1.0.0 (2026-10-22).
 -->
 
 # SwarmFS Constitution
@@ -28,6 +26,11 @@ Inside a **linked folder** (a local folder the person linked to a space folder, 
 MAY rename, move and update local files to mirror the space, and add the files it fetches.
 Anything it replaces or removes there MUST first be moved to `.swarmfs-trash` inside that linked
 folder: SwarmFS never destroys a file. The trash is emptied only by the person's explicit command.
+**Sites** (spec 004) are the exception, for their own files only: what a person reads of a site
+MAY be held in the engine's **app storage** (a folder in its data folder, never the person's folders),
+removed least recently read first under a cap; the owner's app MAY keep members' uploads there; and a
+site's files up to 60 KB MAY travel inside their record. Nothing a site holds is ever written into the
+person's folders, and files the person adds or uploads are still served from where they lie.
 Rationale: duplicate copies (hyperblobs + the real file) are why this project exists; and a
 filesystem tool that loses local files loses all trust. A synced folder must follow the space,
 so the trash makes every change it makes undoable by hand.
@@ -82,4 +85,4 @@ expanded; PATCH: wording). Every `/speckit-plan` passes the Constitution Check a
 file before research and again after design; violations are fixed or justified in the plan's
 Complexity Tracking table. Work merges only after a review in the lead conversation.
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-28
+**Version**: 1.2.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-11-06
