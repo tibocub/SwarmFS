@@ -9,6 +9,9 @@
 // test processes run at below-normal priority. Files start longest first (by
 // their last run, kept in the gitignored .test-times.json). Every file must
 // print its own "# tests = n/n" line to count as passed.
+// HG_TEST_TMP (the same setting as hypergraph's) puts the files' temp folders
+// there: on an SSD. Six files at once on a spinning disk run ~10x slower and
+// time out (2026-11-06).
 //
 // Files run as plain scripts (`node file`, `bare file`), not through brittle's
 // CLI, whose glob walks the whole cwd (node_modules, .claude/worktrees...)
@@ -35,10 +38,18 @@ const files = opts.files.length
   ? opts.files
   : fs.readdirSync(path.join(ROOT, 'test')).filter(f => f.endsWith('.test.js')).sort().map(f => `test/${f}`)
 
+const TMP = process.env.HG_TEST_TMP
+const ENV = TMP ? { ...process.env, TEMP: TMP, TMP, TMPDIR: TMP } : process.env
+const tmp = TMP || os.tmpdir()
+fs.mkdirSync(tmp, { recursive: true })
+const { bavail, bsize } = fs.statfsSync(tmp)
+// a full disk fails tests with "not enough space", which reads like a bug
+if (bavail * bsize < 3e9) process.stdout.write(`(warning: ${Math.round(bavail * bsize / 1e6)} MB free in ${tmp}, the tests' temp folder)\n`)
+
 function run (file) {
   return new Promise((resolve) => {
     const start = Date.now()
-    const p = spawn(process.execPath, opts.bare ? [BARE, file] : [file], { cwd: ROOT })
+    const p = spawn(process.execPath, opts.bare ? [BARE, file] : [file], { cwd: ROOT, env: ENV })
     try { os.setPriority(p.pid, os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {} // keep the machine responsive
     let out = ''
     p.stdout.on('data', (d) => { out += d })
