@@ -6,6 +6,8 @@
 //   site.joined   the visitor let in
 //   site.entry    site.json, index.html, style.css and app.js on the visitor's disk
 //   site.all      every file of the site there
+// The same visit as a spec 004 site (createSite, publish, visit, read by path: small files inline,
+// the rest into app storage): site.app.joined, site.app.entry, site.app.all.
 
 import fs from 'fs'
 import path from 'path'
@@ -56,4 +58,33 @@ for (const pages of sizes([20, 60])) {
     }
   }
   for (const k of ['joined', 'entry', 'all']) record('site.' + k, pages, 'ms', res[k])
+}
+
+for (const pages of sizes([20, 60])) {
+  const res = { joined: [], entry: [], all: [] }
+  for (let r = 0; r < REPEATS; r++) {
+    const t = context()
+    try {
+      const files = siteFiles(pages)
+      const owner = await person(t, 'owner')
+      const disk = writeTree(tmpDir(t, 'site'), files)
+      const site = await owner.createSite('Site')
+      await site.publish(path.join(disk, 'site'))
+      const code = await site.invite({ role: 'reader', uses: 1000 })
+      const visitor = await person(t, 'visitor')
+      const names = Object.keys(files).map((f) => f.slice('site/'.length))
+
+      const start = now()
+      const vs = await visitor.visit(code)
+      res.joined.push(now() - start)
+      await Promise.all(ENTRY.map((n) => vs.read(n, { timeout: 30000 })))
+      res.entry.push(now() - start)
+      const all = await Promise.all(names.filter((n) => !ENTRY.includes(n)).map((n) => vs.read(n, { timeout: 30000 })))
+      res.all.push(now() - start)
+      if (all.length + ENTRY.length !== names.length) throw new Error('files missing')
+    } finally {
+      await t.close()
+    }
+  }
+  for (const k of ['joined', 'entry', 'all']) record('site.app.' + k, pages, 'ms', res[k])
 }

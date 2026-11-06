@@ -1,0 +1,36 @@
+# Contract: SwarmFS 004 public API (additions to 001–003)
+
+New error codes: `NOT_SUPPORTED` (a reader invite in a private space, H6). `NOT_ALLOWED`,
+`RULE_REJECTED` from hypergraph as they are.
+
+```js
+const sfs = await SwarmFS.open(dir, { appStorageMax })  // bytes; default 1 GiB
+
+// Owner
+const site = await sfs.createSite(name, { invites })   // closed space + pages sub-space; invites as 003
+await site.publish(localFolder)       // its files become the pages (a linked folder here: edits published while syncing)
+await site.invite({ role, uses, expires })    // role: 'reader' | 'editor' (default; may upload)
+await site.makePublic()               // for good; owner or admin
+site.publicLink()                     // anyone reads with it; NOT_ALLOWED before public
+site.isPublic
+site.pages                            // a Drive of the pages (list, get, rename… owner/admins only)
+
+// Visitors
+const site = await sfs.visit(link, { timeout })   // an invite or the public link → the Site; writes nothing
+const same = await sfs.site(key, { timeout })     // a site already joined; NOT_FOUND if not a site
+const bytes = await site.read('docs/index.html', { timeout })   // verified bytes: inline, held, or fetched into app storage
+                                                                 // NOT_FOUND (no such file), NOT_AVAILABLE (no holder online)
+
+// Uploads (role editor)
+const up = await site.upload(localFile, { name })  // → { id, name, size, hash, author }; served from where it lies
+await site.uploads()                  // [{ id, name, size, hash, author }], latest first
+await site.readUpload(id)             // bytes, as read()
+await site.renameUpload(id, name)     // its author only
+await site.removeUpload(id)           // its author, the owner or an admin
+
+// Drive (all spaces)
+await drive.invite({ role: 'reader' })   // NOT_SUPPORTED in a private space (H6)
+```
+
+- While `sfs.sync()` runs, the owner's app keeps every upload of the sites it owns (app storage, kept).
+- Site extends Drive (members, roles, removal, invites as 003) on the site's space.

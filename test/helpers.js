@@ -228,3 +228,20 @@ export async function sharedPair (t, files = { 'docs/a.txt': 'aaaa' }, { invites
   await bd.link(docs.id, there)
   return { alice, bob, drive, bd, docs, aliceDocs: path.join(disk, 'docs'), bobDocs: there, aliceEvents, bobEvents }
 }
+
+// Spec 004: a site's pages, and Alice's site with them published from her disk; { alice, site, folder }.
+export const PAGES = {
+  'site/site.json': JSON.stringify({ title: 'Blog', entry: 'index.html' }),
+  'site/index.html': '<h1>Hello</h1>',
+  'site/docs/about.html': '<p>About</p>',
+  'site/img.jpg': bytes(100 * 1024)
+}
+
+export async function aliceSite (t, files = PAGES, opts = {}) {
+  const alice = await person(t, 'alice', opts)
+  const folder = path.join(writeTree(tmpDir(t, 'alice-disk'), files), 'site')
+  const site = await alice.createSite('Blog')
+  await site.publish(folder)
+  return { alice, site, folder }
+}
+
