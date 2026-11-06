@@ -21,6 +21,10 @@ hypergraph H14–H17, swarmwire S9.
 Spec 003 "shared workspaces" (several people in a space: invites, names, the bin, removal, invite
 setting, shown holdings; `lib/members.js`) built on branch `claude/003-shared-workspaces-4ddccc`,
 awaiting review. Serving scoped by peer and space (swarmwire S10, T009) done. Blocked: hypergraph H20 (trusted members inviting); filed H19, H21.
+Spec 004 "sites" (HyperBrowser milestone 1's 4 prerequisites: read-only visitors and public sites,
+protected pages in a `writeRoles` sub-space, author-only uploads, app storage with an LRU cap, small
+files inline; constitution 1.2.0; `lib/site.js`) built on branch `claude/site-prereqs-be3a52`,
+awaiting review. Filed: hypergraph H6 confirmed (no readers in private spaces), H22, H23.
 
 ## Governing documents
 

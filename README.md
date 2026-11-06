@@ -48,6 +48,24 @@ gets access (hypergraph H17: pair first, then add); on Windows a folder can't be
 other device is fetching from it (swarmwire S9). Not yet: shared spaces with other people, start at
 login, a desktop app (later stories in the spec).
 
+## What 004 adds (sites, for HyperBrowser)
+
+A **site** is a space with the site's pages and its members' uploads: one key. API:
+[specs/004-sites/contracts/api.md](specs/004-sites/contracts/api.md) (library only, no shell commands).
+
+- Pages (`site.publish(folder)`, a linked folder of the owner) are written by the owner and admins only;
+  everyone else's change is refused.
+- Uploads (`site.upload(file)`): by members with the `editor` role, edited by their author only; the
+  owner's app keeps every upload while syncing, so a picture outlives its poster going offline.
+- Read-only visitors: `site.invite({ role: 'reader' })`; `site.makePublic()` and `publicLink()`: anyone
+  reads, no one lets them in. A visit writes nothing into the site.
+- `site.read(path)`: verified bytes. Files up to 60 KB travel inside their record (no transfer); the
+  rest land in the engine's **app storage** (`<data folder>/app-storage`, 1 GB cap by default,
+  `appStorageMax`), least recently read removed first. Never in the person's folders.
+
+Known gaps (filed): readers can't read a *private* space (hypergraph H6: refused `NOT_SUPPORTED`);
+anyone joining a public site may upload (H23).
+
 ## Quickstart
 
 Library: [quickstart.md](specs/001-personal-sync/quickstart.md), API: [contracts/api.md](specs/001-personal-sync/contracts/api.md).

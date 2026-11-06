@@ -19,35 +19,35 @@ Perf: `npm run perf` before (baseline in `perf/history.jsonl`) and after, site s
 
 ## Phase 2: Foundational
 
-- [ ] T003 `lib/types.js`: `file.data` appended; `upload`, `site` types; rules `inline-v1`,
+- [X] T003 `lib/types.js`: `file.data` appended; `upload`, `site` types; rules `inline-v1`,
   `upload-v1`; `INLINE_MAX`; `contentOf()` in `lib/holdings.js` (content + bytes if inlined)
-- [ ] T004 `lib/members.js`: `reader` role in every setting; `publishName` skips sites
+- [X] T004 `lib/members.js`: `reader` role in every setting; `publishName` skips sites
 
 ## Phase 3: Stories 1 + 2 — protected pages, read-only visitors (P1)
 
-- [ ] T005 `test/site.test.js` (failing first): pages refused for an editor, his upload author-only,
+- [X] T005 `test/site.test.js` (failing first): pages refused for an editor, his upload author-only,
   admin writes pages, reader reads and can't write, public site read by a stranger with the owner
   offline (from another visitor), a visit writes 0 records, reader invite in a private space
   `NOT_SUPPORTED`
-- [ ] T006 `lib/site.js` Site; `sfs.createSite`, `sfs.site`, `sfs.visit`; `drive.invite({ role })`
+- [X] T006 `lib/site.js` Site; `sfs.createSite`, `sfs.site`, `sfs.visit`; `drive.invite({ role })`
 
 ## Phase 4: Story 3 — app storage (P1)
 
-- [ ] T007 `test/app-storage.test.js` (failing first): read lands in app storage only, second read no
+- [X] T007 `test/app-storage.test.js` (failing first): read lands in app storage only, second read no
   transfer, eviction under the cap and read again, owner keeps an upload after its poster leaves,
   kept copy dropped when the upload is removed
-- [ ] T008 app storage in `lib/swarmfs.js` / `lib/site.js`: `appStorageMax`, LRU eviction, kept
+- [X] T008 app storage in `lib/swarmfs.js` / `lib/site.js`: `appStorageMax`, LRU eviction, kept
   uploads in `sync()`; app storage out of `rescanSingles` and the singles watcher
 
 ## Phase 5: Story 4 — small files inline (P2)
 
-- [ ] T009 `test/inline.test.js` (failing first): small page carries bytes, big doesn't, read with no
+- [X] T009 `test/inline.test.js` (failing first): small page carries bytes, big doesn't, read with no
   holder online, edit grows past the limit / shrinks back, wrong bytes refused (`RULE_REJECTED`),
   files spaces inline nothing
-- [ ] T010 inline in `lib/holdings.js` (`addFile`), `lib/sync.js` (add, edit, conflict copy, a due
+- [X] T010 inline in `lib/holdings.js` (`addFile`), `lib/sync.js` (add, edit, conflict copy, a due
   inline file written from its record), `lib/drive.js` (`fetch`)
 
 ## Phase 6: Polish
 
-- [ ] T011 `perf/scenarios/site.mjs`: the site variant (`site.app.*`); `npm run perf` after
-- [ ] T012 README, CLAUDE.md state line; both suites green
+- [X] T011 `perf/scenarios/site.mjs`: the site variant (`site.app.*`); `npm run perf` after
+- [X] T012 README, CLAUDE.md state line; both suites green
