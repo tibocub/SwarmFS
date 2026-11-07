@@ -7,7 +7,9 @@ New error codes: `NOT_SUPPORTED` (a reader invite in a private space, H6). `NOT_
 const sfs = await SwarmFS.open(dir, { appStorageMax })  // bytes; default 1 GiB
 
 // Owner
-const site = await sfs.createSite(name, { invites })   // closed space + pages sub-space; invites as 003
+const site = await sfs.createSite(name, { invites, types })   // closed space + pages sub-space; invites as 003
+                                      // types (spec 005): the site's own record types, after SwarmFS's
+await site.declareTypes(types)        // spec 005: adds types to the site (owner, admins; additions only)
 await site.publish(localFolder)       // its files become the pages (a linked folder here: edits published while syncing)
 await site.invite({ role, uses, expires })    // role: 'reader' | 'editor' (default; may upload)
 await site.makePublic()               // for good; owner or admin
