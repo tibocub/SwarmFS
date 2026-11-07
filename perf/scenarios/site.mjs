@@ -88,3 +88,36 @@ for (const pages of sizes([20, 60])) {
   }
   for (const k of ['joined', 'entry', 'all']) record('site.app.' + k, pages, 'ms', res[k])
 }
+
+// Spec 006: a visitor installs the site (HyperBrowser's "install"): site.keep(true) right after
+// the visit, every file kept whole; then the toolbar's figure.
+//   site.install.whole  visit to keep(true) resolved (every file not inline in kept/)
+//   site.install.held   one site.held()
+for (const pages of sizes([20, 60])) {
+  const res = { whole: [], held: [] }
+  for (let r = 0; r < REPEATS; r++) {
+    const t = context()
+    try {
+      const files = siteFiles(pages)
+      const owner = await person(t, 'owner')
+      const disk = writeTree(tmpDir(t, 'site'), files)
+      const site = await owner.createSite('Site')
+      await site.publish(path.join(disk, 'site'))
+      const code = await site.invite({ role: 'reader', uses: 1000 })
+      const visitor = await person(t, 'visitor')
+      const big = Object.values(files).filter((b) => b.length > 60 * 1024).length
+
+      const start = now()
+      const vs = await visitor.visit(code)
+      await vs.keep(true)
+      res.whole.push(now() - start)
+      if (fs.readdirSync(path.join(visitor.dir, 'app-storage', 'kept')).length !== big) throw new Error('files missing')
+      const at = now()
+      await vs.held()
+      res.held.push(now() - at)
+    } finally {
+      await t.close()
+    }
+  }
+  for (const k of ['whole', 'held']) record('site.install.' + k, pages, 'ms', res[k])
+}
