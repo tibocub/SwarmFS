@@ -18,7 +18,8 @@ await drive.setInvites(setting)             // owner and admins; a code is judge
 await drive.members()                       // [{ identity, name, role, you, removed, banned, online }]
 await drive.setRole(identity, role)         // 'admin' | 'trusted' | 'editor'
 await drive.removeMember(identity, { ban = false, dropAll = false })
-await sfs.leave(spaceKey)                   // unlink its folders here, leave; files stay
+await sfs.leave(spaceKey)                   // unlink its folders here, leave; files stay. Joined again
+                                            //   later (a visit): kept anew if installed then
 
 await drive.remove(id)                      // shared space: to the bin; else as 002
 await drive.bin()                           // [{ id, kind, name, from, binned, by: { identity, name } }]
