@@ -121,3 +121,33 @@ for (const pages of sizes([20, 60])) {
   }
   for (const k of ['whole', 'held']) record('site.install.' + k, pages, 'ms', res[k])
 }
+
+// A page of an installed site read with its publisher offline (HyperBrowser: 10-20 s each before
+// the fix, every read waiting for a list that never completes).
+//   site.offline.read  one site.read, median over every page (grows with a folder's size: a lookup lists
+//                      the folder, as before the fix; an index on name if it ever shows)
+for (const pages of sizes([20, 60])) {
+  const res = []
+  for (let r = 0; r < REPEATS; r++) {
+    const t = context()
+    try {
+      const files = siteFiles(pages)
+      const owner = await person(t, 'owner')
+      const disk = writeTree(tmpDir(t, 'site'), files)
+      const site = await owner.createSite('Site')
+      await site.publish(path.join(disk, 'site'))
+      const visitor = await person(t, 'visitor')
+      const vs = await visitor.visit(await site.invite({ role: 'reader' }))
+      await vs.keep(true)
+      await owner.close()
+      for (const n of Object.keys(files).map((f) => f.slice('site/'.length))) {
+        const at = now()
+        await vs.read(n, { timeout: 30000 })
+        res.push(now() - at)
+      }
+    } finally {
+      await t.close()
+    }
+  }
+  record('site.offline.read', pages, 'ms', res)
+}
