@@ -19,9 +19,11 @@ site.pages                            // a Drive of the pages (list, get, rename
 
 // Visitors
 const site = await sfs.visit(link, { timeout })   // an invite or the public link → the Site; writes nothing
-const same = await sfs.site(key, { timeout })     // a site already joined; NOT_FOUND if not a site
+const same = await sfs.site(key, { timeout })     // a site already joined; NOT_FOUND if not a site (waits only if its site record isn't here)
 const bytes = await site.read('docs/index.html', { timeout })   // verified bytes: inline, held, or fetched into app storage
                                                                  // NOT_FOUND (no such file), NOT_AVAILABLE (no holder online)
+                                      // from what is here at once (publisher offline too); waits up to
+                                      // `timeout` only for a page not here while the site's list is incomplete
 await site.keep(true | false, { timeout })   // spec 006: install (every file kept in app-storage/kept/, served,
                                       // followed while syncing, remembered here) | back to the cache
 await site.kept()                     // → whether this device keeps it
