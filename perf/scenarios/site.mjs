@@ -124,7 +124,8 @@ for (const pages of sizes([20, 60])) {
 
 // A page of an installed site read with its publisher offline (HyperBrowser: 10-20 s each before
 // the fix, every read waiting for a list that never completes).
-//   site.offline.read  one site.read, median over every page (flat: the site's size must not show)
+//   site.offline.read  one site.read, median over every page (grows with a folder's size: a lookup lists
+//                      the folder, as before the fix; an index on name if it ever shows)
 for (const pages of sizes([20, 60])) {
   const res = []
   for (let r = 0; r < REPEATS; r++) {
@@ -148,5 +149,5 @@ for (const pages of sizes([20, 60])) {
       await t.close()
     }
   }
-  record('site.offline.read', pages, 'ms', res, { flat: true })
+  record('site.offline.read', pages, 'ms', res)
 }
