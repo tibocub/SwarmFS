@@ -62,6 +62,9 @@ A **site** is a space with the site's pages and its members' uploads: one key. A
 - `site.read(path)`: verified bytes. Files up to 60 KB travel inside their record (no transfer); the
   rest land in the engine's **app storage** (`<data folder>/app-storage`, 1 GB cap by default,
   `appStorageMax`), least recently read removed first. Never in the person's folders.
+- A dynamic site's own records (spec 005): `createSite(name, { types })` records the site's types next to
+  SwarmFS's; `site.declareTypes(types)` adds more later (owner, admins; additions only). Members write them
+  with `site.space.put(...)`. A site's type can't take one of SwarmFS's names (`INVALID_TYPE`).
 
 Known gaps (filed): readers can't read a *private* space (hypergraph H6: refused `NOT_SUPPORTED`);
 anyone joining a public site may upload (H23).
