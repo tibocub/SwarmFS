@@ -25,6 +25,9 @@ Spec 004 "sites" (HyperBrowser milestone 1's 4 prerequisites: read-only visitors
 protected pages in a `writeRoles` sub-space, author-only uploads, app storage with an LRU cap, small
 files inline; constitution 1.2.0; `lib/site.js`) built on branch `claude/site-prereqs-be3a52`,
 awaiting review. Filed: hypergraph H6 confirmed (no readers in private spaces), H22, H23.
+Spec 006 "install" (HyperBrowser F4, F5: `site.keep(true|false)` keeps a site whole in
+`app-storage/kept/`, outside eviction, remembered by a personal `kept` record; `site.held()` its bytes
+here) on branch `claude/trusting-chatterjee-29a46f`, awaiting review.
 
 ## Governing documents
 

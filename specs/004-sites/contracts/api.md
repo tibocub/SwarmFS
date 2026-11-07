@@ -22,6 +22,10 @@ const site = await sfs.visit(link, { timeout })   // an invite or the public lin
 const same = await sfs.site(key, { timeout })     // a site already joined; NOT_FOUND if not a site
 const bytes = await site.read('docs/index.html', { timeout })   // verified bytes: inline, held, or fetched into app storage
                                                                  // NOT_FOUND (no such file), NOT_AVAILABLE (no holder online)
+await site.keep(true | false, { timeout })   // spec 006: install (every file kept in app-storage/kept/, served,
+                                      // followed while syncing, remembered here) | back to the cache
+await site.kept()                     // → whether this device keeps it
+await site.held()                     // spec 006: bytes of the site here: held files + inline ones
 
 // Uploads (role editor)
 const up = await site.upload(localFile, { name })  // → { id, name, size, hash, author }; served from where it lies
