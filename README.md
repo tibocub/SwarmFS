@@ -67,6 +67,9 @@ A **site** is a space with the site's pages and its members' uploads: one key. A
 - A dynamic site's own records (spec 005): `createSite(name, { types })` records the site's types next to
   SwarmFS's; `site.declareTypes(types)` adds more later (owner, admins; additions only). Members write them
   with `site.space.put(...)`. A site's type can't take one of SwarmFS's names (`INVALID_TYPE`).
+- An app's instance (spec 007, HyperBrowser F7): `createSite(name, { app: appKey, types })` makes a site that
+  runs another site's code (one forum of a forum app), owned by its creator, its own pages empty; `site.app` is
+  the app's key (`null` for any other site). Only who may decide (owner, admins) writes it.
 - Installed sites (spec 006): `site.keep(true)` fetches every page and upload into `app-storage/kept/`,
   never evicted, served to the site's members, followed while `sync()` runs, remembered on this device;
   `site.keep(false)` hands them back to the cache; `site.kept()`. `site.held()`: bytes of the site on
