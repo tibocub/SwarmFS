@@ -70,6 +70,8 @@ A **site** is a space with the site's pages and its members' uploads: one key. A
 - An app's instance (spec 007, HyperBrowser F7): `createSite(name, { app: appKey, types })` makes a site that
   runs another site's code (one forum of a forum app), owned by its creator, its own pages empty; `site.app` is
   the app's key (`null` for any other site). Only who may decide (owner, admins) writes it.
+- A private site (spec 008, HyperBrowser 013): `createSite(name, { private: true })` (an app's chat or group)
+  is read by its members only, as a private space; it can never be made public.
 - Installed sites (spec 006): `site.keep(true)` fetches every page and upload into `app-storage/kept/`,
   never evicted, served to the site's members, followed while `sync()` runs, remembered on this device;
   `site.keep(false)` hands them back to the cache; `site.kept()`. `site.held()`: bytes of the site on

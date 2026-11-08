@@ -24,3 +24,17 @@ test('createSite(name, { app }): the instance names its app; members can\'t chan
 
   t.is(await codeOf(alice.createSite('Bad', { app: 42 })), 'INVALID_PARAMS', 'app is a key')
 })
+
+test('createSite(name, { private: true }): a private instance, read by its members only', { timeout: 120000 }, async (t) => {
+  const { alice, site: app } = await aliceSite(t)
+  const inst = await alice.createSite('Ann and Bob', { app: app.key, types: forum, private: true })
+  t.ok(inst.space.private, 'its space is private')
+  t.is(inst.app, app.key, 'still an instance of its app')
+  await inst.space.put('post', { title: 'hello' })
+
+  const bob = await person(t, 'bob')
+  const bi = await bob.visit(await inst.invite({ role: 'editor' }))
+  t.is(bi.app, app.key, 'a member reads the site record (sealed)')
+  t.ok(await eventually(async () => (await bi.space.query('post').latest(1)).items[0]?.title === 'hello', 15000), 'and the posts')
+  t.is(await codeOf(alice.createSite('Bad', { private: 'yes' })), 'INVALID_PARAMS', 'private is true or false')
+})
