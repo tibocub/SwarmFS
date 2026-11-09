@@ -76,6 +76,12 @@ A **site** is a space with the site's pages and its members' uploads: one key. A
   never evicted, served to the site's members, followed while `sync()` runs, remembered on this device;
   `site.keep(false)` hands them back to the cache; `site.kept()`. `site.held()`: bytes of the site on
   this device (held files plus inline ones).
+- Packs (spec 009, HyperBrowser 015: apps shipped inside an app): `sfs.exportSites(keys, folder)` (a build opens the
+  owner's folder with `SwarmFS.open(dir, { offline: true })`: linked folders not scanned, never online) writes what a visitor downloads of public sites: their spaces and pages, signed by their
+  writers (hypergraph `exportSpaces`), and the bytes of files too big for a record. No key, identity,
+  personal space or setting. `sfs.importSites(folder)` joins them with nobody online, checked as replicated
+  data, each file only if a signed record names its hash; a changed pack is refused whole (`IMPORT_INVALID`).
+  Then the sites are visits like any: `site.keep(true)` installs them, later edits come from peers.
 
 Known gaps (filed): readers can't read a *private* space (hypergraph H6: refused `NOT_SUPPORTED`);
 anyone joining a public site may upload (H23).

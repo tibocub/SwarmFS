@@ -29,6 +29,12 @@ await site.keep(true | false, { timeout })   // spec 006: install (every file ke
 await site.kept()                     // → whether this device keeps it
 await site.held()                     // spec 006: bytes of the site here: held files + inline ones
 
+// Packs (spec 009): public sites shipped inside an app
+await sfs.exportSites(keys, folder)   // what a visitor downloads: folder/spaces (hypergraph pack), folder/files/<root>
+const owner = await SwarmFS.open(dir, { offline: true })   // a folder read as it is: no scan, no name published, never online
+await sfs.importSites(folder, { timeout })   // → site keys; checked as replicated data, files by their signed hash;
+                                      // IMPORT_INVALID (changed, missing blocks, not public): nothing kept
+
 // Uploads (role editor)
 const up = await site.upload(localFile, { name })  // → { id, name, size, hash, author }; served from where it lies
 await site.uploads()                  // [{ id, name, size, hash, author }], latest first
