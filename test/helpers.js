@@ -122,8 +122,8 @@ export function syncEvents (sfs) {
 // folder linked on it; both syncing (minFree 0: tests never meet the disk's floor).
 // `opts.laptopFiles`: written in the laptop's folder before it is linked (already copied by hand).
 export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, { laptopFiles, ...opts } = {}) {
-  // paired before the files are added: a device paired after a private space got big never gets
-  // access (a hypergraph limit)
+  // paired before the files are added (once required: hypergraph didn't give a device paired
+  // after a private space got big access to it)
   const pc = await device(t, 'pc', { minFree: 0, ...opts })
   const disk = writeTree(tmpDir(t, 'pc-disk'), files)
   const drive = await pc.createSpace('My files')
