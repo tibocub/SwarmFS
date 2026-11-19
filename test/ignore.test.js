@@ -1,4 +1,4 @@
-// The ignore rules of a linked folder: the fixed list and .swarmfsignore (research R8).
+// The ignore rules of a linked folder: the fixed list and .swarmfsignore.
 
 import test from 'brittle'
 import { compile, ignored } from '../lib/ignore.js'

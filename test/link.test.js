@@ -1,4 +1,4 @@
-// Spec 002 story 4: link a space folder to a local path on another device; unlink.
+// Linking a space folder to a local path on another device; unlink.
 
 import test from 'brittle'
 import fs from 'fs'

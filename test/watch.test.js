@@ -1,4 +1,4 @@
-// Spec 002 story 1: edits on disk reach the space by themselves, while sync() runs.
+// Edits on disk reach the space by themselves, while sync() runs.
 
 import test from 'brittle'
 import fs from 'fs'
@@ -80,7 +80,7 @@ test('a delete and a different file of the same size and mtime in one batch: two
 })
 
 // Rename detection trusts a file id only when exact: NTFS ids exceed 2^53, and as a Number
-// 15 of 200 fresh files shared one with another file (2026-10-29).
+// 15 of 200 fresh files once shared one with another file.
 test('file ids: never shared by two files (null when not exact)', async (t) => {
   const dir = tmpDir(t, 'ids')
   const ids = []

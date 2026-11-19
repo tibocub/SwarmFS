@@ -1,5 +1,5 @@
-// Spec 002 at real sizes: SC-001 (a 10,000-file linked folder starts syncing in < 10 s) and
-// SC-004 (1,000 new files on the other device in < 60 s). npm run test:slow.
+// Syncing at real sizes: a 10,000-file linked folder starts syncing in < 10 s, and 1,000 new
+// files reach the other device in < 60 s. npm run test:slow.
 
 import test from 'brittle'
 import fs from 'fs'

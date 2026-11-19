@@ -1,4 +1,4 @@
-// Story 5: the CLI, run as a person runs it on two machines: a long-running shell on each,
+// The CLI, run as a person runs it on two machines: a long-running shell on each,
 // driven through stdin; separate processes, one DHT.
 
 import test from 'brittle'

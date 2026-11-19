@@ -1,4 +1,4 @@
-// Story 3: fetch a file from the other device, verified, resumable.
+// Fetching a file from the other device, verified, resumable.
 
 import test from 'brittle'
 import fs from 'fs'

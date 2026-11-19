@@ -1,4 +1,4 @@
-// Spec 003 story 3: deleting in a shared space goes to the bin.
+// Deleting in a shared space goes to the bin.
 
 import test from 'brittle'
 import fs from 'fs'

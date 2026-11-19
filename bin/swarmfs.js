@@ -283,7 +283,7 @@ async function shell (sfs) {
     if (e.joined.length) event(`joined    ${spaceName(sfs, e.space)}: ${who(e.joined)}`)
     if (e.left.length) event(`left      ${spaceName(sfs, e.space)}: ${who(e.left)}`)
   })
-  await sfs.sync() // linked folders kept in sync while the shell runs (spec 002)
+  await sfs.sync() // linked folders kept in sync while the shell runs
   process.once('SIGINT', () => push('quit'))
   for (;;) {
     prompt()
@@ -361,7 +361,7 @@ function push (line) {
 }
 
 function fail (err) {
-  // shortcut: hypergraph's lock error has no code yet (requests H13); match its message until it does.
+  // shortcut: hypergraph's lock error has no code yet; match its message until it does.
   if (/could not be locked/.test(err.message)) {
     console.error(`IN_USE: ${dir} is in use by a swarmfs shell (or another swarmfs): type the command there, or quit it first`)
   } else {
@@ -439,7 +439,7 @@ function spaceName (sfs, key) {
   return sfs.spaces().find((s) => s.key === key)?.name || key
 }
 
-// One thing sync did (contracts/api.md), as a line: never tab-separated, unlike entries.
+// One thing sync did, as a line: never tab-separated, unlike entries.
 function syncLine (e, sfs) {
   const word = e.action.padEnd(9)
   if (e.action === 'paused' && e.reason === 'missing') return `${word} ${e.path} (not found: unplugged?)`

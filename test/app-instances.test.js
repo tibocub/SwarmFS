@@ -1,4 +1,4 @@
-// HyperBrowser F7 (spec 009): a site that runs another site's code, an app's instance. Its `site` record
+// A site that runs another site's code: an app's instance. Its `site` record
 // names the app; only who may decide writes that record.
 
 import test from 'brittle'

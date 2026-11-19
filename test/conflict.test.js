@@ -1,4 +1,4 @@
-// Spec 002 story 5: two devices change one file without seeing each other's change: both
+// Two devices change one file without seeing each other's change: both
 // versions kept, as a conflict copy named after the device whose version lost.
 
 import test from 'brittle'
@@ -117,8 +117,8 @@ test('deleted on the PC while the laptop is still saving it: kept, added again',
   t.is(read(path.join(laptopDocs, 'a.txt')), 'being edited', 'the edit stays in place')
 })
 
-// FR-019 with H15: the edit was recorded before the delete arrived; it was saved after the
-// delete, so it wins: added again as a new entry, on both devices.
+// The edit was recorded before the delete arrived; it was saved after the delete, so it wins:
+// added again as a new entry, on both devices.
 test('deleted on the PC, then edited on the laptop while apart: the edit kept on both', { timeout: 120000 }, async (t) => {
   let { pc, laptop, drive, docs, pcDocs, laptopDocs, pcEvents } = await linkedPair(t, { 'docs/a.txt': 'aaaa' })
   t.ok(await eventually(() => read(path.join(laptopDocs, 'a.txt')), 15000))

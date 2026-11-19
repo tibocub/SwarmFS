@@ -1,4 +1,4 @@
-// Spec 002 story 6: a linked folder that vanishes is paused, never read as deleted; a mass
+// A linked folder that vanishes is paused, never read as deleted; a mass
 // delete waits for the person's confirmation.
 
 import test from 'brittle'
@@ -77,7 +77,7 @@ test('a mass delete waits for confirm; restored files resume it; small deletes g
   const f = (await drive.list(docs.id)).items.find((i) => i.name === 'f')
   t.ok(await eventually(() => fs.existsSync(path.join(laptopDocs, 'f')) && fs.readdirSync(path.join(laptopDocs, 'f')).length === 1000, 120000), 'the laptop has the 1,000 files')
 
-  // 600 of 1,000 deleted at once: nothing removed until confirmed (SC-012)
+  // 600 of 1,000 deleted at once: nothing removed until confirmed
   const saved = contents(path.join(pcDocs, 'f'))
   for (let i = 0; i < 600; i++) fs.rmSync(path.join(pcDocs, 'f', `${i}.txt`))
   const paused = await pcEvents.wait((e) => e.action === 'paused' && e.reason === 'mass-delete', 20000)

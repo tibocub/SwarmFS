@@ -1,4 +1,4 @@
-// Story 4: keep the tree up to date. Rescan follows the disk; rename, move and
+// Keeping the tree up to date: rescan follows the disk; rename, move and
 // remove change entries only, never local files.
 
 import test from 'brittle'

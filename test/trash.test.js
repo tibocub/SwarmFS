@@ -1,4 +1,4 @@
-// The trash of a linked folder and the free-space floor (research R9, R10).
+// The trash of a linked folder and the free-space floor.
 
 import test from 'brittle'
 import fs from 'fs'

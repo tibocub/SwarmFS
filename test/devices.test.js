@@ -1,4 +1,4 @@
-// Story 2: a second device sees everything, and who holds what.
+// A second device sees everything, and who holds what.
 
 import test from 'brittle'
 import path from 'path'
@@ -42,7 +42,7 @@ test('the phone sees the space, the tree and who holds what; also with the PC cl
   t.ok(Date.now() - started < 10000, `within 10 s (${Date.now() - started} ms)`)
   t.alike(a.holders, [{ device: pc.device, name: 'pc', online: true, path: null }], 'the PC holds it; no path for another device')
 
-  // hypergraph H4: where() and fromDevice() combine
+  // where() and fromDevice() combine
   const held = (dev) => phone.hg.personal.query('held').where({ root: a.hash }).fromDevice(dev).latest(10)
   t.is((await held(pc.device)).items.length, 1, 'H4: held by the PC')
   t.is((await held(phone.device)).items.length, 0, 'H4: not by the phone')

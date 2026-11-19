@@ -1,4 +1,4 @@
-// Story 1: add files in place and see the tree. One device.
+// Adding files in place and see the tree. One device.
 
 import test from 'brittle'
 import fs from 'fs'

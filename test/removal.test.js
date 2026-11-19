@@ -1,4 +1,4 @@
-// Spec 003 story 4: remove or ban a member; leave.
+// Removing or banning a member; leave.
 
 import test from 'brittle'
 import fs from 'fs'

@@ -1,5 +1,5 @@
 // Shared test helpers, on Node and Bare: tmp dirs, a local DHT per test,
-// devices and paired devices. Pattern of hypergraph's test/next/helpers.js.
+// devices and paired devices.
 
 import fs from 'fs'
 import b4a from 'b4a'
@@ -123,7 +123,7 @@ export function syncEvents (sfs) {
 // `opts.laptopFiles`: written in the laptop's folder before it is linked (already copied by hand).
 export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, { laptopFiles, ...opts } = {}) {
   // paired before the files are added: a device paired after a private space got big never gets
-  // access (hypergraph H17)
+  // access (a hypergraph limit)
   const pc = await device(t, 'pc', { minFree: 0, ...opts })
   const disk = writeTree(tmpDir(t, 'pc-disk'), files)
   const drive = await pc.createSpace('My files')
@@ -144,7 +144,7 @@ export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, { laptopF
   return { pc, laptop, drive, ld, docs, pcDocs: path.join(disk, 'docs'), laptopDocs: there, pcEvents, laptopEvents }
 }
 
-// BLAKE3-free fingerprint of every file under `dirs` (path -> hex bytes), for SC-006. Not the
+// BLAKE3-free fingerprint of every file under `dirs` (path -> hex bytes). Not the
 // trash's `.incoming`: downloads in progress, no one's version (they vanish once placed).
 export function contents (dir) {
   const out = new Map()
@@ -161,7 +161,7 @@ export function contents (dir) {
   return out
 }
 
-// SC-006: every file seen in `before` (contents()) is still somewhere under `dir`, byte for
+// Every file seen in `before` (contents()) is still somewhere under `dir`, byte for
 // byte: at a place, or in its trash. Nothing destroyed.
 export function assertNothingLost (t, before, dir) {
   const now = new Set(contents(dir).values())
@@ -178,7 +178,7 @@ export function bytes (n, seed = 1) {
 }
 
 // The PC makes a space and adds `files` (written to a disk dir) first; the phone is paired
-// after (hypergraph H5) and sees them with the PC online. `byName`: the phone's entries.
+// after and sees them with the PC online. `byName`: the phone's entries.
 export async function filesOnPC (t, files, phoneOpts = {}) {
   const pc = await device(t, 'pc')
   const disk = writeTree(tmpDir(t, 'disk'), files)
@@ -196,7 +196,7 @@ export async function filesOnPC (t, files, phoneOpts = {}) {
   return { pc, phone, drive, pd, disk, byName, out: tmpDir(t, 'out') }
 }
 
-// A person of their own (a new identity, its own instance folder), named `label` (spec 003).
+// A person of their own (a new identity, its own instance folder), named `label`.
 export async function person (t, label = 'alice', opts = {}) {
   const sfs = await device(t, label, { minFree: 0, ...opts })
   await sfs.setName(label[0].toUpperCase() + label.slice(1))
@@ -229,7 +229,7 @@ export async function sharedPair (t, files = { 'docs/a.txt': 'aaaa' }, { invites
   return { alice, bob, drive, bd, docs, aliceDocs: path.join(disk, 'docs'), bobDocs: there, aliceEvents, bobEvents }
 }
 
-// Spec 004: a site's pages, and Alice's site with them published from her disk; { alice, site, folder }.
+// A site's pages, and Alice's site with them published from her disk; { alice, site, folder }.
 export const PAGES = {
   'site/site.json': JSON.stringify({ title: 'Blog', entry: 'index.html' }),
   'site/index.html': '<h1>Hello</h1>',
