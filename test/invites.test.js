@@ -1,5 +1,3 @@
-// Spec 003 story 5: the creator chooses who may invite.
-
 import test from 'brittle'
 import { person, eventually, codeOf } from './helpers.js'
 
@@ -50,7 +48,7 @@ test('nobody invites as owner; admins only by the owner', async (t) => {
   t.ok(await drive.space.createInvite({ role: 'admin' }), 'the owner can')
 })
 
-// blocked: hypergraph H20 (a trusted role may not invite as editor), tasks.md T023 scenario 2
+// blocked by hypergraph: a trusted role may not invite as editor yet
 test.todo('chosen people: a trusted member\'s invites let people in as editors', async (t) => {
   const { drive, bd } = await space(t, 'chosen')
   await drive.setRole(bd.sfs.hg.identity.publicKey, 'trusted')

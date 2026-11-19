@@ -1,6 +1,3 @@
-// Story 4: keep the tree up to date. Rescan follows the disk; rename, move and
-// remove change entries only, never local files.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
@@ -8,13 +5,11 @@ import { device, pair, tmpDir, writeTree, snapshot, codeOf, eventually } from '.
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// Names in `folder` ('kind:name'), sorted as listed.
 async function names (drive, folder) {
   const { items } = await drive.list(folder, { timeout: 500 })
   return items.map((i) => `${i.kind}:${i.name}`).join(' ')
 }
 
-// A PC with folder `docs/` added, seen by the phone.
 async function setup (t, files = { 'docs/a.txt': 'aaaa', 'docs/sub/b.txt': 'bb' }) {
   const { pc, phone } = await pair(t)
   const disk = writeTree(tmpDir(t, 'disk'), files)
@@ -113,7 +108,7 @@ test('a folder cannot move into itself or its own subtree', async (t) => {
   const disk = writeTree(tmpDir(t, 'disk'), { 'docs/sub/deep/c.txt': 'c', 'docs/x.txt': 'x' })
   const drive = await pc.createSpace('My files')
   const docs = await drive.add(path.join(disk, 'docs'))
-  const [sub, x] = (await drive.list(docs.id)).items // folders first
+  const [sub, x] = (await drive.list(docs.id)).items
   const deep = (await drive.list(sub.id)).items[0]
 
   t.is(await codeOf(drive.move(docs.id, docs.id)), 'MOVE_INTO_SELF', 'into itself')

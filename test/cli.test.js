@@ -1,5 +1,4 @@
-// Story 5: the CLI, run as a person runs it on two machines: a long-running shell on each,
-// driven through stdin; separate processes, one DHT.
+// Separate processes, as on two machines, driven through stdin, on one DHT.
 
 import test from 'brittle'
 import fs from 'fs'
@@ -200,15 +199,13 @@ test('spec 003: two people: name, create, invite, accept, a file across, bin, re
   t.is(await bob.exit(), 0)
 })
 
-// Every file under `dir`.
 function files (dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? files(path.join(dir, e.name)) : [path.join(dir, e.name)])
 }
 
-// Tab-separated entry lines (Bare on Windows ends lines with \r\n).
+// Bare on Windows ends lines with \r\n.
 const rows = (stdout) => stdout.split(/\r?\n/).filter((l) => l.includes('\t')).map((l) => l.split('\t'))
 
-// Runs a one-shot command; its stdout once it exited cleanly.
 async function done (t, args, env) {
   const child = run(t, args, 'ignore', env)
   const code = await child.exit()
@@ -248,7 +245,6 @@ function run (t, args, stdin = 'ignore', env = {}) {
     stdout: () => stdout,
     stderr: () => stderr,
     exit: () => exited,
-    // The first match of `re` in stdout from `from` on, once printed (the match, index in all of stdout).
     until: (re, from = 0) => new Promise((resolve, reject) => {
       const check = () => {
         const m = re.exec(stdout.slice(from))

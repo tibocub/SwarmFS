@@ -1,5 +1,3 @@
-// Spec 003 story 2: everyone edits, nothing is lost; conflict copies named after the person.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

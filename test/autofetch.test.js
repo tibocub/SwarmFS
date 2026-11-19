@@ -1,5 +1,3 @@
-// Spec 002 story 2: missing files arrive by themselves in a linked folder.
-
 import test from 'brittle'
 import fs from 'fs'
 import os from 'os'

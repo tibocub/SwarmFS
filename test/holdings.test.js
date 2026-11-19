@@ -1,5 +1,3 @@
-// Spec 003 story 6: each person chooses whether others see what their devices hold.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

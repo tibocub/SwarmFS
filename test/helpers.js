@@ -1,6 +1,3 @@
-// Shared test helpers, on Node and Bare: tmp dirs, a local DHT per test,
-// devices and paired devices. Pattern of hypergraph's test/next/helpers.js.
-
 import fs from 'fs'
 import b4a from 'b4a'
 import path from 'path'
@@ -10,7 +7,6 @@ import { SwarmFS } from '../index.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// Polls `fn` until it returns something truthy, up to `ms`; that value, or null.
 export async function eventually (fn, ms = 10000, every = 50) {
   const until = Date.now() + ms
   for (;;) {
@@ -21,7 +17,6 @@ export async function eventually (fn, ms = 10000, every = 50) {
   }
 }
 
-// The code of the error `promise` rejects with, or null if it resolves.
 export async function codeOf (promise) {
   try {
     await promise
@@ -33,7 +28,7 @@ export async function codeOf (promise) {
 
 let counter = 0
 
-// A fresh temp dir, removed after the test (retries: Windows keeps files locked a moment).
+// Removal retries: Windows keeps files locked a moment.
 export function tmpDir (t, label = 'sfs') {
   const dir = path.join(os.tmpdir(), `swarmfs-${label}-${Date.now()}-${counter++}-${Math.random().toString(36).slice(2, 8)}`)
   fs.mkdirSync(dir, { recursive: true })
@@ -50,7 +45,6 @@ export function tmpDir (t, label = 'sfs') {
   return dir
 }
 
-// Writes `files` ({ 'a.txt': 'bytes', 'sub/b.txt': '...' }) under `dir`.
 export function writeTree (dir, files) {
   for (const [name, content] of Object.entries(files)) {
     const full = path.join(dir, name)
@@ -60,7 +54,6 @@ export function writeTree (dir, files) {
   return dir
 }
 
-// One local DHT (3 nodes on loopback) per test.
 const testnets = new WeakMap()
 
 export async function bootstrap (t) {
@@ -72,7 +65,6 @@ export async function bootstrap (t) {
   return (await testnet).bootstrap
 }
 
-// Opens a SwarmFS in a temp dir (or `opts.dir`) on the test's DHT; closed after the test.
 export async function device (t, label = 'dev', opts = {}) {
   const dir = opts.dir || tmpDir(t, label)
   const sfs = await SwarmFS.open(dir, { deviceName: label, bootstrap: await bootstrap(t), ...opts })
@@ -84,7 +76,6 @@ export async function device (t, label = 'dev', opts = {}) {
   return sfs
 }
 
-// A PC and a phone of one identity, paired by code.
 export async function pair (t) {
   const pc = await device(t, 'pc')
   const { code, added } = await pc.addDevice()
@@ -93,7 +84,6 @@ export async function pair (t) {
   return { pc, phone }
 }
 
-// { name: [size, mtimeMs] } of every file under `dir`, to show nothing changed on disk.
 export function snapshot (dir) {
   const out = {}
   const walk = (d) => {
@@ -110,7 +100,6 @@ export function snapshot (dir) {
   return out
 }
 
-// Every `sync` event of `sfs`, in order; `events.wait(pred, ms)` → the first matching one (or null).
 export function syncEvents (sfs) {
   const events = []
   sfs.on('sync', (e) => events.push(e))
@@ -118,12 +107,11 @@ export function syncEvents (sfs) {
   return events
 }
 
-// A PC with folder `docs/` (from `files`) added in a space, and a laptop paired after, the
-// folder linked on it; both syncing (minFree 0: tests never meet the disk's floor).
-// `opts.laptopFiles`: written in the laptop's folder before it is linked (already copied by hand).
+// minFree 0: tests never meet the disk's floor.
+// `opts.laptopFiles`: already in the laptop's folder before it is linked (copied by hand).
 export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, { laptopFiles, ...opts } = {}) {
-  // paired before the files are added: a device paired after a private space got big never gets
-  // access (hypergraph H17)
+  // paired before the files are added (once required: hypergraph didn't give a device paired
+  // after a private space got big access to it)
   const pc = await device(t, 'pc', { minFree: 0, ...opts })
   const disk = writeTree(tmpDir(t, 'pc-disk'), files)
   const drive = await pc.createSpace('My files')
@@ -144,8 +132,7 @@ export async function linkedPair (t, files = { 'docs/a.txt': 'aaaa' }, { laptopF
   return { pc, laptop, drive, ld, docs, pcDocs: path.join(disk, 'docs'), laptopDocs: there, pcEvents, laptopEvents }
 }
 
-// BLAKE3-free fingerprint of every file under `dirs` (path -> hex bytes), for SC-006. Not the
-// trash's `.incoming`: downloads in progress, no one's version (they vanish once placed).
+// Not the trash's `.incoming`: downloads in progress, no one's version (they vanish once placed).
 export function contents (dir) {
   const out = new Map()
   if (!fs.existsSync(dir)) return out
@@ -161,8 +148,7 @@ export function contents (dir) {
   return out
 }
 
-// SC-006: every file seen in `before` (contents()) is still somewhere under `dir`, byte for
-// byte: at a place, or in its trash. Nothing destroyed.
+// Nothing destroyed: every file of `before` is still under `dir`, at its place or in its trash.
 export function assertNothingLost (t, before, dir) {
   const now = new Set(contents(dir).values())
   const lost = [...before].filter(([, hex]) => !now.has(hex)).map(([p]) => path.relative(dir, p))
@@ -177,8 +163,6 @@ export function bytes (n, seed = 1) {
   return b
 }
 
-// The PC makes a space and adds `files` (written to a disk dir) first; the phone is paired
-// after (hypergraph H5) and sees them with the PC online. `byName`: the phone's entries.
 export async function filesOnPC (t, files, phoneOpts = {}) {
   const pc = await device(t, 'pc')
   const disk = writeTree(tmpDir(t, 'disk'), files)
@@ -196,21 +180,17 @@ export async function filesOnPC (t, files, phoneOpts = {}) {
   return { pc, phone, drive, pd, disk, byName, out: tmpDir(t, 'out') }
 }
 
-// A person of their own (a new identity, its own instance folder), named `label` (spec 003).
 export async function person (t, label = 'alice', opts = {}) {
   const sfs = await device(t, label, { minFree: 0, ...opts })
   await sfs.setName(label[0].toUpperCase() + label.slice(1))
   return sfs
 }
 
-// Bob joins `drive` (one of Alice's spaces) with a fresh invite; his Drive once he sees it.
 export async function invited (t, drive, who, opts) {
   const code = await drive.invite(opts)
   return who.join(code)
 }
 
-// Alice's space "Family" with folder `docs/` (from `files`), Bob invited and the folder linked
-// on his PC; both syncing. Like linkedPair, between two people.
 export async function sharedPair (t, files = { 'docs/a.txt': 'aaaa' }, { invites = 'admins' } = {}) {
   const alice = await person(t, 'alice')
   const bob = await person(t, 'bob')
@@ -229,7 +209,6 @@ export async function sharedPair (t, files = { 'docs/a.txt': 'aaaa' }, { invites
   return { alice, bob, drive, bd, docs, aliceDocs: path.join(disk, 'docs'), bobDocs: there, aliceEvents, bobEvents }
 }
 
-// Spec 004: a site's pages, and Alice's site with them published from her disk; { alice, site, folder }.
 export const PAGES = {
   'site/site.json': JSON.stringify({ title: 'Blog', entry: 'index.html' }),
   'site/index.html': '<h1>Hello</h1>',
@@ -244,4 +223,3 @@ export async function aliceSite (t, files = PAGES, opts = {}) {
   await site.publish(folder)
   return { alice, site, folder }
 }
-

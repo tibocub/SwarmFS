@@ -1,5 +1,3 @@
-// Story 3: fetch a file from the other device, verified, resumable.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
@@ -14,7 +12,7 @@ function countJoins (sfs) {
   return calls
 }
 
-// The swarmwire Download in progress, in an array (a Download is a thenable: awaiting it waits for the end).
+// A Download is a thenable: awaiting it waits for the end, so it is handed out in an array.
 function downloading (sfs, root) {
   const d = sfs.transfer.downloads.get(root)
   return d && [d]

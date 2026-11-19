@@ -1,5 +1,3 @@
-// Spec 004 story 4: a site's files up to 60 KB travel inside their record.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

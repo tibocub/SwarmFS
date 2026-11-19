@@ -1,5 +1,3 @@
-// Spec 003 story 1: invite someone into a space.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

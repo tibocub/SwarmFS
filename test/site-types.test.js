@@ -1,5 +1,3 @@
-// Spec 005: a dynamic site's own record types (HyperBrowser F1), and close() right after sync() (F3).
-
 import test from 'brittle'
 import { person, eventually, codeOf } from './helpers.js'
 

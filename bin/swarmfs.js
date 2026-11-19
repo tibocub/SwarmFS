@@ -1,10 +1,6 @@
 #!/usr/bin/env node
-// The CLI, a trial tool over the library. `swarmfs` alone (or `swarmfs shell`) opens the
-// instance, stays online and reads commands from stdin, one per line. `init` and `join` are
-// one-shot and ask for the password that keeps the recovery phrase; the other commands also
-// run one-shot (open, act, close), for scripts.
-// Print with console.log: on Bare, process.stdout.write never reaches a piped stdout
-// (swarmwire's lesson).
+// The CLI, a thin tool over the library. Print with console.log: on Bare, process.stdout.write
+// never reaches a piped stdout.
 
 import fs from 'fs'
 import os from 'os'
@@ -64,10 +60,10 @@ const name = option('--name') || os.hostname()
 const node = option('--bootstrap')
 const [command = 'shell', ...rest] = args
 const inShell = command === 'shell'
-let pass = null // the password, once asked
-let input = null // stdin's lines (nextLine), once read
+let pass = null
+let input = null
 const terminal = !!process.stdout.isTTY // the shell's prompt: "> " on the line typed on
-let waiting = false // the shell's prompt is shown, nothing typed yet
+let waiting = false
 
 const commands = {
   init: async (sfs) => console.log(`device ${sfs.device}`),
@@ -273,7 +269,6 @@ function event (text) {
   process.stdout.write(`\r\x1b[K${text}\n> `)
 }
 
-// Commands from stdin, one at a time, each followed by the prompt.
 async function shell (sfs) {
   const self = (await sfs.devices()).find((d) => d.current)
   console.log(`device ${sfs.device} (${self?.name || name}), online; "help" lists the commands`)
@@ -283,7 +278,7 @@ async function shell (sfs) {
     if (e.joined.length) event(`joined    ${spaceName(sfs, e.space)}: ${who(e.joined)}`)
     if (e.left.length) event(`left      ${spaceName(sfs, e.space)}: ${who(e.left)}`)
   })
-  await sfs.sync() // linked folders kept in sync while the shell runs (spec 002)
+  await sfs.sync() // linked folders kept in sync while the shell runs
   process.once('SIGINT', () => push('quit'))
   for (;;) {
     prompt()
@@ -304,8 +299,7 @@ async function shell (sfs) {
   }
 }
 
-// From SWARMFS_PASSWORD, else asked on stdin; typed in a terminal, it isn't shown (raw mode).
-// `twice`: a new one, typed again to catch a typo (a terminal only).
+// Typed in a terminal, it isn't shown (raw mode); `twice` catches a typo in a new one.
 async function password (why, { twice = false } = {}) {
   if (process.env.SWARMFS_PASSWORD) return process.env.SWARMFS_PASSWORD
   const tty = !!process.stdin.isTTY
@@ -361,7 +355,7 @@ function push (line) {
 }
 
 function fail (err) {
-  // shortcut: hypergraph's lock error has no code yet (requests H13); match its message until it does.
+  // shortcut: hypergraph's lock error has no code yet; match its message until it does.
   if (/could not be locked/.test(err.message)) {
     console.error(`IN_USE: ${dir} is in use by a swarmfs shell (or another swarmfs): type the command there, or quit it first`)
   } else {
@@ -407,7 +401,6 @@ async function online (sfs, d) {
   if (!inShell && (await sfs.devices()).length > 1) await until(d.space, 'peers', () => d.space.peers().length > 0)
 }
 
-// Resolves once check() is true (checked now and on each `event`), or after WAIT.
 function until (emitter, event, check) {
   return new Promise((resolve) => {
     const finish = () => {
@@ -422,13 +415,11 @@ function until (emitter, event, check) {
   })
 }
 
-// The value after `name` in `words`, taken out of them; undefined if absent.
 function flag (words, name) {
   const i = words.indexOf(name)
   return i === -1 ? undefined : words.splice(i, 2)[1]
 }
 
-// A member by name (unique) or the start of a key.
 async function member (d, who) {
   const found = (await d.members()).filter((m) => m.name === who || m.identity.startsWith(who))
   if (found.length === 1) return found[0]
@@ -439,7 +430,7 @@ function spaceName (sfs, key) {
   return sfs.spaces().find((s) => s.key === key)?.name || key
 }
 
-// One thing sync did (contracts/api.md), as a line: never tab-separated, unlike entries.
+// One thing sync did, as a line: never tab-separated, unlike entries.
 function syncLine (e, sfs) {
   const word = e.action.padEnd(9)
   if (e.action === 'paused' && e.reason === 'missing') return `${word} ${e.path} (not found: unplugged?)`
@@ -456,7 +447,6 @@ function syncLine (e, sfs) {
 function gb (n) { return `${(n / 1e9).toFixed(1)} GB` }
 function mb (n) { return `${(n / 1e6).toFixed(1)} MB` }
 
-// One entry, tab-separated: id, kind, name, size, holders.
 function line (e) {
   const holders = e.holders.map((h) => `${h.name} (${h.online ? 'online' : 'offline'})`).join(', ')
   return e.kind === 'folder' ? `${e.id}\tfolder\t${e.name}` : `${e.id}\tfile\t${e.name}\t${e.size}\t${holders}`

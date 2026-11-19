@@ -1,6 +1,3 @@
-// Spec 002 story 5: two devices change one file without seeing each other's change: both
-// versions kept, as a conflict copy named after the device whose version lost.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
@@ -11,7 +8,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const outsideTrash = (dir) => [...contents(dir)].filter(([p]) => !p.includes('.swarmfs-trash'))
 const files = (dir) => outsideTrash(dir).map(([p, hex]) => [path.relative(dir, p), Buffer.from(hex, 'hex').toString()]).sort()
 
-// Both devices closed; `onPC` and `onLaptop` change their disks; both reopened and syncing.
 async function apart (t, setup, onPC, onLaptop) {
   let { pc, laptop, pcDocs, laptopDocs } = setup
   const pcDir = pc.dir
@@ -117,8 +113,8 @@ test('deleted on the PC while the laptop is still saving it: kept, added again',
   t.is(read(path.join(laptopDocs, 'a.txt')), 'being edited', 'the edit stays in place')
 })
 
-// FR-019 with H15: the edit was recorded before the delete arrived; it was saved after the
-// delete, so it wins: added again as a new entry, on both devices.
+// The edit was recorded before the delete arrived; it was saved after the delete, so it wins:
+// added again as a new entry, on both devices.
 test('deleted on the PC, then edited on the laptop while apart: the edit kept on both', { timeout: 120000 }, async (t) => {
   let { pc, laptop, drive, docs, pcDocs, laptopDocs, pcEvents } = await linkedPair(t, { 'docs/a.txt': 'aaaa' })
   t.ok(await eventually(() => read(path.join(laptopDocs, 'a.txt')), 15000))

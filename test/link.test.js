@@ -1,5 +1,3 @@
-// Spec 002 story 4: link a space folder to a local path on another device; unlink.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
@@ -23,7 +21,6 @@ test('linking into a folder that has files: same content held, different content
   t.absent(laptopEvents.some((e) => e.action === 'fetched' && e.path.endsWith('b.jpg')), 'b.jpg not downloaded')
   t.ok(laptopEvents.some((e) => e.action === 'conflict'), 'a conflict event')
 
-  // links() survives a reopen
   const dir = laptop.dir
   await laptop.close()
   const again = await device(t, 'laptop', { dir, minFree: 0 })

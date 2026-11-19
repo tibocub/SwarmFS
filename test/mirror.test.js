@@ -1,6 +1,3 @@
-// Spec 002 story 3: changes made on the PC reach the laptop's disk; what is replaced or
-// removed goes to the trash, never destroyed.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
@@ -23,7 +20,7 @@ test('renames and moves on the PC: renamed and moved on the laptop, nothing down
   for (let i = 0; i < 100; i++) album[`album/p${i}.jpg`] = `photo ${i}`
   for (const [k, v] of Object.entries(album)) files['docs/' + k] = v
   // the laptop has the album already (copied by hand): the PC never serves it, so on Windows the
-  // PC can rename the folder (swarmwire keeps served files open: request S9)
+  // PC can rename the folder (swarmwire keeps served files open)
   const { laptop, pcDocs, laptopDocs } = await linkedPair(t, files, { laptopFiles: album })
   t.ok(await eventually(() => read(path.join(laptopDocs, 'a.txt')) && read(path.join(laptopDocs, 'sub', 'keep.txt')), 30000), 'the laptop has everything')
   const held = await eventually(async () => (await laptop.hg.personal.query('held').fromDevice(laptop.device).latest(200)).items.length >= 103 || null, 30000)

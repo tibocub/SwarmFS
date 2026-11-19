@@ -1,5 +1,3 @@
-// Spec 004 story 3: a site's files in the engine's app storage, a cache under a cap; the owner keeps uploads.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

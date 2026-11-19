@@ -1,5 +1,3 @@
-// Spec 004 stories 1 and 2: protected pages, uploads by their author only, readers, public sites.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

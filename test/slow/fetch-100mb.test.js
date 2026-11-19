@@ -1,5 +1,3 @@
-// SC-003: a 100 MB file fetched from the other device, verified. Slow: `npm run test:slow`.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
