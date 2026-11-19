@@ -1,5 +1,3 @@
-// The trash of a linked folder and the free-space floor.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

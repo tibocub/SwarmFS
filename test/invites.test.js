@@ -1,5 +1,3 @@
-// The creator chooses who may invite.
-
 import test from 'brittle'
 import { person, eventually, codeOf } from './helpers.js'
 

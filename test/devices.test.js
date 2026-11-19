@@ -1,5 +1,3 @@
-// A second device sees everything, and who holds what.
-
 import test from 'brittle'
 import path from 'path'
 import { SwarmFS } from '../index.js'

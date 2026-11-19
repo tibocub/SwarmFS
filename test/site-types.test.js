@@ -1,5 +1,3 @@
-// A dynamic site's own record types, and close() right after sync().
-
 import test from 'brittle'
 import { person, eventually, codeOf } from './helpers.js'
 

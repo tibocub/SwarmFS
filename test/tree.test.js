@@ -1,5 +1,3 @@
-// Adding files in place and see the tree. One device.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

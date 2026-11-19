@@ -1,5 +1,3 @@
-// Deleting in a shared space goes to the bin.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

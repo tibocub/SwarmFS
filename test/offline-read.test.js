@@ -1,4 +1,4 @@
-// A site whose publisher is offline: what is here answers at once, not after the read's timeout
+// What is here answers at once, not after the read's timeout
 // (it used to take 10-20 s per page of an installed site with its owner gone).
 
 import test from 'brittle'

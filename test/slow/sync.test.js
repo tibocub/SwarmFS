@@ -1,6 +1,3 @@
-// Syncing at real sizes: a 10,000-file linked folder starts syncing in < 10 s, and 1,000 new
-// files reach the other device in < 60 s. npm run test:slow.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

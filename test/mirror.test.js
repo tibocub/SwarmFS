@@ -1,6 +1,3 @@
-// Changes made on the PC reach the laptop's disk; what is replaced or
-// removed goes to the trash, never destroyed.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

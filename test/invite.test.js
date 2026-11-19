@@ -1,5 +1,3 @@
-// Inviting someone into a space.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

@@ -1,6 +1,3 @@
-// A linked folder that vanishes is paused, never read as deleted; a mass
-// delete waits for the person's confirmation.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

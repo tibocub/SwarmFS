@@ -1,6 +1,3 @@
-// Two devices change one file without seeing each other's change: both
-// versions kept, as a conflict copy named after the device whose version lost.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
@@ -11,7 +8,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const outsideTrash = (dir) => [...contents(dir)].filter(([p]) => !p.includes('.swarmfs-trash'))
 const files = (dir) => outsideTrash(dir).map(([p, hex]) => [path.relative(dir, p), Buffer.from(hex, 'hex').toString()]).sort()
 
-// Both devices closed; `onPC` and `onLaptop` change their disks; both reopened and syncing.
 async function apart (t, setup, onPC, onLaptop) {
   let { pc, laptop, pcDocs, laptopDocs } = setup
   const pcDir = pc.dir

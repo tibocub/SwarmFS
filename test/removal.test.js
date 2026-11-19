@@ -1,5 +1,3 @@
-// Removing or banning a member; leave.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
@@ -7,7 +5,6 @@ import { person, sharedPair, invited, eventually, contents, writeTree, syncEvent
 
 const has = (dir, rel) => fs.existsSync(path.join(dir, rel))
 
-// Alice and Bob as sharedPair, plus Carol linking the same folder.
 async function trio (t, files) {
   const s = await sharedPair(t, files)
   const carol = await person(t, 'carol')

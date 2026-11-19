@@ -1,5 +1,3 @@
-// A site's files up to 60 KB travel inside their record.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

@@ -1,5 +1,3 @@
-// Each person chooses whether others see what their devices hold.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

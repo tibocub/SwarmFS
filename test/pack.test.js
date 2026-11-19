@@ -1,7 +1,3 @@
-// Packs: an app ships public sites as their own signed data. A pack opens with
-// nobody online, every page; an edit published later arrives from a peer; a changed pack is refused; no
-// secret leaves the owner's folder.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

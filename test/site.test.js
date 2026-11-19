@@ -1,5 +1,3 @@
-// Protected pages, uploads by their author only, readers, public sites.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'

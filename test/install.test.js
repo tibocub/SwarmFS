@@ -1,6 +1,3 @@
-// An installed site (site.keep) kept whole under a tight app storage cap, followed and
-// remembered; site.held() the bytes it has here.
-
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
