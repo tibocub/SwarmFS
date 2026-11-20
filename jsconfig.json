@@ -11,7 +11,8 @@
     "module": "node16",
     "moduleResolution": "node16",
     "types": ["node"],
-    "typeRoots": ["./types", "./node_modules/@types"]
+    "typeRoots": ["./types", "./node_modules/@types"],
+    "paths": { "protomux": ["./node_modules/swarmwire-lib/dist/types/vendor/protomux.d.cts"] }
   },
   "include": ["index.js", "lib/**/*.js", "bin/**/*.js", "scripts/**/*.js", "types/**/*.d.cts"],
   "exclude": ["node_modules", "test", "perf", "dist"]
