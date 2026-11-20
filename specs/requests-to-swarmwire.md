@@ -113,3 +113,4 @@ None makes swarmwire import hypergraph.
   SwarmFS user) without `skipLibCheck` gets `TS2300: Duplicate identifier 'Protomux'` in each.
   Wanted: a declaration that merges with hypergraph's (agreed between the two; see hypergraph H24),
   or protomux's types shipped once. Repro: SwarmFS `test/types-consumer.test.js`.
+  **Done 2026-11-20** (branch protomux-types): see H24.

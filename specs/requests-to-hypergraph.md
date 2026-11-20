@@ -224,6 +224,9 @@ these and doesn't edit hypergraph; the lead conversation decides.
   `namespace` instead of a `class`, the same in both), or protomux's types shipped once (in protomux,
   or a shared package). The same request is S11 for swarmwire. Repro: SwarmFS
   `test/types-consumer.test.js`, which tolerates exactly these two lines until then.
+  **Done 2026-11-20** (branch protomux-types): hypergraph and swarmwire ship protomux's types as a
+  module of their own, not a global `declare module`; SwarmFS's `lib/transfer.js` uses swarmwire's
+  (jsconfig `paths`); the consumer test loads all three with no tolerance.
 - **H25 — Export the types an app names from `hypergraph/next`.** Its entry exports `Hypergraph`,
   `OpenOptions` and the errors. SwarmFS types its records and spaces from `Hypergraph['personal']`
   (Space), `ReturnType<Space['query']>` (Query), `Awaited<ReturnType<Space['put']>>` (HgRecord), and
@@ -231,5 +234,8 @@ these and doesn't edit hypergraph; the lead conversation decides.
   `Change`). Wanted: `Space`, `Query`, `HgRecord`, `Page`, `Change` and `Deletion` exported as types
   from the entry, and Space's events typed (it is `EventEmitter<any>`: listeners get `any`). Not
   blocking.
+  **Done 2026-11-20, but the events** (branch protomux-types): `Space`, `SpaceStatus`, `Query`,
+  `HgRecord`, `Page`, `Change`, `Deletion` and more are exported; used in `lib/types.js`, `lib/swarmfs.js`.
+  Space's events are still `any`.
 - Protomux's channels are iterable (`for (const channel of mux)`); the vendored declarations leave
   that out, so SwarmFS's `lib/transfer.js` casts (with H24, worth adding).
