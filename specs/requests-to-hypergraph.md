@@ -213,3 +213,23 @@ these and doesn't edit hypergraph; the lead conversation decides.
   accepted), and the owner's app keeps uploads. Wanted (later, not milestone 1): the role public
   joiners get, chosen at `makePublic({ role })` (e.g. a role with no permissions). Today: write
   limits and bans.
+
+## Found while typing SwarmFS strict (2026-11-20)
+
+- **H24 — The two vendored `protomux` declarations clash in a consumer.** hypergraph's
+  `dist/types/vendor/protomux.d.ts` and swarmwire's `dist/types/vendor/protomux.d.cts` both declare
+  `declare module 'protomux' { class Protomux ... export = Protomux }`. A strict TypeScript project
+  loading both (any SwarmFS user, HyperBrowser) without `skipLibCheck` gets `TS2300: Duplicate
+  identifier 'Protomux'` in each file. Wanted: one declaration that merges (an `interface` +
+  `namespace` instead of a `class`, the same in both), or protomux's types shipped once (in protomux,
+  or a shared package). The same request is S11 for swarmwire. Repro: SwarmFS
+  `test/types-consumer.test.js`, which tolerates exactly these two lines until then.
+- **H25 — Export the types an app names from `hypergraph/next`.** Its entry exports `Hypergraph`,
+  `OpenOptions` and the errors. SwarmFS types its records and spaces from `Hypergraph['personal']`
+  (Space), `ReturnType<Space['query']>` (Query), `Awaited<ReturnType<Space['put']>>` (HgRecord), and
+  reaches the `change` event's records by a deep path (`hypergraph/dist/types/index/indexer.js`
+  `Change`). Wanted: `Space`, `Query`, `HgRecord`, `Page`, `Change` and `Deletion` exported as types
+  from the entry, and Space's events typed (it is `EventEmitter<any>`: listeners get `any`). Not
+  blocking.
+- Protomux's channels are iterable (`for (const channel of mux)`); the vendored declarations leave
+  that out, so SwarmFS's `lib/transfer.js` casts (with H24, worth adding).

@@ -85,9 +85,20 @@ In the shell: `create "My files"`, `add "My files" ~/photos`, `pair` (prints a c
 machine: `swarmfs join <code>`, then in its shell `ls "My files"`, `link "My files" photos ~/photos`.
 More in [docs/cli.md](docs/cli.md).
 
+## Types
+
+SwarmFS is plain JavaScript typed with JSDoc and checked by TypeScript in strict mode
+(`npm run typecheck`), with nothing to compile. Editors read those types: completion, hover docs
+and errors as you type, in JavaScript too. TypeScript users get `.d.ts` files for `swarmfs` (and
+its `swarmfs/lib/*.js` modules), built by `npm run types` into `dist/types/` (on `npm pack`), with
+the shapes the API takes and returns exported as types (`Drive`, `Site`, `Entry`, `SyncEvent`,
+`MembersEvent`, `Member`, `Upload`, `OpenOptions`...). Hypergraph's and swarmwire's own types come
+with them, and Node's (`@types/node`) as a dependency.
+
 ## Tests
 
 ```bash
+npm run typecheck    # strict TypeScript over the library, no error allowed
 npm test             # Node
 npm run test:bare    # Bare
 npm run test:all     # both

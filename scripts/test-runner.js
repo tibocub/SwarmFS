@@ -27,6 +27,7 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const TIMES = path.join(ROOT, '.test-times.json')
 const BARE = path.join(ROOT, 'node_modules', 'bare', 'bin', 'bare') // a Node script starting the runtime
 
+/** @type {{ jobs: number, bare: boolean, files: string[] }} */
 const opts = { jobs: Number(process.env.SFS_TEST_JOBS) || Math.max(1, os.cpus().length - 2), bare: false, files: [] }
 const argv = process.argv.slice(2)
 for (let i = 0; i < argv.length; i++) {
@@ -46,11 +47,16 @@ const { bavail, bsize } = fs.statfsSync(tmp)
 // a full disk fails tests with "not enough space", which reads like a bug
 if (bavail * bsize < 3e9) process.stdout.write(`(warning: ${Math.round(bavail * bsize / 1e6)} MB free in ${tmp}, the tests' temp folder)\n`)
 
+/**
+ * @typedef {{ file: string, ms: number, code: number | null, passed: number, total: number, ok: boolean, out: string }} Result
+ * @param {string} file
+ * @returns {Promise<Result>}
+ */
 function run (file) {
   return new Promise((resolve) => {
     const start = Date.now()
     const p = spawn(process.execPath, opts.bare ? [BARE, file] : [file], { cwd: ROOT, env: ENV })
-    try { os.setPriority(p.pid, os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {} // keep the machine responsive
+    try { os.setPriority(/** @type {number} */ (p.pid), os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {} // no pid (spawn failed): throws, ignored // keep the machine responsive
     let out = ''
     p.stdout.on('data', (d) => { out += d })
     p.stderr.on('data', (d) => { out += d })
@@ -63,16 +69,20 @@ function run (file) {
   })
 }
 
+/** @type {Record<string, number>} file -> ms */
 let times = {}
 try { times = JSON.parse(fs.readFileSync(TIMES, 'utf-8')) } catch {}
+/** @param {string} f */
 const key = (f) => (opts.bare ? `bare:${f}` : f)
+/** @param {string} f */
 const order = (f) => (key(f) in times ? times[key(f)] : Infinity) // unknown files first
 const queue = [...files].sort((a, b) => order(b) - order(a))
 const started = Date.now()
+/** @type {Result[]} */
 const results = []
 const worker = async () => {
   while (queue.length) {
-    const r = await run(queue.shift())
+    const r = await run(/** @type {string} */ (queue.shift()))
     results.push(r)
     process.stdout.write(`${r.ok ? 'ok  ' : 'FAIL'} ${(r.ms / 1000).toFixed(1).padStart(6)}s  ${r.file}${r.ok ? '' : `  (exit ${r.code}, ${r.passed}/${r.total})`}\n`)
   }

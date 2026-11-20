@@ -104,3 +104,12 @@ None makes swarmwire import hypergraph.
   opened for one peer to another without asking `resolve` again (or key the open source by peer, or
   a `allowed(root, peer)` check before each serve). SwarmFS then answers only from files of spaces
   that peer's device is a member of. Without it SwarmFS can't be shared with other people.
+
+## Found while typing SwarmFS strict (2026-11-20)
+
+- **S11 — The vendored `protomux` declaration clashes with hypergraph's.** swarmwire's
+  `dist/types/vendor/protomux.d.cts` and hypergraph's `dist/types/vendor/protomux.d.ts` both declare
+  `class Protomux` in `declare module 'protomux'`: a strict TypeScript project loading both (any
+  SwarmFS user) without `skipLibCheck` gets `TS2300: Duplicate identifier 'Protomux'` in each.
+  Wanted: a declaration that merges with hypergraph's (agreed between the two; see hypergraph H24),
+  or protomux's types shipped once. Repro: SwarmFS `test/types-consumer.test.js`.

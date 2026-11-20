@@ -76,3 +76,10 @@ test('packed from a closed folder: only what a visitor downloads, no secret', { 
     t.ok(bytes.indexOf(words) === -1 && bytes.indexOf(deviceKey) === -1, 'no secret in ' + f)
   }
 })
+
+test('an instance opened offline takes listeners for every event', async (t) => {
+  const sfs = await SwarmFS.open(tmpDir(t, 'offline'), { offline: true })
+  t.teardown(() => sfs.close())
+  const fn = () => {}
+  t.execution(() => sfs.on('members', fn).off('members', fn).on('sync', fn).off('sync', fn))
+})

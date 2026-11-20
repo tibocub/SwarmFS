@@ -16,12 +16,14 @@ npm install
 ```
 
 `npm install` links `../hypergraph` and `../swarmwire` into `node_modules`. On Windows these are
-junctions; don't replace them with `ln -s`, which copies. Node 20 or later; Bare 1.27 or later is
-installed as a dev dependency.
+junctions; don't replace them with `ln -s`, which copies. Node 20 or later; Bare 1.27 or later and
+TypeScript (for `npm run typecheck`) are installed as dev dependencies. Run `npm run types` in
+`../hypergraph` and `../swarmwire` once: SwarmFS is checked against their built `dist/types`.
 
 ## Tests
 
 ```bash
+npm run typecheck     # strict TypeScript over lib/, bin/, scripts/ (also run by npm test)
 npm test              # every test/*.test.js on Node, one process per file, in parallel
 npm run test:bare     # the same on Bare
 npm run test:all      # both
@@ -48,8 +50,8 @@ Every change runs on both Node and Bare: platform modules come through the `impo
 - Record types are permanent: only append fields, add types and add indexes ([docs/data-model.md](docs/data-model.md)).
 - A change touching a hot path (sync, fetch, rescans, holdings, records' shape) adds or updates a
   perf scenario and runs `npm run perf` before and after ([docs/performance.md](docs/performance.md)).
-- Public calls get JSDoc (options, defaults, return shape, errors); other comments only say why.
-  Update `docs/` when behaviour changes.
+- Public calls get JSDoc (options, defaults, return shape, errors), and `npm run typecheck`
+  passes; other comments only say why. Update `docs/` when behaviour changes.
 
 The binding rules are in `.specify/memory/constitution.md`.
 

@@ -54,3 +54,10 @@ test.todo('chosen people: a trusted member\'s invites let people in as editors',
   await drive.setRole(bd.sfs.hg.identity.publicKey, 'trusted')
   t.ok(await bd.invite())
 })
+
+test('a setting that is none is refused, also one named like an Object method', async (t) => {
+  const alice = await person(t, 'alice')
+  for (const invites of ['constructor', 'toString', 'nobody']) {
+    await t.exception.all(alice.createSpace('Club', { invites }), /invites: everyone, chosen, admins/, invites)
+  }
+})

@@ -256,3 +256,12 @@ function run (t, args, stdin = 'ignore', env = {}) {
     })
   }
 }
+
+test('a command named like an Object method is no command: usage, exit 1', async (t) => {
+  const dir = tmpDir(t, 'cli')
+  for (const command of ['constructor', 'toString']) {
+    const cli = run(t, ['--dir', dir, command])
+    t.is(await cli.exit(), 1, command)
+    t.ok(cli.stdout().startsWith('usage:'), `${command}: the usage`)
+  }
+})

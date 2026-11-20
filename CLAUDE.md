@@ -20,6 +20,15 @@ npm run test:bare     # Bare
 npm run perf          # when a hot path changes (docs/performance.md)
 ```
 
+## Types
+
+`npm run typecheck` (tsc strict, `jsconfig.json`; tests excluded) must pass with no error; a test
+enforces it, and `test/types-consumer.test.js` checks the built `.d.ts` as a TypeScript user gets
+them. JSDoc `@typedef` for every object shape, hypergraph's and swarmwire's types where values come
+from them (never copies); `any`, casts and `@ts-expect-error` only with a one-line reason. A cast
+starting a line needs care: without semicolons, `(` there continues the line before. Untyped
+packages get hand-written types in `types/` (none yet).
+
 ## Comments
 
 Keep a comment only when it says why something is done in a way the code can't show (a subtle
