@@ -8,6 +8,15 @@ import path from 'path'
 import process from 'process'
 import { SwarmFS } from '../index.js'
 
+/**
+ * @typedef {import('../lib/drive.js').Drive} Drive
+ * @typedef {import('../lib/drive.js').Entry} Entry
+ * @typedef {import('../lib/members.js').InviteSetting} InviteSetting
+ * @typedef {import('../lib/sync.js').SyncEvent} SyncEvent
+ * @typedef {Error & { code?: string }} Failure what a command throws
+ * @typedef {{ lines: string[], typed: string, cr: boolean, ended: boolean, wake: () => void }} Input stdin, line by line
+ */
+
 const USAGE = `usage: swarmfs [command] [--dir <folder>] [--name <device name>] [--bootstrap <host:port>]
   (none), shell              stay online and read the commands below from stdin, one per line
   init                       make this device; asks for a password
@@ -51,6 +60,7 @@ SWARMFS_MIN_FREE (bytes) sets another floor.`
 const WAIT = 15000 // how long a one-shot command waits for the person's other devices to connect
 
 const args = process.argv.slice(2)
+/** @param {string} name */
 const option = (name) => {
   const i = args.indexOf(name)
   return i === -1 ? undefined : args.splice(i, 2)[1]
@@ -60,11 +70,14 @@ const name = option('--name') || os.hostname()
 const node = option('--bootstrap')
 const [command = 'shell', ...rest] = args
 const inShell = command === 'shell'
+/** @type {string | null} */
 let pass = null
-let input = null
+// null until stdin is first read (nextLine); read before that only by the null checks
+let input = /** @type {Input} */ (/** @type {unknown} */ (null))
 const terminal = !!process.stdout.isTTY // the shell's prompt: "> " on the line typed on
 let waiting = false
 
+/** @type {Record<string, (sfs: SwarmFS, ...words: string[]) => Promise<void>>} */
 const commands = {
   init: async (sfs) => console.log(`device ${sfs.device}`),
   join: async (sfs) => console.log(`device ${sfs.device}`), // the open did it
@@ -76,7 +89,7 @@ const commands = {
 
   create: async (sfs, ...words) => {
     const invites = flag(words, '--invites') || 'admins'
-    const drive = await sfs.createSpace(words[0], { invites })
+    const drive = await sfs.createSpace(words[0], { invites: /** @type {InviteSetting} */ (invites) }) // checked by the library
     console.log(`${drive.key}\t${drive.name}`)
   },
 
@@ -93,7 +106,7 @@ const commands = {
 
   invites: async (sfs, space, setting) => {
     const d = await drive(sfs, space)
-    if (setting) await d.setInvites(setting)
+    if (setting) await d.setInvites(/** @type {InviteSetting} */ (setting)) // checked by the library
     console.log(`invites: ${(await d.invites()) || 'admins'}`)
   },
 
@@ -111,7 +124,7 @@ const commands = {
 
   role: async (sfs, space, who, role) => {
     const d = await drive(sfs, space)
-    await d.setRole((await member(d, who)).identity, role)
+    await d.setRole((await member(d, who)).identity, /** @type {Parameters<Drive['setRole']>[1]} */ (role)) // checked by hypergraph
     console.log(`${who}: ${role}`)
   },
 
@@ -153,11 +166,12 @@ const commands = {
 
   add: async (sfs, space, file) => console.log(line(await (await drive(sfs, space)).add(file))),
 
-  ls: async (sfs, space, folder) => {
+  ls: async (sfs, space, /** @type {string | undefined} */ folder) => {
     const d = await drive(sfs, space)
     await online(sfs, d)
     folder = await entry(d, folder)
-    let page = { items: [] }
+    /** @type {Awaited<ReturnType<Drive['list']>>} */
+    let page = { items: [], complete: true } // `complete` read only once a page came
     do {
       const last = page.items.at(-1)
       page = await d.list(folder, { after: last, timeout: inShell ? 0 : WAIT }) // one-shot: waits for the other devices' entries
@@ -169,7 +183,7 @@ const commands = {
   get: async (sfs, space, id, file) => {
     const d = await drive(sfs, space)
     await online(sfs, d)
-    const { path, bytes } = await d.fetch(await entry(d, id), file)
+    const { path, bytes } = await d.fetch(/** @type {string} */ (await entry(d, id)), file) // an id typed: one back
     console.log(`${path}\t${bytes} bytes`)
   },
 
@@ -177,7 +191,7 @@ const commands = {
 
   link: async (sfs, space, folder, local) => {
     const d = await drive(sfs, space)
-    await d.link(await entry(d, folder), local)
+    await d.link(/** @type {string} */ (await entry(d, folder)), local) // a folder typed: an id back
     console.log(`linked ${path.resolve(local)}`)
   },
 
@@ -226,7 +240,7 @@ const commands = {
   }
 }
 
-if (!inShell && !commands[command]) {
+if (!inShell && !Object.hasOwn(commands, command)) {
   console.log(USAGE)
   process.exitCode = 1
 } else {
@@ -247,7 +261,7 @@ if (!inShell && !commands[command]) {
     if (inShell) await shell(sfs)
     else await commands[command](sfs, ...rest)
   } catch (err) {
-    fail(err)
+    fail(/** @type {Failure} */ (err))
     process.exitCode = 1
   } finally {
     if (sfs) await sfs.close()
@@ -264,15 +278,18 @@ function prompt () {
 }
 
 // A line printed while the shell waits for a command: over the prompt, which is shown again after it.
+/** @param {string} text */
 function event (text) {
   if (!terminal || !waiting) return console.log(text)
   process.stdout.write(`\r\x1b[K${text}\n> `)
 }
 
+/** @param {SwarmFS} sfs */
 async function shell (sfs) {
   const self = (await sfs.devices()).find((d) => d.current)
   console.log(`device ${sfs.device} (${self?.name || name}), online; "help" lists the commands`)
   sfs.on('sync', (e) => event(syncLine(e, sfs)))
+  /** @param {Array<{ identity: string, name: string | null }>} people */
   const who = (people) => people.map((p) => p.name || p.identity.slice(0, 8)).join(', ')
   sfs.on('members', (e) => {
     if (e.joined.length) event(`joined    ${spaceName(sfs, e.space)}: ${who(e.joined)}`)
@@ -287,22 +304,28 @@ async function shell (sfs) {
     const [cmd, ...words] = (typed.match(/"[^"]*"|\S+/g) || []).map((w) => w.replace(/^"(.*)"$/, '$1'))
     if (cmd === 'quit') break
     if (!cmd) continue
-    if (!commands[cmd] || cmd === 'init' || cmd === 'join') {
+    if (!Object.hasOwn(commands, cmd) || cmd === 'init' || cmd === 'join') {
       console.log(cmd === 'help' ? USAGE : `${cmd}: not a shell command ("help" lists them; init and join are one-shot)`)
       continue
     }
     try {
       await commands[cmd](sfs, ...words)
     } catch (err) {
-      fail(err)
+      fail(/** @type {Failure} */ (err))
     }
   }
 }
 
-// Typed in a terminal, it isn't shown (raw mode); `twice` catches a typo in a new one.
+/**
+ * Typed in a terminal, it isn't shown (raw mode); `twice` catches a typo in a new one.
+ * @param {string} why
+ * @param {{ twice?: boolean }} [opts]
+ * @returns {Promise<string>}
+ */
 async function password (why, { twice = false } = {}) {
   if (process.env.SWARMFS_PASSWORD) return process.env.SWARMFS_PASSWORD
   const tty = !!process.stdin.isTTY
+  /** @param {string} prompt */
   const ask = async (prompt) => {
     console.log(prompt)
     if (tty) process.stdin.setRawMode(true)
@@ -320,6 +343,7 @@ async function password (why, { twice = false } = {}) {
 
 // stdin, line by line, read only once asked for. Raw mode (a password) sends each key:
 // Enter is \r, Backspace \x7f, Ctrl+C \x03 (then: nothing typed).
+/** @returns {Promise<string | null>} null at the end of input */
 function nextLine () {
   if (!input) {
     input = { lines: [], typed: '', cr: false, ended: false, wake: () => {} }
@@ -339,14 +363,15 @@ function nextLine () {
       input.wake()
     })
   }
-  return new Promise(function next (resolve) {
+  return new Promise(/** @param {(line: string | null) => void} resolve */ function next (resolve) {
     input.wake = () => {} // once per wait: a second line must not go to this one
-    if (input.lines.length) return resolve(input.lines.shift())
+    if (input.lines.length) return resolve(/** @type {string} */ (input.lines.shift()))
     if (input.ended) return resolve(null)
     input.wake = () => next(resolve)
   })
 }
 
+/** @param {string} line */
 function push (line) {
   waiting = false
   input.lines.push(line)
@@ -354,6 +379,7 @@ function push (line) {
   input.wake()
 }
 
+/** @param {Failure} err */
 function fail (err) {
   // shortcut: hypergraph's lock error has no code yet; match its message until it does.
   if (/could not be locked/.test(err.message)) {
@@ -365,6 +391,11 @@ function fail (err) {
 
 // A space by name or key; just joined, its name may arrive a moment after the open
 // (one-shot: waits for it; the shell: ask again).
+/**
+ * @param {SwarmFS} sfs
+ * @param {string} nameOrKey
+ * @returns {Promise<Drive>}
+ */
 async function drive (sfs, nameOrKey) {
   const find = () => sfs.spaces().find((s) => s.key === nameOrKey || s.name === nameOrKey)
   if (!inShell) await until(sfs, 'spaces', find)
@@ -375,6 +406,11 @@ async function drive (sfs, nameOrKey) {
 
 // An entry's id from what was typed: an id, the space's name or key (its top), or a path of
 // names from the top ("Photos/2024/cat.jpg", / or \).
+/**
+ * @param {Drive} d
+ * @param {string} [typed]
+ * @returns {Promise<string | undefined>} undefined when nothing was typed
+ */
 async function entry (d, typed) {
   if (typed === undefined) return undefined
   if (typed === d.name || typed === d.key) return d.top
@@ -383,8 +419,10 @@ async function entry (d, typed) {
   } catch {} // not an id: a path
   let id = d.top
   for (const part of typed.split(/[/\\]/).filter(Boolean)) {
+    /** @type {Entry[]} */
     const found = []
-    let page = { items: [] }
+    /** @type {Awaited<ReturnType<Drive['list']>>} */
+    let page = { items: [], complete: true } // `complete` not read
     do {
       page = await d.list(id, { after: page.items.at(-1), timeout: inShell ? 0 : WAIT })
       found.push(...page.items.filter((e) => e.name === part))
@@ -397,12 +435,22 @@ async function entry (d, typed) {
 
 // Holders show online only once connected: one-shot, wait for one of the person's other
 // devices, if any. The shell is online all along: holders show as they are now.
+/**
+ * @param {SwarmFS} sfs
+ * @param {Drive} d
+ */
 async function online (sfs, d) {
   if (!inShell && (await sfs.devices()).length > 1) await until(d.space, 'peers', () => d.space.peers().length > 0)
 }
 
+/**
+ * @param {{ on (event: string, fn: () => void): unknown, off (event: string, fn: () => void): unknown }} emitter
+ * @param {string} event
+ * @param {() => unknown} check
+ * @returns {Promise<void>}
+ */
 function until (emitter, event, check) {
-  return new Promise((resolve) => {
+  return new Promise((/** @type {() => void} */ resolve) => {
     const finish = () => {
       clearTimeout(timer)
       emitter.off(event, test)
@@ -415,38 +463,57 @@ function until (emitter, event, check) {
   })
 }
 
+/**
+ * @param {string[]} words
+ * @param {string} name
+ */
 function flag (words, name) {
   const i = words.indexOf(name)
   return i === -1 ? undefined : words.splice(i, 2)[1]
 }
 
+/**
+ * @param {Drive} d
+ * @param {string} who
+ */
 async function member (d, who) {
   const found = (await d.members()).filter((m) => m.name === who || m.identity.startsWith(who))
   if (found.length === 1) return found[0]
   throw Object.assign(new Error(found.length ? `${who}: more than one member; use the start of a key` : `no member ${who}`), { code: found.length ? 'AMBIGUOUS' : 'NOT_FOUND' })
 }
 
+/**
+ * @param {SwarmFS} sfs
+ * @param {string} key
+ */
 function spaceName (sfs, key) {
   return sfs.spaces().find((s) => s.key === key)?.name || key
 }
 
 // One thing sync did, as a line: never tab-separated, unlike entries.
+/**
+ * @param {SyncEvent} e
+ * @param {SwarmFS} sfs
+ */
 function syncLine (e, sfs) {
   const word = e.action.padEnd(9)
   if (e.action === 'paused' && e.reason === 'missing') return `${word} ${e.path} (not found: unplugged?)`
-  if (e.action === 'paused' && e.reason === 'removed') return `${word} ${e.path} (removed from ${spaceName(sfs, e.space)})`
+  if (e.action === 'paused' && e.reason === 'removed') return `${word} ${e.path} (removed from ${spaceName(sfs, /** @type {string} */ (e.space))})` // a linked folder's event: its space
   if (e.action === 'paused' && e.reason === 'in-bin') return `${word} ${e.path} (in the bin)`
   if (e.action === 'paused') return `${word} ${e.path}: ${e.count} files deleted at once; "confirm ${e.path}" removes them everywhere, or restore them`
-  if (e.action === 'low-space') return `${word} ${e.path}: ${gb(e.free)} free, floor ${gb(e.floor)}; fetching stopped`
+  if (e.action === 'low-space') return `${word} ${e.path}: ${gb(/** @type {number} */ (e.free))} free, floor ${gb(/** @type {number} */ (e.floor))}; fetching stopped` // low-space: both set
   if (e.action === 'skipped') return `${word} ${e.path} (name not valid on this disk)`
   if (e.action === 'error') return `${word} ${e.path || ''}: ${e.reason}`
   return e.to ? `${word} ${e.path} -> ${e.to}` : `${word} ${e.path}`
 }
 
 // declarations, not consts: the shell runs (top-level await) before the end of this file is reached
+/** @param {number} n */
 function gb (n) { return `${(n / 1e9).toFixed(1)} GB` }
+/** @param {number} n */
 function mb (n) { return `${(n / 1e6).toFixed(1)} MB` }
 
+/** @param {Entry} e */
 function line (e) {
   const holders = e.holders.map((h) => `${h.name} (${h.online ? 'online' : 'offline'})`).join(', ')
   return e.kind === 'folder' ? `${e.id}\tfolder\t${e.name}` : `${e.id}\tfile\t${e.name}\t${e.size}\t${holders}`
