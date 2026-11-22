@@ -69,3 +69,15 @@ test('the top of a space linked; two entries of one name; names differing only b
 async function caseInsensitive (dir) {
   return fs.existsSync(dir.toUpperCase()) && fs.existsSync(dir.toLowerCase())
 }
+
+test('three new entries of one content at once: all placed, no error (one incoming file per content)', { timeout: 120000 }, async (t) => {
+  const big = 'x'.repeat(8 * 1024 * 1024)
+  const { laptop, drive, docs, laptopDocs } = await linkedPair(t, { 'docs/b.bin': big })
+  const errors = []
+  laptop.on('sync', (e) => { if (e.action === 'error') errors.push(e.reason) })
+  t.ok(await eventually(() => read(path.join(laptopDocs, 'b.bin'))?.length === big.length, 60000), 'b.bin on the laptop')
+  const b = (await drive.list(docs.id)).items.find((i) => i.name === 'b.bin')
+  for (const name of ['one.bin', 'two.bin', 'three.bin']) await drive.space.put('file', { name, parent: docs.id, content: contentRef(b.hash, b.size) })
+  t.ok(await eventually(() => ['one.bin', 'two.bin', 'three.bin'].every((n) => read(path.join(laptopDocs, n))?.length === big.length), 20000), 'all three placed')
+  t.alike(errors, [], 'no error')
+})

@@ -24,6 +24,15 @@ stops the next one.
 Runs on watcher batches (paths whose size and mtime held still for 2 s, checked every 500 ms), at
 start, on resume and on `rescan()`.
 
+The watcher covers the whole tree. Node watches a tree on every platform, Bare only on macOS and
+Windows; elsewhere (Bare on Linux) `lib/watch.js` keeps one watcher per
+folder, adding one when a folder appears (made or moved in, with every folder in it) and dropping
+it when it goes. A folder that appears reaches the local pass as its own path, so files written
+in it before its watcher started are found by that pass. Ignored folders
+([below](#ignored-files): the trash, and what `.swarmfsignore` lists, such as `node_modules/`)
+get no watcher; one un-ignored later is watched from the next `sync()`. A folder that can't be watched (past
+the system's limit of watches, `fs.inotify.max_user_watches`) is missed until the next full pass (start, resume, `rescan()`).
+
 1. Ignored paths dropped ([below](#ignored-files)).
 2. **Moves.** A gone folder whose files all reappear under one new folder is a folder move. A gone
    file and a new one with the same file id, size and mtime are a move; failing that, the same hash.
@@ -56,6 +65,8 @@ Runs when the space reports changed entries (debounced 500 ms), at start and on 
 - Its own space folder removed elsewhere: files kept, the folder unlinked.
 
 Downloads land in `<linked>/.swarmfs-trash/.incoming/<root>` and are renamed into place when complete.
+Entries of one content are fetched one after the other (they share that file): the first is
+downloaded, the others copied from it once placed.
 If the target changed meanwhile and isn't an edit already recorded, it becomes a conflict copy.
 
 ## Conflict copies

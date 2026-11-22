@@ -150,3 +150,52 @@ test('a single added file: edits followed; deleted, its entry stays; add inside 
   t.is(await codeOf(drive.add(path.join(root, 'a.txt'))), 'EXISTS', 'a file in a linked folder')
   t.is(await codeOf(drive.add(path.dirname(root))), 'EXISTS', 'a folder holding one')
 })
+
+test('one watcher per folder (Bare on Linux, where a tree watch is the top folder only): changes in sub-folders, new ones included', { timeout: 90000 }, async (t) => {
+  const { watch } = await import('../lib/watch.js')
+  const root = writeTree(tmpDir(t, 'w'), { 'sub/a.txt': 'a', 'sub/deep/b.txt': 'b', 'old/c.txt': 'c' })
+  const seen = new Set()
+  const w = watch(root, { perFolder: true, onBatch: (rels) => { for (const r of rels) seen.add(r.replace(/\\/g, '/')) }, onError: (err) => t.fail(String(err)) })
+  t.teardown(() => w.close())
+  const p = (...s) => path.join(root, ...s)
+  const saw = (...rels) => eventually(() => rels.every((r) => seen.has(r)), 10000)
+
+  fs.writeFileSync(p('sub', 'deep', 'new.txt'), 'n')
+  t.ok(await saw('sub/deep/new.txt'), 'a new file two folders down')
+  fs.writeFileSync(p('sub', 'a.txt'), 'saved')
+  t.ok(await saw('sub/a.txt'), 'a save')
+  fs.renameSync(p('sub', 'deep', 'b.txt'), p('sub', 'deep', 'b2.txt'))
+  t.ok(await saw('sub/deep/b.txt', 'sub/deep/b2.txt'), 'a rename: both names')
+  fs.mkdirSync(p('made', 'later'), { recursive: true })
+  t.ok(await saw('made'), 'a folder made after the watch started')
+  fs.writeFileSync(p('made', 'later', 'x.txt'), 'x')
+  t.ok(await saw('made/later/x.txt'), 'is watched, and the folder made in it')
+  fs.renameSync(p('old'), p('sub', 'moved'))
+  t.ok(await saw('old', 'sub/moved'), 'a folder moved: both places')
+  fs.unlinkSync(p('sub', 'moved', 'c.txt'))
+  t.ok(await saw('sub/moved/c.txt'), 'is watched under its new place')
+  fs.rmSync(p('made'), { recursive: true })
+  seen.delete('made')
+  t.ok(await saw('made'), 'a folder deleted')
+})
+
+test('one watcher per folder: ignored folders (a .swarmfsignore\'s node_modules/ and .git, the trash) get none', { timeout: 30000 }, async (t) => {
+  const { watch } = await import('../lib/watch.js')
+  const { compile, ignored } = await import('../lib/ignore.js')
+  const rules = compile('node_modules/\n.git\n')
+  const root = writeTree(tmpDir(t, 'w'), { 'node_modules/a/b/x.js': 'x', '.git/x/y': 'y', '.swarmfs-trash/.incoming/z': 'z', 'sub/deep/a.txt': 'a' })
+  const watched = []
+  const original = fs.watch
+  fs.watch = (dir, ...rest) => { watched.push(path.relative(root, String(dir)).split(path.sep).join('/')); return original.call(fs, dir, ...rest) }
+  let w
+  try {
+    w = watch(root, { perFolder: true, filter: (rel, dir = false) => !ignored(rules, rel, dir), onBatch: () => {}, onError: (err) => t.fail(String(err)) })
+    fs.mkdirSync(path.join(root, 'node_modules', 'later'))
+    fs.mkdirSync(path.join(root, 'made'))
+    t.ok(await eventually(() => watched.includes('made'), 5000), 'a folder made later: watched')
+  } finally {
+    fs.watch = original
+    if (w) w.close()
+  }
+  t.alike(watched.sort(), ['', 'made', 'sub', 'sub/deep'], 'only the root and the folders not ignored')
+})
