@@ -23,6 +23,10 @@ is `null`).
 - `from`, `binned`: in the bin, where the entry was and when (ms). Restored: `''` and `0`.
 - `data`: the bytes, when the file is at most 60 KiB and the space inlines (a site's pages, uploads).
 
+`profile` and `site` are hypergraph *shared* types: in a private space that hides its history (an encrypted
+conversation), a newcomer reads them too, though they were written before it came. They are sealed with a key from
+the space's disk key, so someone removed keeps reading them until the space is renewed (`secure()`).
+
 A site's own types sit beside these, in the site's space only.
 
 ## Rules (checked by every member before keeping a record)
