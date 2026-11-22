@@ -85,3 +85,14 @@ test('a recovery phrase restores the identity into a new folder; a wrong one is 
   const c = await device(t, 'c', { dir })
   t.not(c.hg.identity.publicKey, identity, 'the folder still opens, as a new identity')
 })
+
+test('restoring a phrase while its first device is open makes a second device of the same person', async (t) => {
+  const a = await device(t, 'a')
+  const b = await device(t, 'b', { mnemonic: await a.hg.recoveryPhrase() })
+  t.is(b.hg.identity.publicKey, a.hg.identity.publicKey)
+  const both = await eventually(async () => {
+    const d = await a.devices()
+    return d.length === 2 && d
+  })
+  t.ok(both, 'the first device lists the restored one')
+})
