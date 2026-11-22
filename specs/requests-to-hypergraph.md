@@ -239,3 +239,10 @@ these and doesn't edit hypergraph; the lead conversation decides.
   Space's events are still `any`.
 - Protomux's channels are iterable (`for (const channel of mux)`); the vendored declarations leave
   that out, so SwarmFS's `lib/transfer.js` casts (with H24, worth adding).
+
+## Found while adding restore from a recovery phrase (2026-11-22)
+
+- **H26 — A wrong `mnemonic` throws without a code.** `Hypergraph.open(dir, { mnemonic })` with a phrase
+  that isn't one passes on its key library's `Error('Invalid mnemonic')`, so an app (HyperBrowser's restore)
+  can only match the message. Wanted: a `HypergraphError` with a code (say `INVALID_PHRASE`). The folder is
+  left with no identity (opening it again makes a new one). Repro: SwarmFS `test/devices.test.js`. Not blocking.

@@ -15,6 +15,8 @@ const sfs = await SwarmFS.open(dir, {
                    //   not needed at later opens; addDevice asks for it again
   joinCode,        // open as a new device of an existing person (a code from addDevice)
   joinTimeout,     // ms a joinCode is tried (hypergraph's default)
+  mnemonic,        // a 24-word recovery phrase: restore that identity into a new folder
+                   //   (NOT_ALLOWED if the folder holds another identity)
   deviceName,      // this device's name when made, e.g. 'phone'
   bootstrap,       // [{ host, port }]: DHT nodes (a private DHT, in tests)
   fetchTimeout,    // ms without progress before a fetch gives up (default 30000)
