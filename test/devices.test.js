@@ -67,3 +67,21 @@ test('a stranger has no such space', async (t) => {
   t.is(await codeOf((async () => stranger.space(drive.key))()), 'NOT_FOUND')
   t.alike(stranger.spaces(), [])
 })
+
+test('a recovery phrase restores the identity into a new folder; a wrong one is refused', async (t) => {
+  const a = await device(t, 'a')
+  const identity = a.hg.identity.publicKey
+  const words = await a.hg.recoveryPhrase()
+  await a.close()
+
+  const b = await device(t, 'b', { mnemonic: words })
+  t.is(b.hg.identity.publicKey, identity, 'the same identity key')
+  t.not(b.device, a.device, 'a new device key')
+  await b.close()
+
+  const dir = tmpDir(t, 'wrong')
+  const wrong = words.split(' ').reverse().join(' ')
+  t.is(await codeOf(SwarmFS.open(dir, { mnemonic: wrong, bootstrap: await bootstrap(t) })), 'Invalid mnemonic', 'a wrong phrase is refused (hypergraph passes on its key library error, with no code)')
+  const c = await device(t, 'c', { dir })
+  t.not(c.hg.identity.publicKey, identity, 'the folder still opens, as a new identity')
+})
