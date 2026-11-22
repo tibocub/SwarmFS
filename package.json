@@ -28,6 +28,8 @@
   "scripts": {
     "test": "node scripts/test-runner.js",
     "test:bare": "node scripts/test-runner.js --bare",
+    "test:quick": "node scripts/test-runner.js --quick",
+    "test:merge": "node scripts/test-runner.js --merge",
     "test:all": "npm test && npm run test:bare",
     "test:slow": "brittle-node test/slow/*.test.js && brittle-bare test/slow/*.test.js",
     "perf": "node perf/run.mjs",

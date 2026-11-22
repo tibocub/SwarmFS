@@ -2,102 +2,567 @@
 // Runs test files in parallel, one process per file, and reports how long
 // each took.
 //
-//   node scripts/test-runner.js [--jobs N] [--bare] [file ...]
+//   node scripts/test-runner.js [--quick | --merge] [--jobs N] [--bare] [file ...]
 //
 // Default files: test/*.test.js. --bare runs them on Bare instead of Node.
+//
+// Levels (see CONTRIBUTING.md):
+//   --quick  the tests affected by your change (vs main, plus uncommitted), on Node.
+//   --merge  the affected tests on Node, then on Bare, plus MERGE_FLOWS.
+//   (none)   every file given, or all. A full Node run records which
+//            functions of which source files each test ran (.test-map.json),
+//            which is what --quick and --merge pick from.
+// A change in a linked package (file: dependency) counts as a change to that
+// package: every test that ran any file of it runs.
+// Both levels run everything instead when the map can't be trusted (they say why).
+//
+// A file that fails runs once more, alone, after the others: passing then,
+// it is reported FLAKY (passed alone), never as a plain pass.
+//
 // --jobs defaults to the number of CPU cores minus two (SFS_TEST_JOBS overrides);
 // test processes run at below-normal priority. Files start longest first (by
 // their last run, kept in the gitignored .test-times.json). Every file must
 // print its own "# tests = n/n" line to count as passed.
-// HG_TEST_TMP (the same setting as hypergraph's) puts the files' temp folders
-// there: on an SSD. Six files at once on a spinning disk run ~10x slower and
-// time out.
+// Temp folders: the system's (HG_TEST_TMP overrides it, the same setting as
+// hypergraph's), one per file, removed after it; HG_TEST_TMP_FALLBACK when it has
+// under 3 GB free. The files mostly wait on that disk's syncs: a fast disk matters
+// more than more jobs.
 //
 // Files run as plain scripts (`node file`, `bare file`), not through brittle's
 // CLI, whose glob walks the whole cwd (node_modules, worktrees...) before
 // each file: about 4 s per file.
 
-import { spawn } from 'child_process'
+import { spawn, execFileSync } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const TIMES = path.join(ROOT, '.test-times.json')
+const MAP = path.join(ROOT, '.test-map.json')
 const BARE = path.join(ROOT, 'node_modules', 'bare', 'bin', 'bare') // a Node script starting the runtime
 
-/** @type {{ jobs: number, bare: boolean, files: string[] }} */
-const opts = { jobs: Number(process.env.SFS_TEST_JOBS) || Math.max(1, os.cpus().length - 2), bare: false, files: [] }
-const argv = process.argv.slice(2)
-for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--jobs') opts.jobs = Number(argv[++i])
-  else if (argv[i] === '--bare') opts.bare = true
-  else opts.files.push(argv[i])
-}
-const files = opts.files.length
-  ? opts.files
-  : fs.readdirSync(path.join(ROOT, 'test')).filter(f => f.endsWith('.test.js')).sort().map(f => `test/${f}`)
+// Always run by --merge: whole flows through the public API. They catch what a
+// per-function map can't: timing between peers that a change elsewhere shifts.
+const MERGE_FLOWS = [
+  'test/smoke.test.js', // an instance opens and closes
+  'test/shared.test.js', // two devices share a space's files
+  'test/invite.test.js', // two people: invite, accept, a file across
+  'test/mirror.test.js' // a linked folder kept in step both ways
+]
 
-const TMP = process.env.HG_TEST_TMP
-const ENV = TMP ? { ...process.env, TEMP: TMP, TMP, TMPDIR: TMP } : process.env
-const tmp = TMP || os.tmpdir()
-fs.mkdirSync(tmp, { recursive: true })
-const { bavail, bsize } = fs.statfsSync(tmp)
-// a full disk fails tests with "not enough space", which reads like a bug
-if (bavail * bsize < 3e9) process.stdout.write(`(warning: ${Math.round(bavail * bsize / 1e6)} MB free in ${tmp}, the tests' temp folder)\n`)
+// Picking is only as good as the map: a change to any of these runs everything.
+export const SHARED = {
+  helpers: ['test/'], // non-test files there are test helpers
+  config: ['package.json', 'package-lock.json', 'scripts/test-runner.js', 'jsconfig.json'],
+  sources: ['lib/', 'bin/', 'index.js'], // a new file here, or a non-JS one changed, can't be mapped
+  ignored: [/\.md$/, /\.d\.c?ts$/, /^(docs|specs|\.specify|\.claude)\//, /^LICENSE$/],
+  // these read every source file as text (types, rules), so coverage never shows them: run on any source or linked-package change
+  readsSources: ['test/typecheck.test.js', 'test/types-consumer.test.js'],
+  siblings: ['hypergraph', 'swarmwire-lib'] // packages linked with file: (their real folder is read)
+}
 
 /**
- * @typedef {{ file: string, ms: number, code: number | null, passed: number, total: number, ok: boolean, out: string }} Result
+ * @typedef {{ commit: string, made: string, siblings: Record<string, string>, known: string[],
+ *   sources: Record<string, string>, fns: Record<string, [number, number][]>, tests: Record<string, Record<string, number[]>> }} TestMap
+ *   sources: each loaded file's text as the run saw it; fns: every function seen in it (not the
+ *   module's top level), as [start, end) offsets; tests: per test, each file it loaded -> the
+ *   indexes (into fns) of the functions it ran.
+ * @typedef {Record<string, { length: number, fns: [number, number][], ran: [number, number][] }>} Coverage
+ * @typedef {{ file: string, ms: number, code: number | null, passed: number, total: number, ok: boolean, flaky: boolean, out: string }} Result
+ */
+
+/** @param {string[]} argv */
+function parseArgs (argv) {
+  /** @type {{ jobs: number, bare: boolean, level: 'full' | 'quick' | 'merge', files: string[] }} */
+  const opts = { jobs: Number(process.env.SFS_TEST_JOBS) || Math.max(1, os.cpus().length - 2), bare: false, level: 'full', files: [] }
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--jobs') opts.jobs = Number(argv[++i])
+    else if (argv[i] === '--bare') opts.bare = true
+    else if (argv[i] === '--quick') opts.level = 'quick'
+    else if (argv[i] === '--merge') opts.level = 'merge'
+    else opts.files.push(argv[i])
+  }
+  return opts
+}
+
+const allTests = () => fs.readdirSync(path.join(ROOT, 'test')).filter(f => f.endsWith('.test.js')).sort().map(f => `test/${f}`)
+
+const MIN_DISK = 3e9 // under this, tests fail with "not enough space", which reads like a bug
+let TMP = '' // set by tempRoot() when the run starts
+
+// Where the test files' temp folders go: HG_TEST_TMP, else the system's temp folder; when that
+// has under 3 GB free, HG_TEST_TMP_FALLBACK (if set). Each file gets its own folder in it,
+// removed once the file is done.
+/**
+ * @param {{ env?: Record<string, string | undefined>, freeOf?: (dir: string) => number, say?: (line: string) => void }} [opts] for the tests
+ * @returns {string}
+ */
+export function tempRoot ({ env = process.env, freeOf = freeSpace, say = (line) => process.stdout.write(line + '\n') } = {}) {
+  /** @param {number} n */
+  const mb = (n) => Math.round(n / 1e6)
+  const main = env.HG_TEST_TMP || os.tmpdir()
+  const room = freeOf(main)
+  if (room >= MIN_DISK) return main
+  const fallback = env.HG_TEST_TMP_FALLBACK
+  if (fallback && freeOf(fallback) >= MIN_DISK) {
+    say(`(temp: ${mb(room)} MB free in ${main}, under 3 GB: using ${fallback})`)
+    return fallback
+  }
+  say(`(warning: ${mb(room)} MB free in ${main}, the tests' temp folder${fallback ? `; ${fallback} too` : '; HG_TEST_TMP_FALLBACK names another'})`)
+  return main
+}
+
+/** @param {string} dir */
+function freeSpace (dir) {
+  fs.mkdirSync(dir, { recursive: true })
+  const { bavail, bsize } = fs.statfsSync(dir)
+  return bavail * bsize
+}
+
+// ---- picking the affected tests ----
+
+/**
+ * @param {string[]} args
+ * @param {string} [cwd]
+ */
+function git (args, cwd = ROOT) {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+}
+
+/** @param {string} s */
+const lines = (s) => s.split('\n').map(l => l.trim()).filter(Boolean)
+
+/**
+ * Files changed since the base branch (main or master), committed or not, in dir.
+ * @param {string} [cwd]
+ */
+function changedSinceBase (cwd = ROOT) {
+  const base = ['main', 'master'].find((b) => { try { git(['rev-parse', '--verify', '--quiet', b], cwd); return true } catch { return false } })
+  if (!base) throw new Error(`no main or master branch in ${cwd}`)
+  const since = git(['merge-base', 'HEAD', base], cwd)
+  return { base, since, files: [...new Set([...lines(git(['diff', '--name-only', since], cwd)), ...lines(git(['ls-files', '--others', '--exclude-standard'], cwd))])] }
+}
+
+/**
  * @param {string} file
+ * @param {string[]} prefixes 'dir/' or an exact file
+ */
+const under = (file, prefixes) => prefixes.some((p) => p.endsWith('/') ? file.startsWith(p) : file === p)
+
+/**
+ * Which of `candidates` to run for `changed`, and why. Pure, for the tests.
+ * @param {{ candidates: string[], changed: string[], map: Pick<TestMap, 'known' | 'fns' | 'tests'> | null, stale: string | null,
+ *   edits?: Record<string, [number, number][]>, siblingsChanged?: string[], shared?: typeof SHARED }} input
+ *   stale: why the map can't be trusted (null if it can).
+ *   edits: per changed source file, what changed as [start, end) offsets in the map's copy of it
+ *     (start === end: an insertion); a changed file without edits counts as changed everywhere.
+ *   siblingsChanged: linked packages that changed (map entries 'name:path').
+ * @returns {{ all: true, why: string } | { all: false, picked: Map<string, string> }} picked: test -> reason.
+ */
+export function pick ({ candidates, changed, map, stale, edits = {}, siblingsChanged = [], shared = SHARED }) {
+  if (!map) return { all: true, why: 'there is no test map yet (a full Node run makes it)' }
+  if (stale) return { all: true, why: stale }
+  const isTest = new Set(candidates)
+  const known = new Set(map.known)
+  /** @type {Map<string, string>} */
+  const picked = new Map()
+  /** @type {string[]} */
+  const sources = []
+  for (const f of changed) {
+    if (isTest.has(f)) { picked.set(f, 'the test itself changed'); continue }
+    if (shared.ignored.some((re) => re.test(f))) continue
+    if (under(f, shared.config)) return { all: true, why: `${f} changed` }
+    if (under(f, shared.helpers)) return { all: true, why: `a test helper changed: ${f}` }
+    if (under(f, shared.sources)) {
+      if (!known.has(f)) return { all: true, why: `${f} is new, not in the test map` }
+      if (!/\.(c|m)?js$/.test(f)) return { all: true, why: `${f} is not JS: the map can't say who reads it` }
+    }
+    sources.push(f)
+  }
+  if (siblingsChanged.length || sources.some((f) => under(f, shared.sources))) {
+    for (const test of shared.readsSources) if (isTest.has(test) && !picked.has(test)) picked.set(test, 'reads every source file')
+  }
+  // Per changed file: the innermost functions holding an edit, or null when
+  // an edit is outside every function (top level: every test that loaded it).
+  /** @type {Map<string, Set<number> | null>} */
+  const need = new Map()
+  for (const f of sources) {
+    const fns = map.fns[f] || []
+    if (!edits[f]) { need.set(f, null); continue }
+    /** @type {Set<number> | null} */
+    let set = new Set()
+    for (const [a, b] of edits[f]) {
+      let best = -1
+      fns.forEach(([s, e], i) => {
+        const inside = a === b ? s < a && a < e : s <= a && b <= e
+        if (inside && (best < 0 || e - s < fns[best][1] - fns[best][0])) best = i
+      })
+      if (best < 0) { set = null; break }
+      set.add(best)
+    }
+    need.set(f, set)
+  }
+  for (const [test, loaded] of Object.entries(map.tests)) {
+    if (!isTest.has(test) || picked.has(test)) continue
+    for (const [src, hits] of Object.entries(loaded)) {
+      if (siblingsChanged.some((p) => src.startsWith(p + ':'))) { picked.set(test, `ran ${src} (its package changed)`); break }
+      if (!need.has(src)) continue
+      const fns = need.get(src)
+      if (!fns) { picked.set(test, `loaded ${src}, changed outside any function`); break }
+      if (hits.some((i) => fns.has(i))) { picked.set(test, `ran a changed function of ${src}`); break }
+    }
+  }
+  for (const test of candidates) {
+    if (!picked.has(test) && !(test in map.tests)) picked.set(test, 'not in the test map yet')
+  }
+  return { all: false, picked }
+}
+
+/**
+ * Line ranges git sees between two texts: old start, count, new start, count.
+ * @param {string} before
+ * @param {string} after
+ */
+function hunks (before, after) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pick-'))
+  /** @param {string} t */
+  const lf = (t) => t.replace(/\r\n/g, '\n')
+  fs.writeFileSync(path.join(tmp, 'a'), lf(before))
+  fs.writeFileSync(path.join(tmp, 'b'), lf(after))
+  let out
+  try {
+    out = git(['diff', '--no-index', '--no-color', '--no-ext-diff', '-U0', 'a', 'b'], tmp)
+  } catch (/** @type {any} */ err) { // exit 1: they differ
+    out = String(err.stdout || '')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+  return [...out.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)].map((m) => ({ a: +m[1], b: m[2] === undefined ? 1 : +m[2], c: +m[3], d: m[4] === undefined ? 1 : +m[4] }))
+}
+
+/**
+ * [start, end) offsets in `text` of `count` lines from `line` (1-based); count 0: the point after it.
+ * @param {string} text
+ * @param {number} line
+ * @param {number} count
+ * @returns {[number, number]}
+ */
+function span (text, line, count) {
+  const starts = [0]
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1)
+  if (starts[starts.length - 1] !== text.length) starts.push(text.length)
+  /** @param {number} n */
+  const at = (n) => starts[Math.min(Math.max(n - 1, 0), starts.length - 1)]
+  return count === 0 ? [at(line + 1), at(line + 1)] : [at(line), at(line + count)]
+}
+
+/**
+ * What changed in `file` since `since` (the base), in the map's copy of it:
+ * changes made after the map (old side of map -> now) and those already in
+ * it (new side of base -> map).
+ * @param {string} file
+ * @param {Pick<TestMap, 'sources'>} map
+ * @param {string | null} since
+ * @param {{ now: string, base: string } | null} [texts] instead of reading them (for the tests)
+ */
+export function editsOf (file, map, since, texts = null) {
+  const mine = map.sources[file]
+  let { now, base } = texts || { now: '', base: '' }
+  if (!texts) {
+    try { now = fs.readFileSync(path.join(ROOT, file), 'utf-8') } catch { /* deleted */ }
+    // untrimmed: a lost final newline would read as a change on the last line (top level: every loader)
+    try { base = execFileSync('git', ['show', `${since}:${file}`], { cwd: ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch { /* new since base */ }
+  }
+  return [
+    ...hunks(mine, now).map((h) => span(mine, h.a, h.b)),
+    ...hunks(base, mine).map((h) => span(mine, h.c, h.d))
+  ]
+}
+
+/**
+ * Why the saved map can't be trusted for this checkout, or null.
+ * @param {TestMap} map
+ */
+function staleness (map) {
+  try {
+    const watched = [...SHARED.helpers, ...SHARED.config].map((p) => p.replace(/\/$/, ''))
+    const after = git(['rev-list', '-1', `${map.commit}..HEAD`, '--', ...watched])
+    if (after) return `test helpers or config changed after the map was made (commit ${after.slice(0, 8)})`
+  } catch {
+    return `the map's commit ${String(map.commit).slice(0, 8)} is not in this repository`
+  }
+  return null
+}
+
+/** @param {string} name */
+const siblingDir = (name) => fs.realpathSync(path.join(ROOT, 'node_modules', name))
+
+/**
+ * Linked packages whose checkout moved or has changes since the map.
+ * @param {TestMap} map
+ */
+function siblingsChanged (map) {
+  return SHARED.siblings.filter((name) => {
+    try {
+      const dir = siblingDir(name)
+      return git(['rev-parse', 'HEAD'], dir) !== (map.siblings || {})[name] || changedSinceBase(dir).files.length > 0
+    } catch { return true }
+  })
+}
+
+/** @returns {TestMap | null} */
+function readMap () {
+  try {
+    const map = JSON.parse(fs.readFileSync(MAP, 'utf-8'))
+    return map.tests && map.sources ? map : null // null: made by an older runner
+  } catch { return null }
+}
+
+/**
+ * What one test's coverage dumps show: per loaded file, its length, its
+ * functions (not the module's top level) as [start, end) offsets, and which of them ran.
+ * @param {string} covDir
+ * @returns {Coverage}
+ */
+function coverageOf (covDir) {
+  /** @type {Coverage} */
+  const out = {}
+  const roots = [{ dir: ROOT, tag: '' }, ...SHARED.siblings.map((name) => ({ dir: siblingDir(name), tag: name + ':' }))]
+    .map((r) => ({ ...r, url: pathToFileURL(r.dir).href + '/' }))
+  for (const name of fs.readdirSync(covDir)) {
+    /** @type {{ result?: { url: string, functions: { ranges: { startOffset: number, endOffset: number, count: number }[] }[] }[] }} */
+    let dump
+    try { dump = JSON.parse(fs.readFileSync(path.join(covDir, name), 'utf-8')) } catch { continue }
+    for (const s of dump.result || []) {
+      const root = roots.find((r) => s.url.startsWith(r.url))
+      if (!root || s.url.includes('/node_modules/', root.url.length - 1)) continue
+      const file = root.tag + decodeURIComponent(s.url.slice(root.url.length))
+      const seen = out[file] || (out[file] = { length: s.functions[0].ranges[0].endOffset, fns: [], ran: [] })
+      for (const f of s.functions.slice(1)) {
+        /** @type {[number, number]} */
+        const r = [f.ranges[0].startOffset, f.ranges[0].endOffset]
+        seen.fns.push(r)
+        if (f.ranges[0].count > 0) seen.ran.push(r)
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * The map, from every test's coverage. Linked packages keep their file names only.
+ * @param {Record<string, Coverage>} covs test -> its coverage
+ * @param {string} commit
+ * @returns {TestMap}
+ */
+function buildMap (covs, commit) {
+  /** @type {Record<string, [number, number][]>} */
+  const fns = {}
+  /** @type {Record<string, Map<string, [number, number]>>} */
+  const seen = {}
+  for (const cov of Object.values(covs)) {
+    for (const [file, { fns: list }] of Object.entries(cov)) {
+      const keys = seen[file] || (seen[file] = new Map())
+      for (const [a, b] of list) if (!keys.has(`${a}-${b}`)) keys.set(`${a}-${b}`, [a, b])
+    }
+  }
+  /** @type {Record<string, Map<string, number>>} */
+  const index = {}
+  for (const [file, keys] of Object.entries(seen)) {
+    fns[file] = [...keys.values()].sort((x, y) => x[0] - y[0] || y[1] - x[1])
+    index[file] = new Map(fns[file].map(([a, b], i) => [`${a}-${b}`, i]))
+  }
+  /** @type {TestMap['tests']} */
+  const tests = {}
+  for (const [test, cov] of Object.entries(covs)) {
+    tests[test] = {}
+    for (const [file, { ran }] of Object.entries(cov)) {
+      tests[test][file] = [...new Set(ran.map(([a, b]) => /** @type {number} */ (index[file].get(`${a}-${b}`))))].sort((x, y) => x - y)
+    }
+  }
+  /** @type {Record<string, string>} */
+  const sources = {}
+  for (const file of Object.keys(fns)) {
+    if (file.includes(':')) continue
+    let text = null
+    try { text = fs.readFileSync(path.join(ROOT, file), 'utf-8') } catch { /* gone since */ }
+    // edited during the run: the offsets don't fit it, so its edits stay unknown (every loader runs)
+    if (text !== null && Object.values(covs).every((cov) => !cov[file] || cov[file].length === /** @type {string} */ (text).length)) sources[file] = text
+  }
+  /** @type {Record<string, string>} */
+  const siblings = {}
+  for (const s of SHARED.siblings) { try { siblings[s] = git(['rev-parse', 'HEAD'], siblingDir(s)) } catch { /* not a git checkout */ } }
+  return { commit, made: new Date().toISOString(), siblings, known: lines(git(['ls-files'])), sources, fns, tests }
+}
+
+// ---- running ----
+
+/**
+ * @param {string} file
+ * @param {boolean} bare
+ * @param {string | null} covDir
  * @returns {Promise<Result>}
  */
-function run (file) {
+function run (file, bare, covDir) {
   return new Promise((resolve) => {
     const start = Date.now()
-    const p = spawn(process.execPath, opts.bare ? [BARE, file] : [file], { cwd: ROOT, env: ENV })
-    try { os.setPriority(/** @type {number} */ (p.pid), os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {} // no pid (spawn failed): throws, ignored // keep the machine responsive
+    const tmp = fs.mkdtempSync(path.join(TMP, 'run-'))
+    // the test's temp folder (os.tmpdir() in it), and HG_TEST_TMP for the tests that read it
+    const env = { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp, HG_TEST_TMP: tmp, ...(covDir ? { NODE_V8_COVERAGE: covDir } : {}) }
+    const p = spawn(process.execPath, bare ? [BARE, file] : [file], { cwd: ROOT, env })
+    try { os.setPriority(/** @type {number} */ (p.pid), os.constants.priority.PRIORITY_BELOW_NORMAL) } catch { /* no pid (spawn failed); best effort anyway */ }
     let out = ''
     p.stdout.on('data', (d) => { out += d })
     p.stderr.on('data', (d) => { out += d })
-    p.on('exit', (code) => {
+    p.on('exit', async (code) => {
+      await fs.promises.rm(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {}) // a file left locked: the folder stays
       const m = /# tests = (\d+)\/(\d+) pass/.exec(out)
       const passed = m ? Number(m[1]) : (out.match(/^ok \d+/gm) || []).length
       const total = m ? Number(m[2]) : passed + 1 // no summary: crashed or timed out
-      resolve({ file, ms: Date.now() - start, code, passed, total, ok: code === 0 && !!m && passed === total, out })
+      resolve({ file, ms: Date.now() - start, code, passed, total, ok: code === 0 && !!m && passed === total, flaky: false, out })
     })
   })
 }
 
-/** @type {Record<string, number>} file -> ms */
-let times = {}
-try { times = JSON.parse(fs.readFileSync(TIMES, 'utf-8')) } catch {}
-/** @param {string} f */
-const key = (f) => (opts.bare ? `bare:${f}` : f)
-/** @param {string} f */
-const order = (f) => (key(f) in times ? times[key(f)] : Infinity) // unknown files first
-const queue = [...files].sort((a, b) => order(b) - order(a))
-const started = Date.now()
-/** @type {Result[]} */
-const results = []
-const worker = async () => {
-  while (queue.length) {
-    const r = await run(/** @type {string} */ (queue.shift()))
-    results.push(r)
-    process.stdout.write(`${r.ok ? 'ok  ' : 'FAIL'} ${(r.ms / 1000).toFixed(1).padStart(6)}s  ${r.file}${r.ok ? '' : `  (exit ${r.code}, ${r.passed}/${r.total})`}\n`)
+/**
+ * Runs files on `jobs` workers; failures run once more, alone, at the end.
+ * @param {string[]} files
+ * @param {{ jobs: number, bare: boolean, times: Record<string, number>, record: boolean }} opts
+ */
+async function runAll (files, { jobs, bare, times, record }) {
+  const tmp = TMP
+  /** @param {string} f */
+  const key = (f) => (bare ? `bare:${f}` : f)
+  /** @param {string} f */
+  const order = (f) => (key(f) in times ? times[key(f)] : Infinity) // unknown files first
+  const queue = [...files].sort((a, b) => order(b) - order(a))
+  /** @type {Map<string, Result>} */
+  const results = new Map()
+  /** @type {Record<string, Coverage>} */
+  const ran = {}
+  /** @param {string} file */
+  const once = async (file) => {
+    const covDir = record ? fs.mkdtempSync(path.join(tmp, 'cov-')) : null
+    const r = await run(file, bare, covDir)
+    if (covDir) {
+      ran[file] = coverageOf(covDir)
+      fs.rmSync(covDir, { recursive: true, force: true })
+    }
+    return r
   }
+  const worker = async () => {
+    while (queue.length) {
+      const file = /** @type {string} */ (queue.shift())
+      const r = await once(file)
+      results.set(file, r)
+      times[key(file)] = r.ms
+      process.stdout.write(`${r.ok ? 'ok  ' : 'FAIL'} ${(r.ms / 1000).toFixed(1).padStart(6)}s  ${r.file}${r.ok ? '' : `  (exit ${r.code}, ${r.passed}/${r.total}; will retry alone)`}\n`)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(jobs, files.length) }, worker))
+  for (const first of [...results.values()].filter(r => !r.ok)) {
+    const r = await once(first.file)
+    if (r.ok) {
+      r.flaky = true
+      r.ms = first.ms
+      r.out = first.out // the failure is what needs looking at
+    }
+    results.set(first.file, r)
+    process.stdout.write(`${r.ok ? 'FLAKY (passed alone)' : 'FAIL again'} ${(r.ms / 1000).toFixed(1).padStart(6)}s  ${r.file}${r.ok ? '' : `  (exit ${r.code}, ${r.passed}/${r.total})`}\n`)
+  }
+  return { results: [...results.values()], ran }
 }
-await Promise.all(Array.from({ length: Math.min(opts.jobs, files.length) }, worker))
-for (const r of results) times[key(r.file)] = r.ms
-try { fs.writeFileSync(TIMES, JSON.stringify(times, null, 2)) } catch {}
 
-const failed = results.filter(r => !r.ok)
-for (const r of failed) {
-  process.stdout.write(`\n──── ${r.file} ────\n`)
-  process.stdout.write(r.out.split('\n').filter(l => /not ok|Error|error|# tests|# asserts/.test(l)).slice(0, 40).join('\n') + '\n')
+/**
+ * @param {Result[]} results
+ * @param {{ label: string, files: number, wall: number, jobs: number }} opts
+ */
+function report (results, { label, files, wall, jobs }) {
+  const failed = results.filter(r => !r.ok)
+  const flaky = results.filter(r => r.flaky)
+  for (const r of [...failed, ...flaky]) {
+    process.stdout.write(`\n──── ${r.file}${r.flaky ? ' (FLAKY: first run below)' : ''} ────\n`)
+    process.stdout.write(r.out.split('\n').filter(l => /not ok|Error|error|# tests|# asserts/.test(l)).slice(0, 40).join('\n') + '\n')
+  }
+  const tests = results.reduce((n, r) => n + r.total, 0)
+  const passed = results.reduce((n, r) => n + r.passed, 0)
+  const sum = results.reduce((n, r) => n + r.ms, 0)
+  process.stdout.write(`\n${label}${passed}/${tests} tests passed in ${files} files${failed.length ? ` (${failed.length} FAILED)` : ''}${flaky.length ? ` (${flaky.length} FLAKY)` : ''}; ` +
+    `wall ${(wall / 1000).toFixed(1)}s, sum of file times ${(sum / 1000).toFixed(1)}s, ${jobs} jobs\n`)
+  return failed.length
 }
-const tests = results.reduce((n, r) => n + r.total, 0)
-const passed = results.reduce((n, r) => n + r.passed, 0)
-process.stdout.write(`\n${passed}/${tests} tests passed in ${files.length} files${failed.length ? ` (${failed.length} FAILED)` : ''}; ` +
-  `wall ${((Date.now() - started) / 1000).toFixed(1)}s, ${opts.jobs} jobs${opts.bare ? ', Bare' : ''}\n`)
-process.exit(failed.length ? 1 : 0)
+
+/** @param {ReturnType<typeof parseArgs>} opts */
+function choose (opts) {
+  const candidates = opts.files.length ? opts.files : allTests()
+  const map = readMap()
+  /** @type {string[]} */
+  let picked
+  try {
+    const { base, since, files: changed } = changedSinceBase()
+    /** @type {Record<string, [number, number][]>} */
+    const edits = {}
+    if (map) for (const f of changed) if (map.sources[f] !== undefined) edits[f] = editsOf(f, map, since)
+    const result = pick({ candidates, changed, map, stale: map && staleness(map), edits, siblingsChanged: map ? siblingsChanged(map) : [] })
+    process.stdout.write(`changed since ${base}: ${changed.length ? changed.join(', ') : 'nothing'}\n`)
+    if (result.all) {
+      process.stdout.write(`running everything because ${result.why}\n`)
+      picked = candidates
+    } else {
+      for (const [test, why] of result.picked) process.stdout.write(`  picked ${test}: ${why}\n`)
+      picked = [...result.picked.keys()]
+    }
+  } catch (/** @type {any} */ err) { // git missing or not a repository
+    process.stdout.write(`running everything because git could not say what changed (${err.message})\n`)
+    picked = candidates
+  }
+  if (opts.level === 'merge') {
+    const extra = MERGE_FLOWS.filter((f) => !picked.includes(f))
+    if (extra.length) process.stdout.write(`  plus the merge flows: ${extra.join(', ')}\n`)
+    picked = [...picked, ...extra]
+  }
+  return picked.filter((f) => fs.existsSync(path.join(ROOT, f))) // a deleted test file shows as changed
+}
+
+async function main () {
+  const opts = parseArgs(process.argv.slice(2))
+  TMP = tempRoot()
+
+  /** @type {Record<string, number>} file -> ms */
+  let times = {}
+  try { times = JSON.parse(fs.readFileSync(TIMES, 'utf-8')) } catch { /* first run */ }
+  /** @type {{ files: string[], bare: boolean, record: boolean }[]} */
+  const passes = []
+  if (opts.level === 'full') {
+    passes.push({ files: opts.files.length ? opts.files : allTests(), bare: opts.bare, record: !opts.bare && !opts.files.length })
+  } else {
+    const files = choose(opts)
+    if (!files.length) {
+      process.stdout.write('no test is affected\n')
+      return 0
+    }
+    passes.push({ files, bare: opts.level === 'quick' ? opts.bare : false, record: false })
+    if (opts.level === 'merge') passes.push({ files, bare: true, record: false })
+  }
+
+  let failures = 0
+  for (const p of passes) {
+    if (passes.length > 1) process.stdout.write(`\n== on ${p.bare ? 'Bare' : 'Node'} ==\n`)
+    const started = Date.now()
+    const commit = p.record ? git(['rev-parse', 'HEAD']) : ''
+    const { results, ran } = await runAll(p.files, { jobs: opts.jobs, bare: p.bare, times, record: p.record })
+    try { fs.writeFileSync(TIMES, JSON.stringify(times, null, 2)) } catch { /* only an ordering hint */ }
+    if (p.record) {
+      fs.writeFileSync(MAP, JSON.stringify(buildMap(ran, commit)))
+      process.stdout.write(`(test map: ${Object.keys(ran).length} files, from commit ${commit.slice(0, 8)})\n`)
+    }
+    failures += report(results, { label: passes.length > 1 ? `${p.bare ? 'Bare' : 'Node'}: ` : (p.bare ? 'Bare: ' : ''), files: p.files.length, wall: Date.now() - started, jobs: opts.jobs })
+  }
+  return failures ? 1 : 0
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().then((code) => process.exit(code), (err) => { console.error(err); process.exit(1) })
+}
