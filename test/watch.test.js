@@ -178,3 +178,24 @@ test('one watcher per folder (Bare on Linux, where a tree watch is the top folde
   seen.delete('made')
   t.ok(await saw('made'), 'a folder deleted')
 })
+
+test('one watcher per folder: ignored folders (a .swarmfsignore\'s node_modules/ and .git, the trash) get none', { timeout: 30000 }, async (t) => {
+  const { watch } = await import('../lib/watch.js')
+  const { compile, ignored } = await import('../lib/ignore.js')
+  const rules = compile('node_modules/\n.git\n')
+  const root = writeTree(tmpDir(t, 'w'), { 'node_modules/a/b/x.js': 'x', '.git/x/y': 'y', '.swarmfs-trash/.incoming/z': 'z', 'sub/deep/a.txt': 'a' })
+  const watched = []
+  const original = fs.watch
+  fs.watch = (dir, ...rest) => { watched.push(path.relative(root, String(dir)).split(path.sep).join('/')); return original.call(fs, dir, ...rest) }
+  let w
+  try {
+    w = watch(root, { perFolder: true, filter: (rel, dir = false) => !ignored(rules, rel, dir), onBatch: () => {}, onError: (err) => t.fail(String(err)) })
+    fs.mkdirSync(path.join(root, 'node_modules', 'later'))
+    fs.mkdirSync(path.join(root, 'made'))
+    t.ok(await eventually(() => watched.includes('made'), 5000), 'a folder made later: watched')
+  } finally {
+    fs.watch = original
+    if (w) w.close()
+  }
+  t.alike(watched.sort(), ['', 'made', 'sub', 'sub/deep'], 'only the root and the folders not ignored')
+})

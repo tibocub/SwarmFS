@@ -28,7 +28,9 @@ The watcher covers the whole tree. Node watches a tree on every platform, Bare o
 Windows; elsewhere (Bare on Linux) `lib/watch.js` keeps one watcher per
 folder, adding one when a folder appears (made or moved in, with every folder in it) and dropping
 it when it goes. A folder that appears reaches the local pass as its own path, so files written
-in it before its watcher started are found by that pass. A folder that can't be watched (past
+in it before its watcher started are found by that pass. Ignored folders
+([below](#ignored-files): the trash, and what `.swarmfsignore` lists, such as `node_modules/`)
+get no watcher; one un-ignored later is watched from the next `sync()`. A folder that can't be watched (past
 the system's limit of watches, `fs.inotify.max_user_watches`) is missed until the next full pass (start, resume, `rescan()`).
 
 1. Ignored paths dropped ([below](#ignored-files)).
