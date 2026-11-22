@@ -10,11 +10,9 @@ Sibling checkouts `../hypergraph` and `../swarmwire` are linked by `npm install`
 `.claude/worktrees/`, junction `node_modules` to the main checkout's (`mklink /J node_modules
 <main>\node_modules`, removed only with `rmdir`) instead of installing; never `ln -s` on Windows.
 
-Put temp data on a disk with room. On this machine C: is nearly full, so set all three to E: for
-every run:
+Tests write to the system temp folder (`HG_TEST_TMP` to change it).
 
 ```bash
-export TMP='E:\Code\P2P\.tmp\tmp' TEMP='E:\Code\P2P\.tmp\tmp' HG_TEST_TMP='E:\Code\P2P\.tmp\tmp'
 npm test              # Node
 npm run test:bare     # Bare
 npm run perf          # when a hot path changes (docs/performance.md)
