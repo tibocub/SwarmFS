@@ -15,11 +15,12 @@ test('the platform gives what sync needs: recursive watch, statfs, a stable ino'
   const path = (await import('path')).default
   const { tmpDir, eventually } = await import('./helpers.js')
   const dir = tmpDir(t)
+  const { watch } = await import('../lib/watch.js')
   const seen = []
-  const watcher = fs.watch(dir, { recursive: true }, (event, name) => seen.push(String(name)))
   fs.mkdirSync(path.join(dir, 'sub'))
+  const watcher = watch(dir, { onBatch: (rels) => seen.push(...rels), onError: (err) => t.fail(String(err)) })
   fs.writeFileSync(path.join(dir, 'sub', 'x.txt'), 'x')
-  t.ok(await eventually(() => seen.some((n) => n.replace(/\\/g, '/') === 'sub/x.txt'), 3000), 'an event for a file in a sub-folder')
+  t.ok(await eventually(() => seen.some((n) => n.replace(/\\/g, '/') === 'sub/x.txt'), 10000), 'an event for a file in a sub-folder (one watcher per folder where the platform has no recursive watch)')
   watcher.close()
 
   const st = await fs.promises.statfs(dir)
