@@ -31,9 +31,31 @@ npm run test:slow     # test/slow/: a 100 MB fetch, 10,000- and 1,000-file syncs
 node scripts/test-runner.js test/watch.test.js   # some files only (--bare, --jobs N)
 ```
 
-Each test starts its own local DHT and its own instance folders in the temp folder. Point
-`HG_TEST_TMP` (and `TMP`, `TEMP`) at a fast disk with a few GB free; a full disk fails tests with
-"not enough space", which reads like a bug. `SFS_TEST_JOBS` sets how many files run at once.
+Three levels, from fast to thorough:
+
+| Level | Command | Runs | When |
+|-------|---------|------|------|
+| quick | `npm run test:quick` | the tests your change affects, on Node | while working |
+| merge | `npm run test:merge` | the affected tests on Node and Bare, plus a few whole flows | before a branch is merged |
+| full | `npm run test:all` | everything | before pushing, after heavy or risky changes, in CI |
+
+"Affected" comes from `.test-map.json` (not committed): every full Node run (`npm test`) records
+which functions of which files each test ran. Your change is what differs from `main`, committed or
+not. A test runs if it ran a changed function, loaded a file changed outside any function, or is
+itself changed; the typecheck tests run on any source change. A change in `../hypergraph` or
+`../swarmwire` (their checkout moved since the map, or has changes of its own) runs every test that
+ran any of their files. The runner prints what it picked and why, and runs everything instead
+(saying why) when the map is missing or older than the last change to a test helper, when a helper,
+`package.json`, the lockfile or the runner changed, or when a source file is new.
+
+A file that fails runs once more, alone, after the others. Passing then, it shows as
+`FLAKY (passed alone)` and the summary counts it: a flaky test is a bug to fix, not a pass. Failing
+twice is a real failure.
+
+Each test starts its own local DHT and its own instance folders. Tests use the system temp folder; `HG_TEST_TMP` overrides it. When it has under 3 GB free, the
+runner uses `HG_TEST_TMP_FALLBACK` if set and prints a line. Each test file gets a folder of its own
+there, removed once it is done. The suites mostly wait on that disk (every account open and close
+waits for its writes to be synced), so a fast disk matters more than more jobs. `SFS_TEST_JOBS` sets how many files run at once.
 
 Every change runs on both Node and Bare: platform modules come through the `imports` map in
 `package.json` (`fs` → `bare-fs` on Bare...).

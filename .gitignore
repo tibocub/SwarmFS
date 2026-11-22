@@ -14,6 +14,7 @@ tmp/
 __pycache__/
 *.pyc
 .test-times.json
+.test-map.json
 
 # Declarations built by npm run types (on npm pack).
 dist/

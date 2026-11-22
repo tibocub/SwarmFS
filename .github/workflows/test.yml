@@ -1,0 +1,56 @@
+# The full suite on Linux and Windows, Node and Bare, as four parallel jobs.
+# SwarmFS links ../hypergraph and ../swarmwire (file: dependencies): they are
+# checked out side by side at their default branch, installed and their types
+# built first. Local runs pick tests with --quick/--merge; this runs all.
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.runtime }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        runtime: [node, bare]
+    env:
+      SFS_TEST_JOBS: 3 # 4 cores on hosted runners; the 4th runs the runner and the DHT
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: SwarmFS
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/hypergraph
+          path: hypergraph
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/swarmwire
+          path: swarmwire
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - name: siblings (install, build types)
+        run: |
+          for dir in hypergraph swarmwire; do
+            (cd "$dir" && if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run types)
+          done
+      - run: npm ci
+        working-directory: SwarmFS
+      - run: npm run typecheck
+        working-directory: SwarmFS
+        if: matrix.runtime == 'node'
+      - run: npm test
+        working-directory: SwarmFS
+        if: matrix.runtime == 'node'
+      - run: npm run test:bare
+        working-directory: SwarmFS
+        if: matrix.runtime == 'bare'

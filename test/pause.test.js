@@ -68,43 +68,46 @@ test('sync() started with the root missing: starts paused', { timeout: 90000 }, 
 })
 
 test('a mass delete waits for confirm; restored files resume it; small deletes go through', { timeout: 240000 }, async (t) => {
+  // 420 files: the smallest folder where a mass delete (more than 100 and more than half) leaves
+  // enough for a later delete of more than 100 that is not more than half.
+  const N = 420
   const files = { 'docs/keep.txt': 'k' }
-  for (let i = 0; i < 1000; i++) files[`docs/f/${i}.txt`] = `file ${i}`
+  for (let i = 0; i < N; i++) files[`docs/f/${i}.txt`] = `file ${i}`
   const { pc, drive, ld, docs, pcDocs, laptopDocs, pcEvents } = await linkedPair(t, files)
   const f = (await drive.list(docs.id)).items.find((i) => i.name === 'f')
-  t.ok(await eventually(() => fs.existsSync(path.join(laptopDocs, 'f')) && fs.readdirSync(path.join(laptopDocs, 'f')).length === 1000, 120000), 'the laptop has the 1,000 files')
+  t.ok(await eventually(() => fs.existsSync(path.join(laptopDocs, 'f')) && fs.readdirSync(path.join(laptopDocs, 'f')).length === N, 120000), `the laptop has the ${N} files`)
 
-  // 600 of 1,000 deleted at once: nothing removed until confirmed
+  // 212 of 421 deleted at once (more than 100, more than half): nothing removed until confirmed
   const saved = contents(path.join(pcDocs, 'f'))
-  for (let i = 0; i < 600; i++) fs.rmSync(path.join(pcDocs, 'f', `${i}.txt`))
+  for (let i = 0; i < 212; i++) fs.rmSync(path.join(pcDocs, 'f', `${i}.txt`))
   const paused = await pcEvents.wait((e) => e.action === 'paused' && e.reason === 'mass-delete', 20000)
   t.ok(paused, 'paused for a mass delete')
-  t.is(paused && paused.count, 600, 'with the count')
+  t.is(paused && paused.count, 212, 'with the count')
   await sleep(3000)
-  t.is((await names(drive, f.id)).length, 1000, '0 entries removed on the PC')
-  t.is((await names(ld, f.id)).length, 1000, 'nor on the laptop')
-  t.is(fs.readdirSync(path.join(laptopDocs, 'f')).length, 1000, 'no file trashed on the laptop')
+  t.is((await names(drive, f.id)).length, N, '0 entries removed on the PC')
+  t.is((await names(ld, f.id)).length, N, 'nor on the laptop')
+  t.is(fs.readdirSync(path.join(laptopDocs, 'f')).length, N, 'no file trashed on the laptop')
 
   // restored: resumes, nothing removed
   for (const [p, hex] of saved) if (!fs.existsSync(p)) fs.writeFileSync(p, Buffer.from(hex, 'hex'))
   t.ok(await pcEvents.wait((e) => e.action === 'resumed', 20000), 'files back: resumed')
   await sleep(3000)
-  t.is((await names(drive, f.id)).length, 1000, 'nothing removed')
+  t.is((await names(drive, f.id)).length, N, 'nothing removed')
 
   // again, then confirmed: removed everywhere
   pcEvents.length = 0
-  for (let i = 0; i < 600; i++) fs.rmSync(path.join(pcDocs, 'f', `${i}.txt`))
+  for (let i = 0; i < 212; i++) fs.rmSync(path.join(pcDocs, 'f', `${i}.txt`))
   t.ok(await pcEvents.wait((e) => e.action === 'paused' && e.reason === 'mass-delete', 20000), 'paused again')
   const confirmed = Date.now()
   await pc.confirm(pcDocs)
-  t.ok(await eventually(async () => (await names(ld, f.id)).length === 400, 30000), 'confirmed: 600 removed, seen on the laptop')
-  t.ok(await eventually(() => fs.readdirSync(path.join(laptopDocs, 'f')).length === 400, 30000), 'and its files trashed')
+  t.ok(await eventually(async () => (await names(ld, f.id)).length === 208, 30000), 'confirmed: 212 removed, seen on the laptop')
+  t.ok(await eventually(() => fs.readdirSync(path.join(laptopDocs, 'f')).length === 208, 30000), 'and its files trashed')
   t.comment(`confirm to removed on the other disk: ${Date.now() - confirmed} ms (SC-012: < 15 s)`)
 
-  // 150 of 400: not more than half → applied as usual
+  // 101 of 209: more than 100 but not more than half → applied as usual
   pcEvents.length = 0
-  for (let i = 600; i < 750; i++) fs.rmSync(path.join(pcDocs, 'f', `${i}.txt`))
-  t.ok(await eventually(async () => (await names(drive, f.id)).length === 250, 20000), '150 of 400 removed without asking')
+  for (let i = 212; i < 313; i++) fs.rmSync(path.join(pcDocs, 'f', `${i}.txt`))
+  t.ok(await eventually(async () => (await names(drive, f.id)).length === 107, 20000), '101 of 209 removed without asking')
   t.absent(pcEvents.some((e) => e.action === 'paused'), 'not paused')
 })
 
