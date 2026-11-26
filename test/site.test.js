@@ -1,7 +1,7 @@
 import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
-import { person, tmpDir, writeTree, eventually, codeOf, snapshot, bytes, aliceSite, PAGES } from './helpers.js'
+import { person, tmpDir, writeTree, eventually, codeOf, snapshot, bytes, aliceSite, PAGES, syncEvents } from './helpers.js'
 
 const pageId = async (site, name) => (await site.pages.list(site.pages.top, { timeout: 5000 })).items.find((i) => i.name === name)?.id
 
@@ -44,8 +44,10 @@ test('readers read and never write; a visit writes nothing; no reader invite in 
   const { alice, site } = await aliceSite(t)
   const dave = await person(t, 'dave')
   const ds = await dave.visit(await site.invite({ role: 'reader' }))
+  const events = syncEvents(dave)
   t.is((await ds.read('index.html')).toString(), '<h1>Hello</h1>', 'Dave reads')
   t.is((await ds.read('img.jpg')).length, 100 * 1024, 'and a big file')
+  t.ok(events.some((e) => e.action === 'fetching' && e.path === 'img.jpg' && e.size === 100 * 1024), 'said as it came from peers, with its size')
   const file = path.join(writeTree(tmpDir(t, 'dave-disk'), { 'a.jpg': 'a' }), 'a.jpg')
   t.is(await codeOf(ds.upload(file)), 'NOT_ALLOWED', 'his upload refused')
   t.is(await codeOf(ds.pages.add(file)), 'NOT_ALLOWED', 'and a page')
