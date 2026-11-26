@@ -94,6 +94,9 @@ test('anonymous: a photo added or uploaded is served without its metadata, the o
   const album = (await drive.list(drive.top)).items.find((x) => x.name === 'album')
   t.ok(names.includes('album'))
   t.alike((await drive.list(album.id)).items.map((x) => x.name), ['list.txt'], 'the photo stayed out of the linked folder')
+  const beach = await drive.addPhoto(path.join(disk, 'album', 'beach.jpg'))
+  t.alike((await drive.list(album.id)).items.map((x) => x.name).sort(), ['beach.jpg', 'list.txt'], 'added by itself, into its folder')
+  t.absent(fs.readFileSync(await localPath(ana.hg, beach.hash)).includes('GPSLatitude'), 'stripped')
 
   const site = await ana.createSite('Pics')
   const up = await site.upload(path.join(disk, 'trip.jpg'))

@@ -33,7 +33,8 @@ const sfs = await SwarmFS.open(dir, {
 **An anonymous identity** (`transport: 'i2p'`, see hypergraph's api.md): a photo (JPEG, PNG, WebP) added or
 uploaded loses its metadata (camera, time, GPS position) before it's hashed: SwarmFS serves a stripped copy kept
 in the instance folder, and the person's own file stays as it is. Photos stay out of its linked folders (a
-stripped copy can't be synced both ways): add them one by one. It pairs no device. Like every identity, it only
+stripped copy can't be synced both ways): each one left out comes as a `sync` event `{ action: 'skipped', reason:
+'photo', path }`, and `drive.addPhoto(path)` adds it by itself, stripped, into its folder. It pairs no device. Like every identity, it only
 ever finds and serves its own files: another identity on the same computer holding the same content is never
 used. `sfs.hg` is the underlying `Hypergraph` (recovery
 phrase, removing a device...); `sfs.device` (*sync*) is this device's key.
