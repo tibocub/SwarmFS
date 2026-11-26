@@ -7,7 +7,7 @@ import test from 'brittle'
 import fs from 'fs'
 import path from 'path'
 import { strip } from '../lib/strip.js'
-import { device, person, tmpDir, writeTree } from './helpers.js'
+import { device, person, tmpDir, writeTree, syncEvents } from './helpers.js'
 import { localPath } from '../lib/holdings.js'
 
 import sam from 'hypergraph/test/next/net/_sam.js'
@@ -87,7 +87,9 @@ test('anonymous: a photo added or uploaded is served without its metadata, the o
   const notes = await drive.add(path.join(disk, 'notes.txt'))
   t.is(await localPath(ana.hg, notes.hash), path.join(disk, 'notes.txt'), 'not a photo: served in place')
 
+  const events = syncEvents(ana)
   await drive.add(path.join(disk, 'album'))
+  t.alike(events.filter((x) => x.action === 'skipped').map((x) => [x.reason, path.basename(x.path)]), [['photo', 'beach.jpg']], 'said, so the app can offer to add it')
   const names = (await drive.list(drive.top)).items.map((x) => x.name)
   const album = (await drive.list(drive.top)).items.find((x) => x.name === 'album')
   t.ok(names.includes('album'))
@@ -95,7 +97,13 @@ test('anonymous: a photo added or uploaded is served without its metadata, the o
 
   const site = await ana.createSite('Pics')
   const up = await site.upload(path.join(disk, 'trip.jpg'))
-  t.absent(fs.readFileSync(await localPath(ana.hg, up.hash)).includes('GPSLatitude'), 'an upload too')
+  const upCopy = await localPath(ana.hg, up.hash)
+  t.absent(fs.readFileSync(upCopy).includes('GPSLatitude'), 'an upload too')
+
+  await drive.remove(e.id)
+  t.absent(fs.existsSync(served), 'the stripped copy goes with its last entry')
+  t.ok(fs.existsSync(upCopy), 'the upload\'s own copy stays')
+  t.ok(fs.existsSync(path.join(disk, 'trip.jpg')), 'and the person\'s file, always')
 })
 
 test('regular: a photo keeps its metadata; another identity on this computer never finds it', { timeout: 90000 }, async (t) => {

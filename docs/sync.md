@@ -135,7 +135,7 @@ event is emitted; due files are tried again every 10 s.
   space,    // the space key
   path,     // local, absolute
   to,       // renamed, moved: the new path; conflict: the copy's path
-  reason,   // paused: 'missing' | 'mass-delete' | 'removed' | 'in-bin'; skipped: 'name'; error: the message
+  reason,   // paused: 'missing' | 'mass-delete' | 'removed' | 'in-bin'; skipped: 'name' | 'photo' (I2P only); error: the message
   count,    // paused for a mass delete: the files it would remove
   free, floor  // low-space: bytes
 }
