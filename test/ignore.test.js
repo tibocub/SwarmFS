@@ -36,3 +36,10 @@ test('.swarmfsignore: comments, *, **, trailing /, anchored when it has a /', (t
   t.ok(ignored(rules, 'x\\cache\\y.txt', false), 'Windows separators')
   t.absent(ignored(rules, 'a.txt', false))
 })
+
+test('images: photos left out (an I2P-only instance), any case, at any depth; not by default', (t) => {
+  const rules = compile('', { images: true })
+  for (const p of ['a.jpg', 'b/c.JPEG', 'd.png', 'e/f.WebP']) t.ok(ignored(rules, p, false), p)
+  for (const p of ['a.txt', 'jpg', 'x.jpgx']) t.absent(ignored(rules, p, false), p)
+  t.absent(ignored(compile(''), 'a.jpg', false), 'a regular instance keeps them')
+})

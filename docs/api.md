@@ -19,6 +19,8 @@ const sfs = await SwarmFS.open(dir, {
                    //   (NOT_ALLOWED if the folder holds another identity)
   deviceName,      // this device's name when made, e.g. 'phone'
   bootstrap,       // [{ host, port }]: DHT nodes (a private DHT, in tests)
+  transport,       // hypergraph's: 'normal' (default), 'dual' (I2P too), 'i2p' (I2P only: an anonymous identity)
+  sam,             // { port, bootstrap }: the local I2P router, for 'dual' and 'i2p'
   fetchTimeout,    // ms without progress before a fetch gives up (default 30000)
   minFree,         // bytes a fetch into a linked folder leaves free (default max(5 GB, 5 % of the disk))
   appStorageMax,   // bytes: app storage's cap (default 1 GiB)
@@ -26,7 +28,14 @@ const sfs = await SwarmFS.open(dir, {
 })
 ```
 
-`open` rescans the disk once, then connects. `sfs.hg` is the underlying `Hypergraph` (recovery
+`open` rescans the disk once, then connects.
+
+**An anonymous identity** (`transport: 'i2p'`, see hypergraph's api.md): a photo (JPEG, PNG, WebP) added or
+uploaded loses its metadata (camera, time, GPS position) before it's hashed: SwarmFS serves a stripped copy kept
+in the instance folder, and the person's own file stays as it is. Photos stay out of its linked folders (a
+stripped copy can't be synced both ways): add them one by one. It pairs no device. Like every identity, it only
+ever finds and serves its own files: another identity on the same computer holding the same content is never
+used. `sfs.hg` is the underlying `Hypergraph` (recovery
 phrase, removing a device...); `sfs.device` (*sync*) is this device's key.
 
 | Call | Returns | Notes |
