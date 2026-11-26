@@ -132,12 +132,14 @@ event is emitted; due files are tried again every 10 s.
   action,   // local → space: 'added' | 'updated' | 'removed' | 'renamed' | 'moved'
             // space → local: 'fetched' | 'trashed' | 'conflict' (and 'renamed', 'moved')
             // state: 'paused' | 'resumed' | 'low-space' | 'skipped' | 'error'
+            // a page's file: 'fetching' (path: its name, size: bytes), when it comes from peers
   space,    // the space key
   path,     // local, absolute
   to,       // renamed, moved: the new path; conflict: the copy's path
   reason,   // paused: 'missing' | 'mass-delete' | 'removed' | 'in-bin'; skipped: 'name' | 'photo' (I2P only); error: the message
   count,    // paused for a mass delete: the files it would remove
-  free, floor  // low-space: bytes
+  free, floor, // low-space: bytes
+  size      // fetching: bytes
 }
 ```
 
