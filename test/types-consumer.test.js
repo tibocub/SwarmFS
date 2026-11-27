@@ -73,10 +73,11 @@ export async function typo (sfs: SwarmFS, drive: Drive): Promise<void> {
     t.is(copy.status, 0, 'npm run types: scripts/types.js ' + copy.stderr)
 
     const dir = fs.mkdtempSync(path.join(process.env.HG_TEST_TMP || os.tmpdir(), 'sfs-types-'))
-    // swarmfs, and the hypergraph and swarmwire it uses, as a user who installed all three has them
-    const links = [[root, 'swarmfs'], ...['hypergraph', 'swarmwire-lib'].map((name) => [fs.realpathSync(root + 'node_modules/' + name), name])]
+    // swarmfs, the hypergraph and swarmwire it uses, and one @types/node, as a user who installed all three has them:
+    // the siblings' own copies can differ in version (CI), and two copies clash
+    const links = [[root, 'swarmfs'], ...['hypergraph', 'swarmwire-lib', '@types/node', 'undici-types'].map((name) => [fs.realpathSync(root + 'node_modules/' + name), name])]
       .map(([target, name]) => ({ target, link: path.join(dir, 'node_modules', name) }))
-    fs.mkdirSync(path.join(dir, 'node_modules'))
+    fs.mkdirSync(path.join(dir, 'node_modules', '@types'), { recursive: true })
     for (const { target, link } of links) fs.symlinkSync(target, link, 'junction')
     t.teardown(() => {
       // Only the links themselves go (rmdir on a junction leaves its target alone); the folder only once they're gone.
@@ -87,7 +88,7 @@ export async function typo (sfs: SwarmFS, drive: Drive): Promise<void> {
     fs.writeFileSync(path.join(dir, 'good.mts'), GOOD)
     fs.writeFileSync(path.join(dir, 'bad.mts'), BAD)
     fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({
-      compilerOptions: { strict: true, module: 'node16', moduleResolution: 'node16', target: 'ES2022', types: [], noEmit: true },
+      compilerOptions: { strict: true, module: 'node16', moduleResolution: 'node16', target: 'ES2022', types: [], noEmit: true, preserveSymlinks: true },
       files: ['good.mts', 'bad.mts']
     }))
 
